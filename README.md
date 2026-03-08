@@ -21,7 +21,7 @@ It is designed to reduce operational friction in clinical and translational rese
 - **Backend:** Rust (Axum, Tokio)
 - **Database:** PostgreSQL (schema + migration seed included)
 - **Infra:** Docker Compose (Postgres + API)
-- **Identity direction:** Google Workspace-compatible SSO/OIDC strategy
+- **Identity:** Google Workspace-aligned token claim checks + RBAC model
 
 ## Repository Layout
 
@@ -42,10 +42,12 @@ It is designed to reduce operational friction in clinical and translational rese
    ```bash
    docker compose -f deploy/docker-compose.yml up -d postgres
    ```
-2. Run API:
+2. Apply migrations and run API:
    ```bash
    cd apps/api
    cp .env.example .env
+   export DATABASE_URL=postgres://postgres:postgres@localhost:5432/virivu
+   ./scripts/apply_migrations.sh
    cargo run
    ```
 3. Health check:
@@ -55,8 +57,8 @@ It is designed to reduce operational friction in clinical and translational rese
 
 ## Next Build Steps
 
-1. Add production auth (Google Workspace OIDC + RBAC + audit logging).
-2. Implement signed object storage uploads for media.
+1. Replace JWT claim-only validation with full Google JWKS signature verification.
+2. Implement signed object storage uploads for media (S3/GCS adapters).
 3. Build web portal and cross-platform mobile app (patient + coordinator flows).
 4. Add background jobs (notifications, reminders, report generation).
 5. Implement statistics workspace and configurable analysis templates.

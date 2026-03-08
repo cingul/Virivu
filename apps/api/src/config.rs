@@ -6,6 +6,8 @@ pub struct Config {
     pub bind_address: String,
     pub database_url: String,
     pub allowed_google_workspace_domain: String,
+    pub google_client_id: Option<String>,
+    pub allow_dev_auth_bypass: bool,
 }
 
 impl Config {
@@ -16,12 +18,18 @@ impl Config {
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/virivu".to_string());
         let allowed_google_workspace_domain =
             env::var("GOOGLE_WORKSPACE_DOMAIN").unwrap_or_else(|_| "example.org".to_string());
+        let google_client_id = env::var("GOOGLE_CLIENT_ID").ok();
+        let allow_dev_auth_bypass = env::var("ALLOW_DEV_AUTH_BYPASS")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
 
         Self {
             app_name,
             bind_address,
             database_url,
             allowed_google_workspace_domain,
+            google_client_id,
+            allow_dev_auth_bypass,
         }
     }
 }

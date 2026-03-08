@@ -48,3 +48,34 @@ pub struct MediaUploadTicket {
     pub upload_url: String,
     pub expires_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: Uuid,
+    pub email: String,
+    pub google_subject: String,
+    pub display_name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserMembership {
+    pub organization_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrganizationSummaryRow {
+    pub projects: i64,
+    pub sites: i64,
+    pub sent_form_invites: i64,
+    pub generated_media_upload_links: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectProgressRow {
+    pub total_sites: i64,
+    pub total_form_invites: i64,
+    pub total_media_captures_requested: i64,
+}

@@ -26,6 +26,32 @@ CREATE TABLE sites (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT NOT NULL UNIQUE,
+    google_subject TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE user_memberships (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+    project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (role IN (
+        'platform_admin',
+        'org_admin',
+        'investigator',
+        'site_coordinator',
+        'analyst',
+        'patient'
+    ))
+);
+
 CREATE TABLE patients (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -37,6 +63,16 @@ CREATE TABLE patients (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE form_invites (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    patient_email TEXT NOT NULL,
+    form_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'sent',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE forms (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -45,6 +81,17 @@ CREATE TABLE forms (
     form_type TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1,
     schema_json JSONB NOT NULL DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE media_upload_tickets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    patient_id TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    upload_url TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -116,10 +163,16 @@ CREATE TABLE audit_events (
 
 CREATE INDEX idx_projects_org_id ON projects(organization_id);
 CREATE INDEX idx_sites_project_id ON sites(project_id);
+CREATE INDEX idx_user_memberships_user_id ON user_memberships(user_id);
+CREATE INDEX idx_user_memberships_org_id ON user_memberships(organization_id);
+CREATE INDEX idx_user_memberships_project_id ON user_memberships(project_id);
 CREATE INDEX idx_patients_org_id ON patients(organization_id);
 CREATE INDEX idx_patients_project_id ON patients(project_id);
+CREATE INDEX idx_form_invites_org_id ON form_invites(organization_id);
+CREATE INDEX idx_form_invites_project_id ON form_invites(project_id);
 CREATE INDEX idx_forms_project_id ON forms(project_id);
 CREATE INDEX idx_form_submissions_form_id ON form_submissions(form_id);
+CREATE INDEX idx_media_upload_tickets_project_id ON media_upload_tickets(project_id);
 CREATE INDEX idx_media_assets_project_id ON media_assets(project_id);
 CREATE INDEX idx_media_assets_patient_id ON media_assets(patient_id);
 CREATE INDEX idx_milestones_project_id ON milestones(project_id);

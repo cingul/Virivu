@@ -1,19 +1,18 @@
+mod auth;
 mod config;
+mod db;
 mod models;
 mod routes;
-mod state;
-
-use std::sync::Arc;
 
 use anyhow::Context;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::{
     config::Config,
+    db::Db,
     routes::{router, AppContext},
-    state::InMemoryStore,
 };
 
 #[tokio::main]
@@ -22,11 +21,13 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let config = Config::from_env();
-    let shared_state = Arc::new(RwLock::new(InMemoryStore::default()));
+    let db = Db::connect(&config.database_url)
+        .await
+        .with_context(|| "failed to connect to Postgres database")?;
 
     let app = router(AppContext {
         config: config.clone(),
-        state: shared_state,
+        db,
     })
     .layer(TraceLayer::new_for_http());
 
@@ -39,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
         bind_address = %config.bind_address,
         database_url = %config.database_url,
         allowed_google_workspace_domain = %config.allowed_google_workspace_domain,
+        allow_dev_auth_bypass = config.allow_dev_auth_bypass,
         "starting API server"
     );
 

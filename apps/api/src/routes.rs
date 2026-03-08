@@ -1,29 +1,50 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
-    response::IntoResponse,
+    middleware::{from_fn_with_state, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
+    auth::{extract_bearer_token, verify_google_workspace_user, AuthError, AuthenticatedUser},
     config::Config,
-    models::{FormInvite, MediaUploadTicket, Organization, Project, Site},
-    state::SharedState,
+    db::Db,
 };
+
+const ROLE_PLATFORM_ADMIN: &[&str] = &["platform_admin"];
+const ROLE_ORG_MANAGERS: &[&str] = &["platform_admin", "org_admin"];
+const ROLE_COORDINATOR_OR_BETTER: &[&str] = &[
+    "platform_admin",
+    "org_admin",
+    "site_coordinator",
+    "investigator",
+];
+const ROLE_ANALYTICS: &[&str] = &[
+    "platform_admin",
+    "org_admin",
+    "investigator",
+    "site_coordinator",
+    "analyst",
+];
 
 #[derive(Clone)]
 pub struct AppContext {
     pub config: Config,
-    pub state: SharedState,
+    pub db: Db,
 }
 
 pub fn router(ctx: AppContext) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    let public_router = Router::new().route("/health", get(health)).route(
+        "/v1/auth/google/token-introspect",
+        post(google_token_introspect),
+    );
+
+    let protected_router = Router::new()
         .route("/v1/organizations", post(create_organization))
         .route("/v1/projects", post(create_project))
         .route("/v1/sites", post(create_site))
@@ -41,7 +62,9 @@ pub fn router(ctx: AppContext) -> Router {
             "/v1/agents/doctor-patient-transcript",
             post(generate_doctor_patient_note),
         )
-        .with_state(ctx)
+        .layer(from_fn_with_state(ctx.clone(), require_auth));
+
+    public_router.merge(protected_router).with_state(ctx)
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +82,83 @@ async fn health(State(ctx): State<AppContext>) -> Json<HealthResponse> {
     })
 }
 
+async fn require_auth(State(ctx): State<AppContext>, mut request: Request, next: Next) -> Response {
+    let maybe_bearer = extract_bearer_token(request.headers());
+    let auth_result = if let Some(token) = maybe_bearer {
+        verify_google_workspace_user(&ctx.config, &ctx.db, &token).await
+    } else if ctx.config.allow_dev_auth_bypass {
+        authenticate_from_dev_headers(&ctx, request.headers()).await
+    } else {
+        Err(AuthError::Unauthorized(
+            "missing bearer token in Authorization header".to_string(),
+        ))
+    };
+
+    match auth_result {
+        Ok(user) => {
+            request.extensions_mut().insert(user);
+            next.run(request).await
+        }
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn authenticate_from_dev_headers(
+    ctx: &AppContext,
+    headers: &axum::http::HeaderMap,
+) -> Result<AuthenticatedUser, AuthError> {
+    let email = headers
+        .get("x-dev-user-email")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            AuthError::Unauthorized(
+                "no bearer token supplied and x-dev-user-email is missing".to_string(),
+            )
+        })?;
+
+    let display_name = headers
+        .get("x-dev-user-name")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(email);
+    let google_subject = format!("dev-{}", email);
+
+    let user = ctx
+        .db
+        .upsert_user(email, &google_subject, display_name)
+        .await
+        .map_err(|e| AuthError::Internal(format!("unable to create dev user: {e}")))?;
+
+    let memberships = ctx
+        .db
+        .load_memberships_for_email(email)
+        .await
+        .map_err(|e| AuthError::Internal(format!("unable to load user memberships: {e}")))?;
+
+    Ok(AuthenticatedUser {
+        user_id: user.id,
+        email: user.email,
+        google_subject: user.google_subject,
+        display_name: user.display_name,
+        domain: ctx.config.allowed_google_workspace_domain.clone(),
+        memberships,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleIntrospectRequest {
+    id_token: String,
+}
+
+async fn google_token_introspect(
+    State(ctx): State<AppContext>,
+    Json(payload): Json<GoogleIntrospectRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = verify_google_workspace_user(&ctx.config, &ctx.db, payload.id_token.trim())
+        .await
+        .map_err(ApiError::Auth)?;
+    Ok((StatusCode::OK, Json(user)))
+}
+
 #[derive(Debug, Deserialize)]
 struct CreateOrganizationRequest {
     name: String,
@@ -66,25 +166,23 @@ struct CreateOrganizationRequest {
 
 async fn create_organization(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Json(payload): Json<CreateOrganizationRequest>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
+    require_platform_role(&user, ROLE_PLATFORM_ADMIN)?;
+
     if payload.name.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "organization name is required" })),
-        );
+        return Err(ApiError::Validation(
+            "organization name is required".to_string(),
+        ));
     }
 
-    let org = Organization {
-        id: Uuid::new_v4(),
-        name: payload.name.trim().to_string(),
-        created_at: Utc::now(),
-    };
-
-    let mut state = ctx.state.write().await;
-    state.organizations.push(org.clone());
-
-    (StatusCode::CREATED, Json(serde_json::json!(org)))
+    let org = ctx
+        .db
+        .create_organization(payload.name.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(org)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,20 +194,25 @@ struct CreateProjectRequest {
 
 async fn create_project(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Json(payload): Json<CreateProjectRequest>,
-) -> impl IntoResponse {
-    let project = Project {
-        id: Uuid::new_v4(),
-        organization_id: payload.organization_id,
-        name: payload.name.trim().to_string(),
-        therapeutic_area: payload.therapeutic_area.trim().to_string(),
-        created_at: Utc::now(),
-    };
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, payload.organization_id, ROLE_ORG_MANAGERS)?;
 
-    let mut state = ctx.state.write().await;
-    state.projects.push(project.clone());
+    if payload.name.trim().is_empty() {
+        return Err(ApiError::Validation("project name is required".to_string()));
+    }
 
-    (StatusCode::CREATED, Json(serde_json::json!(project)))
+    let project = ctx
+        .db
+        .create_project(
+            payload.organization_id,
+            payload.name.trim(),
+            payload.therapeutic_area.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(project)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,20 +224,28 @@ struct CreateSiteRequest {
 
 async fn create_site(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Json(payload): Json<CreateSiteRequest>,
-) -> impl IntoResponse {
-    let site = Site {
-        id: Uuid::new_v4(),
-        project_id: payload.project_id,
-        name: payload.name.trim().to_string(),
-        principal_investigator: payload.principal_investigator.trim().to_string(),
-        created_at: Utc::now(),
-    };
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(payload.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
 
-    let mut state = ctx.state.write().await;
-    state.sites.push(site.clone());
+    let site = ctx
+        .db
+        .create_site(
+            payload.project_id,
+            payload.name.trim(),
+            payload.principal_investigator.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
 
-    (StatusCode::CREATED, Json(serde_json::json!(site)))
+    Ok((StatusCode::CREATED, Json(site)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,22 +258,22 @@ struct SendFormInviteRequest {
 
 async fn send_form_invite(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Json(payload): Json<SendFormInviteRequest>,
-) -> impl IntoResponse {
-    let invite = FormInvite {
-        id: Uuid::new_v4(),
-        organization_id: payload.organization_id,
-        project_id: payload.project_id,
-        patient_email: payload.patient_email.trim().to_string(),
-        form_type: payload.form_type.trim().to_string(),
-        status: "sent".to_string(),
-        created_at: Utc::now(),
-    };
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, payload.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
-    let mut state = ctx.state.write().await;
-    state.form_invites.push(invite.clone());
-
-    (StatusCode::CREATED, Json(serde_json::json!(invite)))
+    let invite = ctx
+        .db
+        .create_form_invite(
+            payload.organization_id,
+            payload.project_id,
+            payload.patient_email.trim(),
+            payload.form_type.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(invite)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,123 +286,89 @@ struct PresignMediaUploadRequest {
 
 async fn presign_media_upload(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Json(payload): Json<PresignMediaUploadRequest>,
-) -> impl IntoResponse {
-    let id = Uuid::new_v4();
-    let expires_at = Utc::now() + Duration::minutes(10);
-    let upload_url = format!(
-        "https://upload.virivu.example/v1/media/{id}?content_type={}",
-        payload.mime_type
-    );
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, payload.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
-    let ticket = MediaUploadTicket {
-        id,
-        organization_id: payload.organization_id,
-        project_id: payload.project_id,
-        patient_id: payload.patient_id.trim().to_string(),
-        mime_type: payload.mime_type.trim().to_string(),
-        upload_url,
-        expires_at,
-    };
-
-    let mut state = ctx.state.write().await;
-    state.media_tickets.push(ticket.clone());
-
-    (StatusCode::CREATED, Json(serde_json::json!(ticket)))
+    let ticket = ctx
+        .db
+        .create_media_upload_ticket(
+            payload.organization_id,
+            payload.project_id,
+            payload.patient_id.trim(),
+            payload.mime_type.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(ticket)))
 }
 
 #[derive(Debug, Serialize)]
 struct OrganizationSummary {
     organization_id: Uuid,
-    projects: usize,
-    sites: usize,
-    sent_form_invites: usize,
-    generated_media_upload_links: usize,
+    projects: i64,
+    sites: i64,
+    sent_form_invites: i64,
+    generated_media_upload_links: i64,
 }
 
 async fn organization_summary(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(org_id): Path<Uuid>,
-) -> impl IntoResponse {
-    let state = ctx.state.read().await;
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, org_id, ROLE_ANALYTICS)?;
+    let summary = ctx
+        .db
+        .organization_summary(org_id)
+        .await
+        .map_err(ApiError::internal)?;
 
-    let projects = state
-        .projects
-        .iter()
-        .filter(|p| p.organization_id == org_id)
-        .count();
-
-    let project_ids: Vec<Uuid> = state
-        .projects
-        .iter()
-        .filter(|p| p.organization_id == org_id)
-        .map(|p| p.id)
-        .collect();
-
-    let sites = state
-        .sites
-        .iter()
-        .filter(|s| project_ids.contains(&s.project_id))
-        .count();
-
-    let sent_form_invites = state
-        .form_invites
-        .iter()
-        .filter(|f| f.organization_id == org_id)
-        .count();
-
-    let generated_media_upload_links = state
-        .media_tickets
-        .iter()
-        .filter(|m| m.organization_id == org_id)
-        .count();
-
-    Json(OrganizationSummary {
+    Ok(Json(OrganizationSummary {
         organization_id: org_id,
-        projects,
-        sites,
-        sent_form_invites,
-        generated_media_upload_links,
-    })
+        projects: summary.projects,
+        sites: summary.sites,
+        sent_form_invites: summary.sent_form_invites,
+        generated_media_upload_links: summary.generated_media_upload_links,
+    }))
 }
 
 #[derive(Debug, Serialize)]
 struct ProjectProgressReport {
     project_id: Uuid,
-    total_sites: usize,
-    total_form_invites: usize,
-    total_media_captures_requested: usize,
+    total_sites: i64,
+    total_form_invites: i64,
+    total_media_captures_requested: i64,
     report_generated_at: String,
 }
 
 async fn project_progress_report(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(project_id): Path<Uuid>,
-) -> impl IntoResponse {
-    let state = ctx.state.read().await;
-    let total_sites = state
-        .sites
-        .iter()
-        .filter(|s| s.project_id == project_id)
-        .count();
-    let total_form_invites = state
-        .form_invites
-        .iter()
-        .filter(|s| s.project_id == project_id)
-        .count();
-    let total_media_captures_requested = state
-        .media_tickets
-        .iter()
-        .filter(|s| s.project_id == project_id)
-        .count();
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
 
-    Json(ProjectProgressReport {
+    let report = ctx
+        .db
+        .project_progress_report(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Json(ProjectProgressReport {
         project_id,
-        total_sites,
-        total_form_invites,
-        total_media_captures_requested,
+        total_sites: report.total_sites,
+        total_form_invites: report.total_form_invites,
+        total_media_captures_requested: report.total_media_captures_requested,
         report_generated_at: Utc::now().to_rfc3339(),
-    })
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -311,14 +388,26 @@ struct TranscriptResponse {
     reminder: &'static str,
 }
 
-async fn generate_doctor_patient_note(Json(payload): Json<TranscriptRequest>) -> impl IntoResponse {
+async fn generate_doctor_patient_note(
+    user: AuthenticatedUser,
+    Json(payload): Json<TranscriptRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, payload.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    if !user.has_project_role(payload.project_id, ROLE_COORDINATOR_OR_BETTER)
+        && !user.has_org_role(payload.organization_id, ROLE_COORDINATOR_OR_BETTER)
+    {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "user lacks project or org permission".to_string(),
+        )));
+    }
+
     let transcript_excerpt: String = payload.transcript.chars().take(240).collect();
     let summary_note = format!(
         "Draft note for clinician {} and patient {}. Transcript excerpt: {}",
         payload.clinician_name, payload.patient_name, transcript_excerpt
     );
 
-    (
+    Ok((
         StatusCode::OK,
         Json(TranscriptResponse {
             organization_id: payload.organization_id,
@@ -326,5 +415,66 @@ async fn generate_doctor_patient_note(Json(payload): Json<TranscriptRequest>) ->
             summary_note,
             reminder: "This is a non-diagnostic draft and requires clinician review.",
         }),
-    )
+    ))
+}
+
+fn require_platform_role(user: &AuthenticatedUser, roles: &[&str]) -> Result<(), ApiError> {
+    if user.has_platform_role(roles) {
+        Ok(())
+    } else {
+        Err(ApiError::Auth(AuthError::Forbidden(
+            "user lacks required platform role".to_string(),
+        )))
+    }
+}
+
+fn require_org_role(
+    user: &AuthenticatedUser,
+    organization_id: Uuid,
+    roles: &[&str],
+) -> Result<(), ApiError> {
+    if user.has_org_role(organization_id, roles) {
+        Ok(())
+    } else {
+        Err(ApiError::Auth(AuthError::Forbidden(
+            "user lacks required organization role".to_string(),
+        )))
+    }
+}
+
+#[derive(Debug)]
+enum ApiError {
+    Auth(AuthError),
+    Validation(String),
+    NotFound(String),
+    Internal(String),
+}
+
+impl ApiError {
+    fn internal<E: ToString>(error: E) -> Self {
+        Self::Internal(error.to_string())
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Auth(error) => error.into_response(),
+            Self::Validation(msg) => (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": msg })),
+            )
+                .into_response(),
+            Self::NotFound(msg) => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": msg })),
+            )
+                .into_response(),
+            Self::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": msg })),
+            )
+                .into_response(),
+        }
+    }
 }
