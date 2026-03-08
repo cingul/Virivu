@@ -1,0 +1,12 @@
+# Rust
+target/
+**/target/
+
+# Environment files
+.env
+**/.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
