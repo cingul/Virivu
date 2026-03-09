@@ -29,7 +29,7 @@ Create organization:
 
 ```bash
 curl -X POST http://localhost:8080/v1/organizations \
-  -H "x-dev-user-email: admin@example.org" \
+  -H "x-dev-user-email: admin@cingulum.org" \
   -H "Content-Type: application/json" \
   -d '{"name":"Acme Research Institute"}'
 ```
@@ -51,6 +51,6 @@ curl http://localhost:8080/health
 ## Notes
 
 - `ALLOW_DEV_AUTH_BYPASS=true` allows local development auth via `x-dev-user-email`.
-- `migrations/0002_dev_seed.sql` creates `admin@example.org` with `platform_admin` role for local testing.
+- `migrations/0002_dev_seed.sql` creates `admin@cingulum.org` with `platform_admin` role for local testing.
 - For production, keep `ALLOW_DEV_AUTH_BYPASS=false` and enforce real Google token verification.
 - Current Google token handling validates claims and domain; cryptographic signature verification is marked as a TODO before production.

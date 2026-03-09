@@ -17,7 +17,7 @@ impl Config {
         let database_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/virivu".to_string());
         let allowed_google_workspace_domain =
-            env::var("GOOGLE_WORKSPACE_DOMAIN").unwrap_or_else(|_| "example.org".to_string());
+            env::var("GOOGLE_WORKSPACE_DOMAIN").unwrap_or_else(|_| "cingulum.org".to_string());
         let google_client_id = env::var("GOOGLE_CLIENT_ID").ok();
         let allow_dev_auth_bypass = env::var("ALLOW_DEV_AUTH_BYPASS")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
