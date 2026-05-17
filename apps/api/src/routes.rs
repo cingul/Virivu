@@ -45,6 +45,24 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/health", get(health))
         .route("/ui", get(redirect_ui_home))
         .route("/ui/app", get(render_app_dashboard))
+        .route("/ui/studies", get(render_study_workbench))
+        .route("/ui/studies/create", post(submit_create_study_from_ui))
+        .route(
+            "/ui/studies/{project_id}/phase",
+            post(submit_study_phase_transition),
+        )
+        .route(
+            "/ui/studies/{project_id}/crf-template",
+            post(submit_create_study_crf_template),
+        )
+        .route(
+            "/ui/studies/templates/{template_id}/field",
+            post(submit_add_study_crf_field),
+        )
+        .route(
+            "/ui/studies/templates/{template_id}/publish",
+            post(submit_publish_study_crf_template),
+        )
         .route(
             "/ui/app/create-organization",
             post(submit_app_create_organization),
@@ -103,6 +121,27 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/v1/organizations", post(create_organization))
         .route("/v1/projects", post(create_project))
         .route("/v1/sites", post(create_site))
+        .route("/v1/studies", post(create_study_project))
+        .route(
+            "/v1/studies/{project_id}/phase",
+            post(transition_study_phase),
+        )
+        .route(
+            "/v1/studies/{project_id}/readiness",
+            get(get_study_readiness),
+        )
+        .route(
+            "/v1/studies/{project_id}/crf-templates",
+            get(list_study_crf_templates).post(create_study_crf_template),
+        )
+        .route(
+            "/v1/studies/crf-templates/{template_id}/fields",
+            get(list_study_crf_fields).post(add_study_crf_field),
+        )
+        .route(
+            "/v1/studies/crf-templates/{template_id}/publish",
+            post(publish_study_crf_template),
+        )
         .route("/v1/patients", post(create_patient))
         .route("/v1/providers", post(create_provider))
         .route("/v1/encounters", post(create_encounter))
@@ -332,6 +371,258 @@ async fn create_site(
         .map_err(ApiError::internal)?;
 
     Ok((StatusCode::CREATED, Json(site)))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateStudyProjectRequest {
+    organization_id: Uuid,
+    name: String,
+    therapeutic_area: String,
+    protocol_code: Option<String>,
+    planned_enrollment: Option<i32>,
+    clinicaltrials_gov_id: Option<String>,
+    study_summary: Option<String>,
+}
+
+async fn create_study_project(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Json(payload): Json<CreateStudyProjectRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, payload.organization_id, ROLE_ORG_MANAGERS)?;
+    if payload.name.trim().is_empty() {
+        return Err(ApiError::Validation("study name is required".to_string()));
+    }
+    let planned_enrollment = payload.planned_enrollment.unwrap_or(0).max(0);
+    let project = ctx
+        .db
+        .create_study_project(
+            payload.organization_id,
+            payload.name.trim(),
+            payload.therapeutic_area.trim(),
+            payload.protocol_code.as_deref().map(str::trim),
+            planned_enrollment,
+            payload.clinicaltrials_gov_id.as_deref().map(str::trim),
+            payload.study_summary.as_deref().unwrap_or("").trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(project)))
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyPhaseTransitionRequest {
+    next_phase: String,
+    notes: Option<String>,
+}
+
+async fn transition_study_phase(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<StudyPhaseTransitionRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    let updated = ctx
+        .db
+        .transition_study_phase(
+            project_id,
+            payload.next_phase.trim(),
+            Some(user.user_id),
+            payload.notes.as_deref().unwrap_or("").trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(updated))
+}
+
+async fn get_study_readiness(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let readiness = ctx
+        .db
+        .study_readiness(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(readiness))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateStudyCrfTemplateRequest {
+    name: String,
+    description: Option<String>,
+    applicable_phase: Option<String>,
+}
+
+async fn create_study_crf_template(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateStudyCrfTemplateRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if payload.name.trim().is_empty() {
+        return Err(ApiError::Validation("name is required".to_string()));
+    }
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    let template = ctx
+        .db
+        .create_study_crf_template(
+            project_id,
+            payload.name.trim(),
+            payload.description.as_deref().unwrap_or("").trim(),
+            payload
+                .applicable_phase
+                .as_deref()
+                .unwrap_or("active")
+                .trim(),
+            Some(user.user_id),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(template)))
+}
+
+async fn list_study_crf_templates(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let templates = ctx
+        .db
+        .list_study_crf_templates(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(templates))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddStudyCrfFieldRequest {
+    field_key: String,
+    field_label: String,
+    field_type: String,
+    required: Option<bool>,
+    options_json: Option<String>,
+    display_order: Option<i32>,
+}
+
+async fn add_study_crf_field(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(template_id): Path<Uuid>,
+    Json(payload): Json<AddStudyCrfFieldRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    if payload.field_key.trim().is_empty() || payload.field_label.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "field_key and field_label are required".to_string(),
+        ));
+    }
+    let field = ctx
+        .db
+        .add_study_crf_field(
+            template_id,
+            payload.field_key.trim(),
+            payload.field_label.trim(),
+            payload.field_type.trim(),
+            payload.required.unwrap_or(false),
+            payload.options_json.as_deref().unwrap_or("[]").trim(),
+            payload.display_order.unwrap_or(0),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(field)))
+}
+
+async fn list_study_crf_fields(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(template_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let fields = ctx
+        .db
+        .list_study_crf_fields(template_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(fields))
+}
+
+async fn publish_study_crf_template(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(template_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    let updated = ctx
+        .db
+        .publish_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(updated))
 }
 
 #[derive(Debug, Deserialize)]
@@ -639,6 +930,58 @@ struct AppCreateMediaTicketForm {
     mime_type: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct StudyWorkbenchQuery {
+    admin_email: Option<String>,
+    organization_id: Option<String>,
+    project_id: Option<String>,
+    template_id: Option<String>,
+    notice: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCreateForm {
+    admin_email: String,
+    organization_id: String,
+    study_name: String,
+    therapeutic_area: String,
+    protocol_code: String,
+    planned_enrollment: String,
+    clinicaltrials_gov_id: String,
+    study_summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyPhaseTransitionForm {
+    admin_email: String,
+    next_phase: String,
+    notes: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCrfTemplateForm {
+    admin_email: String,
+    name: String,
+    description: String,
+    applicable_phase: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCrfFieldForm {
+    admin_email: String,
+    field_key: String,
+    field_label: String,
+    field_type: String,
+    required: Option<String>,
+    options_json: String,
+    display_order: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCrfPublishForm {
+    admin_email: String,
+}
+
 async fn redirect_ui_home() -> Redirect {
     Redirect::to("/ui/app")
 }
@@ -942,6 +1285,7 @@ async fn render_app_dashboard(
   <p><strong>Admin:</strong> {}</p>
   <p><strong>Organization:</strong> {}</p>
   <p><strong>Project:</strong> {}</p>
+  <p><a href="/ui/studies">Open study lifecycle + CRF workbench</a></p>
   <p><a href="/ui/dua?admin_email={}">Open dedicated DUA console</a></p>
 </section>
 
@@ -1472,6 +1816,597 @@ async fn submit_app_create_media_ticket(
     Ok(Html(render_cingulum_page(
         "Media Upload Ticket Created",
         body,
+    )))
+}
+
+async fn render_study_workbench(
+    State(ctx): State<AppContext>,
+    Query(query): Query<StudyWorkbenchQuery>,
+) -> Result<Html<String>, ApiError> {
+    let admin_email = query
+        .admin_email
+        .unwrap_or_else(|| "arcot@cingulum.org".to_string());
+    let admin_email_q = query_escape(admin_email.trim());
+    let organizations = ctx
+        .db
+        .list_organizations_for_email(admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    let selected_org_id = query
+        .organization_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .or_else(|| organizations.first().map(|o| o.id));
+    let projects = if let Some(org_id) = selected_org_id {
+        ctx.db
+            .list_projects_by_organization(org_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let selected_project_id = query
+        .project_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .filter(|pid| projects.iter().any(|p| p.id == *pid))
+        .or_else(|| projects.first().map(|p| p.id));
+    let readiness = if let Some(project_id) = selected_project_id {
+        Some(
+            ctx.db
+                .study_readiness(project_id)
+                .await
+                .map_err(ApiError::internal)?,
+        )
+    } else {
+        None
+    };
+    let phase_events = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_phase_events(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let templates = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_crf_templates(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let selected_template_id = query
+        .template_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .filter(|tid| templates.iter().any(|t| t.id == *tid))
+        .or_else(|| templates.first().map(|t| t.id));
+    let fields = if let Some(template_id) = selected_template_id {
+        ctx.db
+            .list_study_crf_fields(template_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let notice_html = query
+        .notice
+        .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
+        .unwrap_or_default();
+
+    let study_rows_html = if projects.is_empty() {
+        "<li>No studies yet for this organization.</li>".to_string()
+    } else {
+        projects
+            .iter()
+            .map(|project| {
+                let selected_org = selected_org_id
+                    .map(|org_id| format!("&organization_id={org_id}"))
+                    .unwrap_or_default();
+                format!(
+                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
+                    admin_email_q,
+                    selected_org,
+                    project.id,
+                    html_escape(&project.name),
+                    html_escape(&project.lifecycle_phase),
+                    html_escape(project.hex_code.as_deref().unwrap_or("pending")),
+                    project.planned_enrollment
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let readiness_html = if let Some(readiness) = readiness {
+        format!(
+            "<p><strong>Phase:</strong> {} · <strong>Sites:</strong> {} · <strong>Patients:</strong> {} · <strong>Encounters:</strong> {} · <strong>CRFs Published:</strong> {} · <strong>CRFs Draft:</strong> {}</p>",
+            html_escape(&readiness.lifecycle_phase),
+            readiness.total_sites,
+            readiness.total_patients,
+            readiness.total_encounters,
+            readiness.published_crf_templates,
+            readiness.draft_crf_templates
+        )
+    } else {
+        "<p class=\"muted\">Select a study to view readiness.</p>".to_string()
+    };
+
+    let phase_events_html = if phase_events.is_empty() {
+        "<li>No phase transitions recorded yet.</li>".to_string()
+    } else {
+        phase_events
+            .iter()
+            .map(|event| {
+                format!(
+                    "<li><strong>{}</strong> → <strong>{}</strong> at {} <small>({})</small></li>",
+                    html_escape(&event.previous_phase),
+                    html_escape(&event.new_phase),
+                    event.created_at,
+                    html_escape(&event.notes)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let templates_html = if templates.is_empty() {
+        "<li>No CRF templates yet.</li>".to_string()
+    } else {
+        templates
+            .iter()
+            .map(|template| {
+                let selected_org = selected_org_id
+                    .map(|org_id| format!("&organization_id={org_id}"))
+                    .unwrap_or_default();
+                let selected_project = selected_project_id
+                    .map(|project_id| format!("&project_id={project_id}"))
+                    .unwrap_or_default();
+                let publish_button = if template.status == "published" {
+                    "<small>published</small>".to_string()
+                } else {
+                    format!(
+                        r#"<form method="post" action="/ui/studies/templates/{}/publish" style="display:inline;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <button type="submit">Publish</button>
+</form>"#,
+                        template.id,
+                        html_escape(admin_email.trim())
+                    )
+                };
+                format!(
+                    r#"<li><a href="/ui/studies?admin_email={}{}{}&template_id={}">{}</a> <small>(status: {} · phase: {})</small> {}</li>"#,
+                    admin_email_q,
+                    selected_org,
+                    selected_project,
+                    template.id,
+                    html_escape(&template.name),
+                    html_escape(&template.status),
+                    html_escape(&template.applicable_phase),
+                    publish_button
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let fields_html = if fields.is_empty() {
+        "<li>No fields yet for selected template.</li>".to_string()
+    } else {
+        fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "<li><strong>{}</strong> ({}) <small>key={} required={} options={}</small></li>",
+                    html_escape(&field.field_label),
+                    html_escape(&field.field_type),
+                    html_escape(&field.field_key),
+                    field.required,
+                    html_escape(&field.options_json)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_project_value = selected_project_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let selected_template_value = selected_template_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let phase_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/phase"))
+        .unwrap_or_else(|| "#".to_string());
+    let crf_template_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/crf-template"))
+        .unwrap_or_else(|| "#".to_string());
+    let crf_field_action = selected_template_id
+        .map(|id| format!("/ui/studies/templates/{id}/field"))
+        .unwrap_or_else(|| "#".to_string());
+
+    let body = format!(
+        r#"
+<h1>Study Lifecycle + CRF Workbench</h1>
+<p class="muted">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
+{}
+
+<section class="card">
+  <h2>Workspace</h2>
+  <p><strong>Admin:</strong> {}</p>
+  <p><strong>Organization:</strong> {}</p>
+  <p><strong>Study:</strong> {}</p>
+  <p><a href="/ui/app">Back to unified app dashboard</a></p>
+</section>
+
+<section class="card">
+  <h2>1) Create Study (clinicaltrials.gov-style metadata + internal ops)</h2>
+  <form method="post" action="/ui/studies/create">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Organization ID</label>
+    <input name="organization_id" value="{}" required />
+    <label>Study name</label>
+    <input name="study_name" placeholder="Acute Stroke Registry 2026" required />
+    <label>Therapeutic area</label>
+    <input name="therapeutic_area" placeholder="Neurology" required />
+    <label>Protocol code</label>
+    <input name="protocol_code" placeholder="VIR-STR-26-01" />
+    <label>Planned enrollment</label>
+    <input name="planned_enrollment" value="250" />
+    <label>ClinicalTrials.gov ID (optional)</label>
+    <input name="clinicaltrials_gov_id" placeholder="NCT01234567" />
+    <label>Study summary</label>
+    <textarea name="study_summary" placeholder="Primary objective, key endpoints, and operational plan"></textarea>
+    <button type="submit">Create Study in Pre-Study Phase</button>
+  </form>
+  <h3 style="margin-top:1rem;">Study portfolio</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>2) Lifecycle Transition</h2>
+  {}
+  <form method="post" action="{}">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Next phase</label>
+    <select name="next_phase" required>
+      <option value="initiated">initiated</option>
+      <option value="active">active</option>
+      <option value="monitoring">monitoring</option>
+      <option value="closed">closed</option>
+    </select>
+    <label>Transition notes</label>
+    <input name="notes" placeholder="Reason for phase transition" />
+    <button type="submit">Apply Phase Transition</button>
+  </form>
+  <h3 style="margin-top:1rem;">Phase events</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>3) CRF Template Design</h2>
+  <form method="post" action="{}">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Template name</label>
+    <input name="name" placeholder="Baseline Case Report Form" required />
+    <label>Description</label>
+    <input name="description" placeholder="Visit 1 baseline data capture" />
+    <label>Applicable phase</label>
+    <select name="applicable_phase" required>
+      <option value="pre_study">pre_study</option>
+      <option value="initiated">initiated</option>
+      <option value="active">active</option>
+      <option value="monitoring">monitoring</option>
+      <option value="closed">closed</option>
+    </select>
+    <button type="submit">Create CRF Template (Draft)</button>
+  </form>
+  <h3 style="margin-top:1rem;">CRF templates</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>4) CRF Field Builder</h2>
+  <p><strong>Selected template:</strong> {}</p>
+  <form method="post" action="{}">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Field key</label>
+    <input name="field_key" placeholder="systolic_bp" required />
+    <label>Field label</label>
+    <input name="field_label" placeholder="Systolic blood pressure" required />
+    <label>Field type</label>
+    <select name="field_type" required>
+      <option value="text">text</option>
+      <option value="textarea">textarea</option>
+      <option value="number">number</option>
+      <option value="date">date</option>
+      <option value="datetime">datetime</option>
+      <option value="boolean">boolean</option>
+      <option value="single_select">single_select</option>
+      <option value="multi_select">multi_select</option>
+    </select>
+    <label>Required</label>
+    <input type="checkbox" name="required" value="true" />
+    <label>Options JSON (for select fields)</label>
+    <input name="options_json" placeholder='["Yes","No"]' />
+    <label>Display order</label>
+    <input name="display_order" value="0" />
+    <button type="submit">Add Field</button>
+  </form>
+  <h3 style="margin-top:1rem;">Fields</h3>
+  <ul>{}</ul>
+</section>
+"#,
+        notice_html,
+        html_escape(admin_email.trim()),
+        if selected_org_value.is_empty() {
+            "<span class=\"muted\">none selected</span>".to_string()
+        } else {
+            selected_org_value.clone()
+        },
+        if selected_project_value.is_empty() {
+            "<span class=\"muted\">none selected</span>".to_string()
+        } else {
+            selected_project_value.clone()
+        },
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        study_rows_html,
+        readiness_html,
+        phase_action,
+        html_escape(admin_email.trim()),
+        phase_events_html,
+        crf_template_action,
+        html_escape(admin_email.trim()),
+        templates_html,
+        if selected_template_value.is_empty() {
+            "<span class=\"muted\">none selected</span>".to_string()
+        } else {
+            selected_template_value
+        },
+        crf_field_action,
+        html_escape(admin_email.trim()),
+        fields_html
+    );
+    Ok(Html(render_cingulum_page("Study Workbench", body)))
+}
+
+async fn submit_create_study_from_ui(
+    State(ctx): State<AppContext>,
+    Form(form): Form<StudyCreateForm>,
+) -> Result<Redirect, ApiError> {
+    let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    if form.study_name.trim().is_empty() {
+        return Err(ApiError::Validation("study_name is required".to_string()));
+    }
+    let planned_enrollment = form
+        .planned_enrollment
+        .trim()
+        .parse::<i32>()
+        .unwrap_or(0)
+        .max(0);
+    let study = ctx
+        .db
+        .create_study_project(
+            organization_id,
+            form.study_name.trim(),
+            form.therapeutic_area.trim(),
+            optional_non_empty(form.protocol_code.trim()),
+            planned_enrollment,
+            optional_non_empty(form.clinicaltrials_gov_id.trim()),
+            form.study_summary.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        organization_id,
+        study.id,
+        query_escape("Study created in pre_study phase")
+    )))
+}
+
+async fn submit_study_phase_transition(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyPhaseTransitionForm>,
+) -> Result<Redirect, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let changed_by_user_id = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+    ctx.db
+        .transition_study_phase(
+            project_id,
+            form.next_phase.trim(),
+            changed_by_user_id,
+            form.notes.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        query_escape("Study phase updated")
+    )))
+}
+
+async fn submit_create_study_crf_template(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyCrfTemplateForm>,
+) -> Result<Redirect, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let created_by_user_id = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+    let template = ctx
+        .db
+        .create_study_crf_template(
+            project_id,
+            form.name.trim(),
+            form.description.trim(),
+            form.applicable_phase.trim(),
+            created_by_user_id,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        template.id,
+        query_escape("CRF template created")
+    )))
+}
+
+async fn submit_add_study_crf_field(
+    State(ctx): State<AppContext>,
+    Path(template_id): Path<Uuid>,
+    Form(form): Form<StudyCrfFieldForm>,
+) -> Result<Redirect, ApiError> {
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let options_json = normalize_options_json_input(form.options_json.trim());
+    let display_order = form.display_order.trim().parse::<i32>().unwrap_or(0).max(0);
+    ctx.db
+        .add_study_crf_field(
+            template_id,
+            form.field_key.trim(),
+            form.field_label.trim(),
+            form.field_type.trim(),
+            form.required.is_some(),
+            &options_json,
+            display_order,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        template_id,
+        query_escape("CRF field added")
+    )))
+}
+
+async fn submit_publish_study_crf_template(
+    State(ctx): State<AppContext>,
+    Path(template_id): Path<Uuid>,
+    Form(form): Form<StudyCrfPublishForm>,
+) -> Result<Redirect, ApiError> {
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    ctx.db
+        .publish_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        template_id,
+        query_escape("CRF template published")
     )))
 }
 
@@ -2522,6 +3457,34 @@ fn parse_uuid_field(raw: &str, field_name: &str) -> Result<Uuid, ApiError> {
     raw.trim()
         .parse::<Uuid>()
         .map_err(|_| ApiError::Validation(format!("{field_name} must be a valid UUID")))
+}
+
+fn optional_non_empty(input: &str) -> Option<&str> {
+    if input.trim().is_empty() {
+        None
+    } else {
+        Some(input.trim())
+    }
+}
+
+fn normalize_options_json_input(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return "[]".to_string();
+    }
+    if trimmed.starts_with('[') {
+        if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+            return trimmed.to_string();
+        }
+        return "[]".to_string();
+    }
+    let values = trimmed
+        .split(',')
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
 }
 
 fn query_escape(input: &str) -> String {

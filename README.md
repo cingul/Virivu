@@ -19,6 +19,8 @@ It is designed to reduce operational friction in clinical and translational rese
 - Browser-accessible DUA drafting/signing pages and PDF export endpoints
 - In-browser organization setup for end-to-end DUA onboarding
 - Unified web app dashboard at `/ui/app` that ties operations, patient workflows, analytics, and legal flows together
+- Study lifecycle + CRF workbench at `/ui/studies` for pre-study setup, phase transitions, and structured case report form design
+- Phase-gated study activation logic (requires site + published CRF before initiation, and enrolled patient before active phase)
 
 ## Core Stack (v1 scaffold)
 

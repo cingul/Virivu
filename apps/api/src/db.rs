@@ -8,7 +8,8 @@ use uuid::Uuid;
 use crate::models::{
     DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite, MediaUploadTicket,
     Organization, OrganizationSummaryRow, OutboundEmail, Patient, Project, ProjectProgressRow,
-    Provider, Site, User, UserMembership,
+    Provider, Site, StudyCrfField, StudyCrfTemplate, StudyPhaseEvent, StudyReadiness, User,
+    UserMembership,
 };
 
 #[derive(Clone)]
@@ -62,7 +63,19 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT id, organization_id, name, therapeutic_area, hex_code, created_at
+                SELECT
+                    id,
+                    organization_id,
+                    name,
+                    therapeutic_area,
+                    protocol_code,
+                    lifecycle_phase,
+                    planned_enrollment,
+                    clinicaltrials_gov_id,
+                    study_summary,
+                    phase_changed_at,
+                    hex_code,
+                    created_at
                 FROM projects
                 WHERE organization_id = $1
                 ORDER BY created_at DESC
@@ -77,6 +90,12 @@ impl Db {
                 organization_id: r.get("organization_id"),
                 name: r.get("name"),
                 therapeutic_area: r.get("therapeutic_area"),
+                protocol_code: r.get("protocol_code"),
+                lifecycle_phase: r.get("lifecycle_phase"),
+                planned_enrollment: r.get("planned_enrollment"),
+                clinicaltrials_gov_id: r.get("clinicaltrials_gov_id"),
+                study_summary: r.get("study_summary"),
+                phase_changed_at: r.get("phase_changed_at"),
                 hex_code: r.get("hex_code"),
                 created_at: r.get("created_at"),
             })
@@ -125,7 +144,19 @@ impl Db {
                 r#"
                 INSERT INTO projects (organization_id, name, therapeutic_area, hex_code)
                 VALUES ($1, $2, $3, $4)
-                RETURNING id, organization_id, name, therapeutic_area, hex_code, created_at
+                RETURNING
+                    id,
+                    organization_id,
+                    name,
+                    therapeutic_area,
+                    protocol_code,
+                    lifecycle_phase,
+                    planned_enrollment,
+                    clinicaltrials_gov_id,
+                    study_summary,
+                    phase_changed_at,
+                    hex_code,
+                    created_at
                 "#,
                 &[&organization_id, &name, &therapeutic_area, &hex_code],
             )
@@ -135,9 +166,433 @@ impl Db {
             organization_id: row.get("organization_id"),
             name: row.get("name"),
             therapeutic_area: row.get("therapeutic_area"),
+            protocol_code: row.get("protocol_code"),
+            lifecycle_phase: row.get("lifecycle_phase"),
+            planned_enrollment: row.get("planned_enrollment"),
+            clinicaltrials_gov_id: row.get("clinicaltrials_gov_id"),
+            study_summary: row.get("study_summary"),
+            phase_changed_at: row.get("phase_changed_at"),
             hex_code: row.get("hex_code"),
             created_at: row.get("created_at"),
         })
+    }
+
+    pub async fn create_study_project(
+        &self,
+        organization_id: Uuid,
+        name: &str,
+        therapeutic_area: &str,
+        protocol_code: Option<&str>,
+        planned_enrollment: i32,
+        clinicaltrials_gov_id: Option<&str>,
+        study_summary: &str,
+    ) -> anyhow::Result<Project> {
+        let client = self.pool.get().await?;
+        let org_hex = self
+            .ensure_organization_hex_code(&client, organization_id)
+            .await?;
+        let hex_code = self.generate_unique_project_hex(&client, &org_hex).await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO projects (
+                    organization_id,
+                    name,
+                    therapeutic_area,
+                    protocol_code,
+                    planned_enrollment,
+                    clinicaltrials_gov_id,
+                    study_summary,
+                    hex_code
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING
+                    id,
+                    organization_id,
+                    name,
+                    therapeutic_area,
+                    protocol_code,
+                    lifecycle_phase,
+                    planned_enrollment,
+                    clinicaltrials_gov_id,
+                    study_summary,
+                    phase_changed_at,
+                    hex_code,
+                    created_at
+                "#,
+                &[
+                    &organization_id,
+                    &name,
+                    &therapeutic_area,
+                    &protocol_code,
+                    &planned_enrollment,
+                    &clinicaltrials_gov_id,
+                    &study_summary,
+                    &hex_code,
+                ],
+            )
+            .await?;
+        Ok(row_to_project(&row))
+    }
+
+    pub async fn study_readiness(&self, project_id: Uuid) -> anyhow::Result<StudyReadiness> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                SELECT
+                    p.lifecycle_phase,
+                    (SELECT COUNT(*)::BIGINT FROM sites s WHERE s.project_id = p.id) AS total_sites,
+                    (SELECT COUNT(*)::BIGINT FROM patients pt WHERE pt.project_id = p.id) AS total_patients,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM encounters e
+                        JOIN patients pt ON pt.id = e.patient_id
+                        WHERE pt.project_id = p.id
+                    ) AS total_encounters,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM study_crf_templates t
+                        WHERE t.project_id = p.id AND t.status = 'published'
+                    ) AS published_crf_templates,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM study_crf_templates t
+                        WHERE t.project_id = p.id AND t.status = 'draft'
+                    ) AS draft_crf_templates
+                FROM projects p
+                WHERE p.id = $1
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(StudyReadiness {
+            lifecycle_phase: row.get("lifecycle_phase"),
+            total_sites: row.get("total_sites"),
+            total_patients: row.get("total_patients"),
+            total_encounters: row.get("total_encounters"),
+            published_crf_templates: row.get("published_crf_templates"),
+            draft_crf_templates: row.get("draft_crf_templates"),
+        })
+    }
+
+    pub async fn transition_study_phase(
+        &self,
+        project_id: Uuid,
+        new_phase: &str,
+        changed_by_user_id: Option<Uuid>,
+        notes: &str,
+    ) -> anyhow::Result<Project> {
+        let target_phase = normalize_study_phase(new_phase)
+            .ok_or_else(|| anyhow!("invalid lifecycle phase: {new_phase}"))?;
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT lifecycle_phase FROM projects WHERE id = $1",
+                &[&project_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("project not found"))?;
+        let current_phase: String = row.get("lifecycle_phase");
+        if current_phase == target_phase {
+            return self
+                .get_project(project_id)
+                .await?
+                .ok_or_else(|| anyhow!("project not found"));
+        }
+        if !is_valid_phase_transition(&current_phase, &target_phase) {
+            return Err(anyhow!(
+                "invalid phase transition from {current_phase} to {target_phase}"
+            ));
+        }
+
+        let readiness = self.study_readiness(project_id).await?;
+        if target_phase == "initiated"
+            && (readiness.total_sites < 1 || readiness.published_crf_templates < 1)
+        {
+            return Err(anyhow!(
+                "cannot initiate study without at least one site and one published CRF template"
+            ));
+        }
+        if target_phase == "active" && readiness.total_patients < 1 {
+            return Err(anyhow!(
+                "cannot set study active without at least one enrolled patient"
+            ));
+        }
+
+        client
+            .execute(
+                r#"
+                UPDATE projects
+                SET lifecycle_phase = $2, phase_changed_at = NOW()
+                WHERE id = $1
+                "#,
+                &[&project_id, &target_phase],
+            )
+            .await?;
+        client
+            .execute(
+                r#"
+                INSERT INTO study_phase_events (
+                    project_id,
+                    previous_phase,
+                    new_phase,
+                    changed_by_user_id,
+                    notes
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                "#,
+                &[
+                    &project_id,
+                    &current_phase,
+                    &target_phase,
+                    &changed_by_user_id,
+                    &notes,
+                ],
+            )
+            .await?;
+        self.get_project(project_id)
+            .await?
+            .ok_or_else(|| anyhow!("project not found"))
+    }
+
+    pub async fn list_study_phase_events(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyPhaseEvent>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    previous_phase,
+                    new_phase,
+                    changed_by_user_id,
+                    notes,
+                    created_at
+                FROM study_phase_events
+                WHERE project_id = $1
+                ORDER BY created_at DESC
+                LIMIT 25
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_study_phase_event).collect())
+    }
+
+    pub async fn create_study_crf_template(
+        &self,
+        project_id: Uuid,
+        name: &str,
+        description: &str,
+        applicable_phase: &str,
+        created_by_user_id: Option<Uuid>,
+    ) -> anyhow::Result<StudyCrfTemplate> {
+        let phase = normalize_study_phase(applicable_phase)
+            .ok_or_else(|| anyhow!("invalid applicable_phase"))?;
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO study_crf_templates (
+                    project_id,
+                    name,
+                    description,
+                    applicable_phase,
+                    created_by_user_id
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING
+                    id,
+                    project_id,
+                    name,
+                    description,
+                    version,
+                    status,
+                    applicable_phase,
+                    created_by_user_id,
+                    created_at,
+                    updated_at
+                "#,
+                &[
+                    &project_id,
+                    &name,
+                    &description,
+                    &phase,
+                    &created_by_user_id,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_crf_template(&row))
+    }
+
+    pub async fn list_study_crf_templates(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyCrfTemplate>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    name,
+                    description,
+                    version,
+                    status,
+                    applicable_phase,
+                    created_by_user_id,
+                    created_at,
+                    updated_at
+                FROM study_crf_templates
+                WHERE project_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_study_crf_template).collect())
+    }
+
+    pub async fn get_study_crf_template(
+        &self,
+        template_id: Uuid,
+    ) -> anyhow::Result<Option<StudyCrfTemplate>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    name,
+                    description,
+                    version,
+                    status,
+                    applicable_phase,
+                    created_by_user_id,
+                    created_at,
+                    updated_at
+                FROM study_crf_templates
+                WHERE id = $1
+                "#,
+                &[&template_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_study_crf_template))
+    }
+
+    pub async fn publish_study_crf_template(
+        &self,
+        template_id: Uuid,
+    ) -> anyhow::Result<StudyCrfTemplate> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                UPDATE study_crf_templates
+                SET status = 'published', updated_at = NOW()
+                WHERE id = $1
+                RETURNING
+                    id,
+                    project_id,
+                    name,
+                    description,
+                    version,
+                    status,
+                    applicable_phase,
+                    created_by_user_id,
+                    created_at,
+                    updated_at
+                "#,
+                &[&template_id],
+            )
+            .await?;
+        Ok(row_to_study_crf_template(&row))
+    }
+
+    pub async fn add_study_crf_field(
+        &self,
+        template_id: Uuid,
+        field_key: &str,
+        field_label: &str,
+        field_type: &str,
+        required: bool,
+        options_json: &str,
+        display_order: i32,
+    ) -> anyhow::Result<StudyCrfField> {
+        if normalize_crf_field_type(field_type).is_none() {
+            return Err(anyhow!("invalid field_type"));
+        }
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO study_crf_fields (
+                    template_id,
+                    field_key,
+                    field_label,
+                    field_type,
+                    required,
+                    options_json,
+                    display_order
+                )
+                VALUES ($1, $2, $3, $4, $5, $6::JSONB, $7)
+                RETURNING
+                    id,
+                    template_id,
+                    field_key,
+                    field_label,
+                    field_type,
+                    required,
+                    options_json::TEXT AS options_json,
+                    display_order,
+                    created_at
+                "#,
+                &[
+                    &template_id,
+                    &field_key,
+                    &field_label,
+                    &field_type,
+                    &required,
+                    &options_json,
+                    &display_order,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_crf_field(&row))
+    }
+
+    pub async fn list_study_crf_fields(
+        &self,
+        template_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyCrfField>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    template_id,
+                    field_key,
+                    field_label,
+                    field_type,
+                    required,
+                    options_json::TEXT AS options_json,
+                    display_order,
+                    created_at
+                FROM study_crf_fields
+                WHERE template_id = $1
+                ORDER BY display_order ASC, created_at ASC
+                "#,
+                &[&template_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_study_crf_field).collect())
     }
 
     pub async fn create_site(
@@ -247,7 +702,19 @@ impl Db {
         let row = client
             .query_opt(
                 r#"
-                SELECT id, organization_id, name, therapeutic_area, hex_code, created_at
+                SELECT
+                    id,
+                    organization_id,
+                    name,
+                    therapeutic_area,
+                    protocol_code,
+                    lifecycle_phase,
+                    planned_enrollment,
+                    clinicaltrials_gov_id,
+                    study_summary,
+                    phase_changed_at,
+                    hex_code,
+                    created_at
                 FROM projects
                 WHERE id = $1
                 "#,
@@ -260,6 +727,12 @@ impl Db {
             organization_id: r.get("organization_id"),
             name: r.get("name"),
             therapeutic_area: r.get("therapeutic_area"),
+            protocol_code: r.get("protocol_code"),
+            lifecycle_phase: r.get("lifecycle_phase"),
+            planned_enrollment: r.get("planned_enrollment"),
+            clinicaltrials_gov_id: r.get("clinicaltrials_gov_id"),
+            study_summary: r.get("study_summary"),
+            phase_changed_at: r.get("phase_changed_at"),
             hex_code: r.get("hex_code"),
             created_at: r.get("created_at"),
         }))
@@ -1572,6 +2045,43 @@ fn normalize_encounter_type(raw: &str) -> Option<String> {
     }
 }
 
+fn normalize_study_phase(raw: &str) -> Option<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "pre_study" => Some("pre_study".to_string()),
+        "initiated" => Some("initiated".to_string()),
+        "active" => Some("active".to_string()),
+        "monitoring" => Some("monitoring".to_string()),
+        "closed" => Some("closed".to_string()),
+        _ => None,
+    }
+}
+
+fn is_valid_phase_transition(current: &str, target: &str) -> bool {
+    matches!(
+        (current, target),
+        ("pre_study", "initiated")
+            | ("initiated", "active")
+            | ("active", "monitoring")
+            | ("active", "closed")
+            | ("monitoring", "active")
+            | ("monitoring", "closed")
+    )
+}
+
+fn normalize_crf_field_type(raw: &str) -> Option<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "text" => Some("text".to_string()),
+        "textarea" => Some("textarea".to_string()),
+        "number" => Some("number".to_string()),
+        "date" => Some("date".to_string()),
+        "datetime" => Some("datetime".to_string()),
+        "boolean" => Some("boolean".to_string()),
+        "single_select" => Some("single_select".to_string()),
+        "multi_select" => Some("multi_select".to_string()),
+        _ => None,
+    }
+}
+
 fn encounter_range(encounter_type: &str) -> (i32, i32) {
     match encounter_type {
         "outpatient" => (0x000, 0x2FF),
@@ -1655,6 +2165,23 @@ fn row_to_organization(row: &Row) -> Organization {
     }
 }
 
+fn row_to_project(row: &Row) -> Project {
+    Project {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        name: row.get("name"),
+        therapeutic_area: row.get("therapeutic_area"),
+        protocol_code: row.get("protocol_code"),
+        lifecycle_phase: row.get("lifecycle_phase"),
+        planned_enrollment: row.get("planned_enrollment"),
+        clinicaltrials_gov_id: row.get("clinicaltrials_gov_id"),
+        study_summary: row.get("study_summary"),
+        phase_changed_at: row.get("phase_changed_at"),
+        hex_code: row.get("hex_code"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn row_to_patient(row: &Row) -> Patient {
     Patient {
         id: row.get("id"),
@@ -1665,6 +2192,47 @@ fn row_to_patient(row: &Row) -> Patient {
         email: row.get("email"),
         date_of_birth: row.get("date_of_birth"),
         hex_code: row.get("hex_code"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_study_phase_event(row: &Row) -> StudyPhaseEvent {
+    StudyPhaseEvent {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        previous_phase: row.get("previous_phase"),
+        new_phase: row.get("new_phase"),
+        changed_by_user_id: row.get("changed_by_user_id"),
+        notes: row.get("notes"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_study_crf_template(row: &Row) -> StudyCrfTemplate {
+    StudyCrfTemplate {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        version: row.get("version"),
+        status: row.get("status"),
+        applicable_phase: row.get("applicable_phase"),
+        created_by_user_id: row.get("created_by_user_id"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn row_to_study_crf_field(row: &Row) -> StudyCrfField {
+    StudyCrfField {
+        id: row.get("id"),
+        template_id: row.get("template_id"),
+        field_key: row.get("field_key"),
+        field_label: row.get("field_label"),
+        field_type: row.get("field_type"),
+        required: row.get("required"),
+        options_json: row.get("options_json"),
+        display_order: row.get("display_order"),
         created_at: row.get("created_at"),
     }
 }

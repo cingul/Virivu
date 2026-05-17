@@ -16,6 +16,12 @@ pub struct Project {
     pub organization_id: Uuid,
     pub name: String,
     pub therapeutic_area: String,
+    pub protocol_code: Option<String>,
+    pub lifecycle_phase: String,
+    pub planned_enrollment: i32,
+    pub clinicaltrials_gov_id: Option<String>,
+    pub study_summary: String,
+    pub phase_changed_at: DateTime<Utc>,
     pub hex_code: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -62,6 +68,54 @@ pub struct Encounter {
     pub encounter_type: String,
     pub notes: String,
     pub hex_code: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyReadiness {
+    pub lifecycle_phase: String,
+    pub total_sites: i64,
+    pub total_patients: i64,
+    pub total_encounters: i64,
+    pub published_crf_templates: i64,
+    pub draft_crf_templates: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyPhaseEvent {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub previous_phase: String,
+    pub new_phase: String,
+    pub changed_by_user_id: Option<Uuid>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCrfTemplate {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub version: i32,
+    pub status: String,
+    pub applicable_phase: String,
+    pub created_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCrfField {
+    pub id: Uuid,
+    pub template_id: Uuid,
+    pub field_key: String,
+    pub field_label: String,
+    pub field_type: String,
+    pub required: bool,
+    pub options_json: String,
+    pub display_order: i32,
     pub created_at: DateTime<Utc>,
 }
 
