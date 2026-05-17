@@ -2,7 +2,7 @@ use axum::{
     extract::{Form, Path, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{from_fn_with_state, Next},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -52,6 +52,7 @@ pub fn router(ctx: AppContext) -> Router {
             "/ui/dua/create-organization",
             post(submit_create_organization_from_ui),
         )
+        .route("/ui/dua/open-agreement", post(open_dua_agreement_workspace))
         .route("/ui/dua/draft", post(render_create_dua_from_form))
         .route(
             "/ui/dua/sign/{signing_token}",
@@ -488,6 +489,11 @@ struct DuaCreateOrganizationForm {
     organization_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct DuaOpenAgreementForm {
+    agreement_id: String,
+}
+
 async fn render_dua_admin_page(
     State(ctx): State<AppContext>,
     Query(query): Query<DuaAdminPageQuery>,
@@ -575,6 +581,14 @@ async fn render_dua_admin_page(
     </form>
     <h3>Organizations available for this admin</h3>
     <ul>{}</ul>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0;">Return to existing agreement workspace</h2>
+    <form method="post" action="/ui/dua/open-agreement">
+      <label>Agreement ID (UUID)</label>
+      <input name="agreement_id" placeholder="agreement-uuid" required />
+      <button type="submit">Open Agreement Workspace</button>
+    </form>
   </div>
   <div class="card">
     <h2 style="margin-top:0;">Step 2: Draft DUA</h2>
@@ -671,6 +685,17 @@ async fn submit_create_organization_from_ui(
         form.admin_email.trim(),
         organization.id
     )))
+}
+
+async fn open_dua_agreement_workspace(
+    Form(form): Form<DuaOpenAgreementForm>,
+) -> Result<Redirect, ApiError> {
+    let agreement_id = form
+        .agreement_id
+        .trim()
+        .parse::<Uuid>()
+        .map_err(|_| ApiError::Validation("agreement_id must be a valid UUID".to_string()))?;
+    Ok(Redirect::to(&format!("/ui/dua/{}", agreement_id)))
 }
 
 async fn render_create_dua_from_form(
@@ -773,6 +798,7 @@ async fn render_dua_hospital_sign_page(
   <p><strong>Hospital:</strong> {}</p>
   <p><strong>Counterparty:</strong> {}</p>
   <p><strong>Agreement Version:</strong> {}</p>
+  <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
   <form method="post" action="/ui/dua/sign/{}">
     <label>Signer name</label><br/>
     <input name="signer_name" required style="width:100%;padding:.5rem;" /><br/><br/>
@@ -791,6 +817,7 @@ async fn render_dua_hospital_sign_page(
         html_escape(&agreement.hospital_name),
         html_escape(&agreement.counterparty_name),
         html_escape(&agreement.agreement_version),
+        agreement.id,
         agreement.hospital_signing_token,
         html_escape(&agreement.hospital_name),
     )))
@@ -830,9 +857,12 @@ async fn submit_dua_hospital_sign_form(
   <h1>Signature received</h1>
   <p>Thank you. Your hospital signature has been recorded for agreement <strong>{}</strong>.</p>
   <p>Current status: <strong>{}</strong></p>
+  <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
+  <p><a href="/ui/dua">Back to DUA home</a></p>
 </body></html>"#,
         agreement.id,
-        html_escape(&agreement.status)
+        html_escape(&agreement.status),
+        agreement.id
     )))
 }
 

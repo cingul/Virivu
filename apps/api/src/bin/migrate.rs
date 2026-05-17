@@ -4,10 +4,8 @@ use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 const MIGRATION_INIT_VARIANTS: &[&str] = &["2026-05-17-000001", "2026-05-17-000001_init"];
-const MIGRATION_DUA_VARIANTS: &[&str] = &[
-    "2026-05-17-000003",
-    "2026-05-17-000003_data_use_agreements",
-];
+const MIGRATION_DUA_VARIANTS: &[&str] =
+    &["2026-05-17-000003", "2026-05-17-000003_data_use_agreements"];
 
 #[derive(diesel::deserialize::QueryableByName)]
 struct ExistsRow {
