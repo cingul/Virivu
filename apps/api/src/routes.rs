@@ -3571,29 +3571,99 @@ async fn render_study_workbench(
         checklist_items
             .iter()
             .map(|item| {
+                let status = if item.completed {
+                    "<span class=\"status-chip\">completed</span>"
+                } else {
+                    "<span class=\"status-chip\">pending</span>"
+                };
+                let notes = if item.notes.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " <small style=\"display:block;\">Notes: {}</small>",
+                        html_escape(&item.notes)
+                    )
+                };
                 format!(
-                    "<li><strong>{}</strong> <small>code={} completed={} notes={}</small></li>",
+                    "<li><strong>{}</strong> {}{}</li>",
                     html_escape(&item.item_label),
-                    html_escape(&item.item_code),
-                    item.completed,
-                    html_escape(&item.notes)
+                    status,
+                    notes
                 )
             })
             .collect::<Vec<_>>()
             .join("")
     };
+    let startup_total_count = startup_checklist_items.len();
+    let startup_completed_count = startup_checklist_items
+        .iter()
+        .filter(|item| item.completed)
+        .count();
+    let startup_next_task = startup_checklist_items
+        .iter()
+        .find(|item| !item.completed)
+        .map(|item| html_escape(&item.item_label))
+        .unwrap_or_else(|| "All startup tasks are complete.".to_string());
+    let startup_summary_html = if selected_project_id.is_none() {
+        "<p class=\"muted\">Select a study in Overview or Study Setup to manage startup tasks.</p>"
+            .to_string()
+    } else {
+        format!(
+            "<p><strong>Progress:</strong> {} / {} completed · {} pending</p><p><strong>Next task:</strong> {}</p>",
+            startup_completed_count,
+            startup_total_count,
+            startup_pending_count,
+            startup_next_task
+        )
+    };
     let startup_checklist_html = if startup_checklist_items.is_empty() {
-        "<li>No startup checklist items yet.</li>".to_string()
+        "<li>No startup checklist items yet. Add one in the advanced section below.</li>"
+            .to_string()
     } else {
         startup_checklist_items
             .iter()
             .map(|item| {
+                let status = if item.completed {
+                    "<span class=\"status-chip\">completed</span>"
+                } else {
+                    "<span class=\"status-chip\">pending</span>"
+                };
+                let notes = if item.notes.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "<small style=\"display:block;margin:0.25rem 0 0.5rem;\">Notes: {}</small>",
+                        html_escape(&item.notes)
+                    )
+                };
+                let completion_action = if item.completed {
+                    String::new()
+                } else {
+                    let mark_complete_action = selected_project_id
+                        .map(|id| format!("/ui/studies/{id}/startup-checklist"))
+                        .unwrap_or_else(|| "#".to_string());
+                    format!(
+                        r#"<form method="post" action="{}" style="margin-top:0.45rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.45rem;align-items:center;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <input type="hidden" name="item_code" value="{}" />
+  <input type="hidden" name="item_label" value="{}" />
+  <input type="hidden" name="completed" value="true" />
+  <input name="notes" value="{}" placeholder="Completion note (optional)" />
+  <button type="submit">Mark complete</button>
+</form>"#,
+                        mark_complete_action,
+                        html_escape(admin_email.trim()),
+                        html_escape(&item.item_code),
+                        html_escape(&item.item_label),
+                        html_escape(&item.notes)
+                    )
+                };
                 format!(
-                    "<li><strong>{}</strong> <small>code={} completed={} notes={}</small></li>",
+                    "<li><strong>{}</strong> {}{}{} </li>",
                     html_escape(&item.item_label),
-                    html_escape(&item.item_code),
-                    item.completed,
-                    html_escape(&item.notes)
+                    status,
+                    notes,
+                    completion_action
                 )
             })
             .collect::<Vec<_>>()
@@ -3933,20 +4003,25 @@ async fn render_study_workbench(
 
 <section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="startup">
   <h2>8) Study Startup Checklist</h2>
-  <form method="post" action="{}">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Item code</label>
-    <input name="item_code" placeholder="irb_approval_documented" required />
-    <label>Item label</label>
-    <input name="item_label" placeholder="IRB / ethics approval documented" required />
-    <label>Completed</label>
-    <input type="checkbox" name="completed" value="true" />
-    <label>Notes</label>
-    <input name="notes" placeholder="Startup note" />
-    <button type="submit">Upsert Startup Item</button>
-  </form>
+  <p class="muted">Use this checklist to move from setup to launch. Work through pending tasks and mark them complete.</p>
+  {}
   <ul>{}</ul>
+  <details style="margin-top:0.9rem;">
+    <summary><strong>Add or edit startup item (advanced)</strong></summary>
+    <form method="post" action="{}" style="margin-top:0.6rem;">
+      <label>Admin email</label>
+      <input name="admin_email" value="{}" required />
+      <label>Item code</label>
+      <input name="item_code" placeholder="irb_approval_documented" required />
+      <label>Item label</label>
+      <input name="item_label" placeholder="IRB / ethics approval documented" required />
+      <label>Mark as completed now</label>
+      <input type="checkbox" name="completed" value="true" />
+      <label>Notes</label>
+      <input name="notes" placeholder="Startup note" />
+      <button type="submit">Save Startup Item</button>
+    </form>
+  </details>
 </section>
 
 <section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="close">
@@ -4029,9 +4104,10 @@ async fn render_study_workbench(
         html_escape(admin_email.trim()),
         selected_submission_value,
         data_queries_html,
+        startup_summary_html,
+        startup_checklist_html,
         startup_checklist_action,
         html_escape(admin_email.trim()),
-        startup_checklist_html,
         checklist_action,
         html_escape(admin_email.trim()),
         checklist_html,
