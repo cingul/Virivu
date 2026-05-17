@@ -121,7 +121,7 @@ pub fn router(ctx: AppContext) -> Router {
             "/v1/agents/doctor-patient-transcript",
             post(generate_doctor_patient_note),
         )
-        .layer(from_fn_with_state(ctx.clone(), require_auth));
+        .route_layer(from_fn_with_state(ctx.clone(), require_auth));
 
     public_router.merge(protected_router).with_state(ctx)
 }
