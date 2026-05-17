@@ -8,12 +8,14 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use uuid::Uuid;
 
 use crate::{
     auth::{extract_bearer_token, verify_google_workspace_user, AuthError, AuthenticatedUser},
     config::Config,
     db::Db,
+    models::{DataUseAgreement, DataUseAgreementSignature},
 };
 
 const ROLE_PLATFORM_ADMIN: &[&str] = &["platform_admin"];
@@ -39,15 +41,37 @@ pub struct AppContext {
 }
 
 pub fn router(ctx: AppContext) -> Router {
-    let public_router = Router::new().route("/health", get(health)).route(
-        "/v1/auth/google/token-introspect",
-        post(google_token_introspect),
-    );
+    let public_router = Router::new()
+        .route("/health", get(health))
+        .route(
+            "/v1/auth/google/token-introspect",
+            post(google_token_introspect),
+        )
+        .route(
+            "/v1/legal/data-use-agreements/sign-hospital",
+            post(sign_data_use_agreement_hospital),
+        );
 
     let protected_router = Router::new()
         .route("/v1/organizations", post(create_organization))
         .route("/v1/projects", post(create_project))
         .route("/v1/sites", post(create_site))
+        .route(
+            "/v1/legal/data-use-agreements",
+            post(create_data_use_agreement),
+        )
+        .route(
+            "/v1/legal/organizations/{org_id}/data-use-agreements",
+            get(list_data_use_agreements),
+        )
+        .route(
+            "/v1/legal/data-use-agreements/{agreement_id}",
+            get(get_data_use_agreement),
+        )
+        .route(
+            "/v1/legal/data-use-agreements/{agreement_id}/sign-cingulum",
+            post(sign_data_use_agreement_cingulum),
+        )
         .route("/v1/forms/send-invite", post(send_form_invite))
         .route("/v1/media/presign-upload", post(presign_media_upload))
         .route(
@@ -369,6 +393,267 @@ async fn project_progress_report(
         total_media_captures_requested: report.total_media_captures_requested,
         report_generated_at: Utc::now().to_rfc3339(),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateDataUseAgreementRequest {
+    organization_id: Uuid,
+    hospital_name: String,
+    hospital_contact_name: String,
+    hospital_contact_email: String,
+    agreement_version: Option<String>,
+    effective_date: Option<chrono::NaiveDate>,
+    expiration_date: Option<chrono::NaiveDate>,
+    agreement_text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DataUseAgreementDetailResponse {
+    agreement: DataUseAgreement,
+    signatures: Vec<DataUseAgreementSignature>,
+    hospital_signature_endpoint: String,
+}
+
+async fn create_data_use_agreement(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Json(payload): Json<CreateDataUseAgreementRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, payload.organization_id, ROLE_ORG_MANAGERS)?;
+
+    if payload.hospital_name.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "hospital_name is required".to_string(),
+        ));
+    }
+    if payload.hospital_contact_email.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "hospital_contact_email is required".to_string(),
+        ));
+    }
+    if payload.agreement_text.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "agreement_text is required".to_string(),
+        ));
+    }
+
+    let agreement_version = payload
+        .agreement_version
+        .unwrap_or_else(|| "1.0".to_string());
+    let agreement = ctx
+        .db
+        .create_data_use_agreement(
+            payload.organization_id,
+            payload.hospital_name.trim(),
+            payload.hospital_contact_name.trim(),
+            payload.hospital_contact_email.trim(),
+            agreement_version.trim(),
+            payload.effective_date,
+            payload.expiration_date,
+            payload.agreement_text.trim(),
+            Some(user.user_id),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DataUseAgreementDetailResponse {
+            agreement,
+            signatures: Vec::new(),
+            hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
+        }),
+    ))
+}
+
+async fn list_data_use_agreements(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(org_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, org_id, ROLE_ORG_MANAGERS)?;
+    let agreements = ctx
+        .db
+        .list_data_use_agreements(org_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(agreements))
+}
+
+async fn get_data_use_agreement(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(agreement_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+
+    let signatures = ctx
+        .db
+        .list_data_use_agreement_signatures(agreement_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Json(DataUseAgreementDetailResponse {
+        agreement,
+        signatures,
+        hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct SignCingulumAgreementRequest {
+    signer_name: String,
+    signer_email: String,
+    signer_title: String,
+    signature_method: Option<String>,
+    signature_text: String,
+    ip_address: Option<String>,
+}
+
+async fn sign_data_use_agreement_cingulum(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(agreement_id): Path<Uuid>,
+    Json(payload): Json<SignCingulumAgreementRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+
+    if payload.signature_text.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "signature_text is required".to_string(),
+        ));
+    }
+
+    let signature_method = payload
+        .signature_method
+        .unwrap_or_else(|| "typed".to_string())
+        .trim()
+        .to_string();
+    let ip_address = parse_ip_address(payload.ip_address)?;
+
+    ctx.db
+        .sign_data_use_agreement_as_cingulum(
+            agreement_id,
+            payload.signer_name.trim(),
+            payload.signer_email.trim(),
+            payload.signer_title.trim(),
+            &signature_method,
+            payload.signature_text.trim(),
+            ip_address,
+            Some(user.user_id),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    let updated_agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    let signatures = ctx
+        .db
+        .list_data_use_agreement_signatures(agreement_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Json(DataUseAgreementDetailResponse {
+        agreement: updated_agreement,
+        signatures,
+        hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct SignHospitalAgreementRequest {
+    signing_token: Uuid,
+    signer_name: String,
+    signer_email: String,
+    signer_title: String,
+    signer_organization: String,
+    signature_method: Option<String>,
+    signature_text: String,
+    ip_address: Option<String>,
+}
+
+async fn sign_data_use_agreement_hospital(
+    State(ctx): State<AppContext>,
+    Json(payload): Json<SignHospitalAgreementRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if payload.signature_text.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "signature_text is required".to_string(),
+        ));
+    }
+    if payload.signer_organization.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "signer_organization is required".to_string(),
+        ));
+    }
+
+    let signature_method = payload
+        .signature_method
+        .unwrap_or_else(|| "typed".to_string())
+        .trim()
+        .to_string();
+    let ip_address = parse_ip_address(payload.ip_address)?;
+
+    let (agreement, _signature) = ctx
+        .db
+        .sign_data_use_agreement_by_token(
+            payload.signing_token,
+            payload.signer_name.trim(),
+            payload.signer_email.trim(),
+            payload.signer_title.trim(),
+            payload.signer_organization.trim(),
+            &signature_method,
+            payload.signature_text.trim(),
+            ip_address,
+        )
+        .await
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("not found for token") {
+                ApiError::NotFound("signing token is invalid or expired".to_string())
+            } else {
+                ApiError::internal(message)
+            }
+        })?;
+
+    let signatures = ctx
+        .db
+        .list_data_use_agreement_signatures(agreement.id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Json(DataUseAgreementDetailResponse {
+        agreement,
+        signatures,
+        hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
+    }))
+}
+
+fn parse_ip_address(raw: Option<String>) -> Result<Option<IpAddr>, ApiError> {
+    match raw {
+        Some(text) if !text.trim().is_empty() => {
+            text.trim().parse::<IpAddr>().map(Some).map_err(|_| {
+                ApiError::Validation("ip_address must be a valid IP address".to_string())
+            })
+        }
+        _ => Ok(None),
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -15,6 +15,7 @@ It is designed to reduce operational friction in clinical and translational rese
 - Cross-project analytics and statistical analysis surfaces
 - AI-assisted workflows (patient guidance, documentation support, transcript-to-note)
 - Subscription-ready billing model
+- Electronic Data Use Agreement (DUA) workflows for hospitals and Cingulum Foundation Inc.
 
 ## Core Stack (v1 scaffold)
 

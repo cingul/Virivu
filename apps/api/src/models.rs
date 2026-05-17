@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -78,4 +78,40 @@ pub struct ProjectProgressRow {
     pub total_sites: i64,
     pub total_form_invites: i64,
     pub total_media_captures_requested: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataUseAgreement {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub hospital_name: String,
+    pub hospital_contact_name: String,
+    pub hospital_contact_email: String,
+    pub counterparty_name: String,
+    pub agreement_version: String,
+    pub status: String,
+    pub effective_date: Option<NaiveDate>,
+    pub expiration_date: Option<NaiveDate>,
+    pub agreement_text: String,
+    pub hospital_signing_token: Uuid,
+    pub created_by_user_id: Option<Uuid>,
+    pub signed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataUseAgreementSignature {
+    pub id: Uuid,
+    pub agreement_id: Uuid,
+    pub signer_role: String,
+    pub signer_name: String,
+    pub signer_email: String,
+    pub signer_title: String,
+    pub signer_organization: String,
+    pub signature_method: String,
+    pub signature_text: String,
+    pub ip_address: Option<String>,
+    pub signed_by_user_id: Option<Uuid>,
+    pub signed_at: DateTime<Utc>,
 }

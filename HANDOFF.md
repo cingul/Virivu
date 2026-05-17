@@ -13,6 +13,7 @@ This file is the continuity bridge for new chat sessions and new machines.
 2. `6751537` - Add Postgres persistence and RBAC auth scaffolding
 3. `d264794` - Set default Google Workspace domain to `cingulum.org`
 4. `146e442` - Seed `arcot@cingulum.org` as `platform_admin`
+5. `1b41b4d` - Add `HANDOFF.md` for cross-session continuity
 
 ## Current implementation status
 
@@ -28,11 +29,14 @@ This file is the continuity bridge for new chat sessions and new machines.
   - Media upload-ticket endpoint
   - Analytics summary endpoints
   - AI transcript-to-note placeholder endpoint
+  - Electronic Data Use Agreement (DUA) endpoints and e-signature flow
 - Postgres persistence integrated (via `deadpool-postgres` + `tokio-postgres`)
 - RBAC scaffold with authenticated user context and role checks
 - Domain policy set to `cingulum.org`
 - Local migration helper script:
   - `apps/api/scripts/apply_migrations.sh`
+- DUA legal template:
+  - `docs/ELECTRONIC_DATA_USE_AGREEMENT_TEMPLATE.md`
 
 ### Important security note
 
@@ -43,6 +47,7 @@ This is the highest-priority production hardening task.
 
 - `apps/api/migrations/0001_init.sql` - core schema
 - `apps/api/migrations/0002_dev_seed.sql` - local dev seed users/roles
+- `apps/api/migrations/0003_data_use_agreements.sql` - DUA + signature tables
   - Includes:
     - `admin@cingulum.org` (`platform_admin`)
     - `arcot@cingulum.org` (`platform_admin`)

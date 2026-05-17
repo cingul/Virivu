@@ -1,11 +1,13 @@
+use anyhow::anyhow;
 use chrono::{Duration, Utc};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
-use tokio_postgres::NoTls;
+use std::net::IpAddr;
+use tokio_postgres::{NoTls, Row};
 use uuid::Uuid;
 
 use crate::models::{
-    FormInvite, MediaUploadTicket, Organization, OrganizationSummaryRow, Project,
-    ProjectProgressRow, Site, User, UserMembership,
+    DataUseAgreement, DataUseAgreementSignature, FormInvite, MediaUploadTicket, Organization,
+    OrganizationSummaryRow, Project, ProjectProgressRow, Site, User, UserMembership,
 };
 
 #[derive(Clone)]
@@ -318,5 +320,457 @@ impl Db {
                 role: row.get("role"),
             })
             .collect())
+    }
+
+    pub async fn create_data_use_agreement(
+        &self,
+        organization_id: Uuid,
+        hospital_name: &str,
+        hospital_contact_name: &str,
+        hospital_contact_email: &str,
+        agreement_version: &str,
+        effective_date: Option<chrono::NaiveDate>,
+        expiration_date: Option<chrono::NaiveDate>,
+        agreement_text: &str,
+        created_by_user_id: Option<Uuid>,
+    ) -> anyhow::Result<DataUseAgreement> {
+        let hospital_signing_token = Uuid::new_v4();
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO data_use_agreements (
+                    organization_id,
+                    hospital_name,
+                    hospital_contact_name,
+                    hospital_contact_email,
+                    agreement_version,
+                    effective_date,
+                    expiration_date,
+                    agreement_text,
+                    hospital_signing_token,
+                    created_by_user_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING
+                    id,
+                    organization_id,
+                    hospital_name,
+                    hospital_contact_name,
+                    hospital_contact_email,
+                    counterparty_name,
+                    agreement_version,
+                    status,
+                    effective_date,
+                    expiration_date,
+                    agreement_text,
+                    hospital_signing_token,
+                    created_by_user_id,
+                    signed_at,
+                    created_at,
+                    updated_at
+                "#,
+                &[
+                    &organization_id,
+                    &hospital_name,
+                    &hospital_contact_name,
+                    &hospital_contact_email,
+                    &agreement_version,
+                    &effective_date,
+                    &expiration_date,
+                    &agreement_text,
+                    &hospital_signing_token,
+                    &created_by_user_id,
+                ],
+            )
+            .await?;
+        Ok(row_to_data_use_agreement(&row))
+    }
+
+    pub async fn list_data_use_agreements(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<DataUseAgreement>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    organization_id,
+                    hospital_name,
+                    hospital_contact_name,
+                    hospital_contact_email,
+                    counterparty_name,
+                    agreement_version,
+                    status,
+                    effective_date,
+                    expiration_date,
+                    agreement_text,
+                    hospital_signing_token,
+                    created_by_user_id,
+                    signed_at,
+                    created_at,
+                    updated_at
+                FROM data_use_agreements
+                WHERE organization_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&organization_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_data_use_agreement).collect())
+    }
+
+    pub async fn get_data_use_agreement(
+        &self,
+        agreement_id: Uuid,
+    ) -> anyhow::Result<Option<DataUseAgreement>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    organization_id,
+                    hospital_name,
+                    hospital_contact_name,
+                    hospital_contact_email,
+                    counterparty_name,
+                    agreement_version,
+                    status,
+                    effective_date,
+                    expiration_date,
+                    agreement_text,
+                    hospital_signing_token,
+                    created_by_user_id,
+                    signed_at,
+                    created_at,
+                    updated_at
+                FROM data_use_agreements
+                WHERE id = $1
+                "#,
+                &[&agreement_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_data_use_agreement))
+    }
+
+    pub async fn list_data_use_agreement_signatures(
+        &self,
+        agreement_id: Uuid,
+    ) -> anyhow::Result<Vec<DataUseAgreementSignature>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    agreement_id,
+                    signer_role,
+                    signer_name,
+                    signer_email,
+                    signer_title,
+                    signer_organization,
+                    signature_method,
+                    signature_text,
+                    ip_address::TEXT AS ip_address,
+                    signed_by_user_id,
+                    signed_at
+                FROM data_use_agreement_signatures
+                WHERE agreement_id = $1
+                ORDER BY signed_at ASC
+                "#,
+                &[&agreement_id],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(row_to_data_use_agreement_signature)
+            .collect())
+    }
+
+    pub async fn sign_data_use_agreement_as_cingulum(
+        &self,
+        agreement_id: Uuid,
+        signer_name: &str,
+        signer_email: &str,
+        signer_title: &str,
+        signature_method: &str,
+        signature_text: &str,
+        ip_address: Option<IpAddr>,
+        signed_by_user_id: Option<Uuid>,
+    ) -> anyhow::Result<DataUseAgreementSignature> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO data_use_agreement_signatures (
+                    agreement_id,
+                    signer_role,
+                    signer_name,
+                    signer_email,
+                    signer_title,
+                    signer_organization,
+                    signature_method,
+                    signature_text,
+                    ip_address,
+                    signed_by_user_id
+                )
+                VALUES ($1, 'cingulum', $2, $3, $4, 'Cingulum Foundation Inc.', $5, $6, $7, $8)
+                ON CONFLICT (agreement_id, signer_role)
+                DO UPDATE SET
+                    signer_name = EXCLUDED.signer_name,
+                    signer_email = EXCLUDED.signer_email,
+                    signer_title = EXCLUDED.signer_title,
+                    signer_organization = EXCLUDED.signer_organization,
+                    signature_method = EXCLUDED.signature_method,
+                    signature_text = EXCLUDED.signature_text,
+                    ip_address = EXCLUDED.ip_address,
+                    signed_by_user_id = EXCLUDED.signed_by_user_id,
+                    signed_at = NOW()
+                RETURNING
+                    id,
+                    agreement_id,
+                    signer_role,
+                    signer_name,
+                    signer_email,
+                    signer_title,
+                    signer_organization,
+                    signature_method,
+                    signature_text,
+                    ip_address::TEXT AS ip_address,
+                    signed_by_user_id,
+                    signed_at
+                "#,
+                &[
+                    &agreement_id,
+                    &signer_name,
+                    &signer_email,
+                    &signer_title,
+                    &signature_method,
+                    &signature_text,
+                    &ip_address,
+                    &signed_by_user_id,
+                ],
+            )
+            .await?;
+
+        self.refresh_data_use_agreement_status(&client, agreement_id)
+            .await?;
+
+        Ok(row_to_data_use_agreement_signature(&row))
+    }
+
+    pub async fn sign_data_use_agreement_by_token(
+        &self,
+        signing_token: Uuid,
+        signer_name: &str,
+        signer_email: &str,
+        signer_title: &str,
+        signer_organization: &str,
+        signature_method: &str,
+        signature_text: &str,
+        ip_address: Option<IpAddr>,
+    ) -> anyhow::Result<(DataUseAgreement, DataUseAgreementSignature)> {
+        let client = self.pool.get().await?;
+        let agreement_row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    organization_id,
+                    hospital_name,
+                    hospital_contact_name,
+                    hospital_contact_email,
+                    counterparty_name,
+                    agreement_version,
+                    status,
+                    effective_date,
+                    expiration_date,
+                    agreement_text,
+                    hospital_signing_token,
+                    created_by_user_id,
+                    signed_at,
+                    created_at,
+                    updated_at
+                FROM data_use_agreements
+                WHERE hospital_signing_token = $1
+                "#,
+                &[&signing_token],
+            )
+            .await?;
+
+        let agreement_row =
+            agreement_row.ok_or_else(|| anyhow!("data use agreement not found for token"))?;
+        let agreement_id: Uuid = agreement_row.get("id");
+
+        let signature_row = client
+            .query_one(
+                r#"
+                INSERT INTO data_use_agreement_signatures (
+                    agreement_id,
+                    signer_role,
+                    signer_name,
+                    signer_email,
+                    signer_title,
+                    signer_organization,
+                    signature_method,
+                    signature_text,
+                    ip_address
+                )
+                VALUES ($1, 'hospital', $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (agreement_id, signer_role)
+                DO UPDATE SET
+                    signer_name = EXCLUDED.signer_name,
+                    signer_email = EXCLUDED.signer_email,
+                    signer_title = EXCLUDED.signer_title,
+                    signer_organization = EXCLUDED.signer_organization,
+                    signature_method = EXCLUDED.signature_method,
+                    signature_text = EXCLUDED.signature_text,
+                    ip_address = EXCLUDED.ip_address,
+                    signed_at = NOW()
+                RETURNING
+                    id,
+                    agreement_id,
+                    signer_role,
+                    signer_name,
+                    signer_email,
+                    signer_title,
+                    signer_organization,
+                    signature_method,
+                    signature_text,
+                    ip_address::TEXT AS ip_address,
+                    signed_by_user_id,
+                    signed_at
+                "#,
+                &[
+                    &agreement_id,
+                    &signer_name,
+                    &signer_email,
+                    &signer_title,
+                    &signer_organization,
+                    &signature_method,
+                    &signature_text,
+                    &ip_address,
+                ],
+            )
+            .await?;
+
+        self.refresh_data_use_agreement_status(&client, agreement_id)
+            .await?;
+
+        let updated_agreement_row = client
+            .query_one(
+                r#"
+                SELECT
+                    id,
+                    organization_id,
+                    hospital_name,
+                    hospital_contact_name,
+                    hospital_contact_email,
+                    counterparty_name,
+                    agreement_version,
+                    status,
+                    effective_date,
+                    expiration_date,
+                    agreement_text,
+                    hospital_signing_token,
+                    created_by_user_id,
+                    signed_at,
+                    created_at,
+                    updated_at
+                FROM data_use_agreements
+                WHERE id = $1
+                "#,
+                &[&agreement_id],
+            )
+            .await?;
+
+        Ok((
+            row_to_data_use_agreement(&updated_agreement_row),
+            row_to_data_use_agreement_signature(&signature_row),
+        ))
+    }
+
+    async fn refresh_data_use_agreement_status(
+        &self,
+        client: &deadpool_postgres::Client,
+        agreement_id: Uuid,
+    ) -> anyhow::Result<()> {
+        client
+            .execute(
+                r#"
+                WITH signature_flags AS (
+                    SELECT
+                        EXISTS(
+                            SELECT 1
+                            FROM data_use_agreement_signatures
+                            WHERE agreement_id = $1 AND signer_role = 'hospital'
+                        ) AS has_hospital_signature,
+                        EXISTS(
+                            SELECT 1
+                            FROM data_use_agreement_signatures
+                            WHERE agreement_id = $1 AND signer_role = 'cingulum'
+                        ) AS has_cingulum_signature
+                )
+                UPDATE data_use_agreements dua
+                SET
+                    status = CASE
+                        WHEN sf.has_hospital_signature AND sf.has_cingulum_signature
+                            THEN 'active'
+                        ELSE dua.status
+                    END,
+                    signed_at = CASE
+                        WHEN sf.has_hospital_signature AND sf.has_cingulum_signature
+                            THEN COALESCE(dua.signed_at, NOW())
+                        ELSE dua.signed_at
+                    END,
+                    updated_at = NOW()
+                FROM signature_flags sf
+                WHERE dua.id = $1
+                "#,
+                &[&agreement_id],
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+fn row_to_data_use_agreement(row: &Row) -> DataUseAgreement {
+    DataUseAgreement {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        hospital_name: row.get("hospital_name"),
+        hospital_contact_name: row.get("hospital_contact_name"),
+        hospital_contact_email: row.get("hospital_contact_email"),
+        counterparty_name: row.get("counterparty_name"),
+        agreement_version: row.get("agreement_version"),
+        status: row.get("status"),
+        effective_date: row.get("effective_date"),
+        expiration_date: row.get("expiration_date"),
+        agreement_text: row.get("agreement_text"),
+        hospital_signing_token: row.get("hospital_signing_token"),
+        created_by_user_id: row.get("created_by_user_id"),
+        signed_at: row.get("signed_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn row_to_data_use_agreement_signature(row: &Row) -> DataUseAgreementSignature {
+    DataUseAgreementSignature {
+        id: row.get("id"),
+        agreement_id: row.get("agreement_id"),
+        signer_role: row.get("signer_role"),
+        signer_name: row.get("signer_name"),
+        signer_email: row.get("signer_email"),
+        signer_title: row.get("signer_title"),
+        signer_organization: row.get("signer_organization"),
+        signature_method: row.get("signature_method"),
+        signature_text: row.get("signature_text"),
+        ip_address: row.get("ip_address"),
+        signed_by_user_id: row.get("signed_by_user_id"),
+        signed_at: row.get("signed_at"),
     }
 }
