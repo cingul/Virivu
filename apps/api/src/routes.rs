@@ -51,6 +51,12 @@ pub fn router(ctx: AppContext) -> Router {
         )
         .route("/ui/app/create-project", post(submit_app_create_project))
         .route("/ui/app/create-site", post(submit_app_create_site))
+        .route("/ui/app/create-patient", post(submit_app_create_patient))
+        .route("/ui/app/create-provider", post(submit_app_create_provider))
+        .route(
+            "/ui/app/create-encounter",
+            post(submit_app_create_encounter),
+        )
         .route("/ui/app/send-invite", post(submit_app_send_invite))
         .route(
             "/ui/app/create-media-ticket",
@@ -97,6 +103,9 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/v1/organizations", post(create_organization))
         .route("/v1/projects", post(create_project))
         .route("/v1/sites", post(create_site))
+        .route("/v1/patients", post(create_patient))
+        .route("/v1/providers", post(create_provider))
+        .route("/v1/encounters", post(create_encounter))
         .route(
             "/v1/legal/data-use-agreements",
             post(create_data_use_agreement),
@@ -326,6 +335,112 @@ async fn create_site(
 }
 
 #[derive(Debug, Deserialize)]
+struct CreatePatientRequest {
+    site_id: Uuid,
+    external_subject_id: Option<String>,
+    email: Option<String>,
+    date_of_birth: Option<chrono::NaiveDate>,
+}
+
+async fn create_patient(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Json(payload): Json<CreatePatientRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let site = ctx
+        .db
+        .get_site(payload.site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(site.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+
+    let patient = ctx
+        .db
+        .create_patient(
+            payload.site_id,
+            payload.external_subject_id.as_deref().map(str::trim),
+            payload.email.as_deref().map(str::trim),
+            payload.date_of_birth,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(patient)))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateProviderRequest {
+    organization_id: Uuid,
+    name: String,
+    title: Option<String>,
+    referral_source: Option<String>,
+}
+
+async fn create_provider(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Json(payload): Json<CreateProviderRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_org_role(&user, payload.organization_id, ROLE_ORG_MANAGERS)?;
+    if payload.name.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "provider name is required".to_string(),
+        ));
+    }
+    let provider = ctx
+        .db
+        .create_provider(
+            payload.organization_id,
+            payload.name.trim(),
+            payload.title.as_deref().unwrap_or("").trim(),
+            payload.referral_source.as_deref().unwrap_or("").trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(provider)))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateEncounterRequest {
+    patient_id: Uuid,
+    encounter_type: String,
+    provider_id: Option<Uuid>,
+    notes: Option<String>,
+}
+
+async fn create_encounter(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Json(payload): Json<CreateEncounterRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let patient = ctx
+        .db
+        .get_patient(payload.patient_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("patient not found".to_string()))?;
+    require_org_role(&user, patient.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+
+    let encounter = ctx
+        .db
+        .create_encounter(
+            payload.patient_id,
+            payload.encounter_type.trim(),
+            payload.provider_id,
+            payload.notes.as_deref().unwrap_or("").trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(encounter)))
+}
+
+#[derive(Debug, Deserialize)]
 struct SendFormInviteRequest {
     organization_id: Uuid,
     project_id: Uuid,
@@ -453,6 +568,7 @@ struct AppDashboardQuery {
     admin_email: Option<String>,
     organization_id: Option<String>,
     project_id: Option<String>,
+    patient_id: Option<String>,
     notice: Option<String>,
 }
 
@@ -476,6 +592,33 @@ struct AppCreateSiteForm {
     project_id: String,
     site_name: String,
     principal_investigator: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCreatePatientForm {
+    admin_email: String,
+    site_id: String,
+    external_subject_id: String,
+    email: String,
+    date_of_birth: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCreateProviderForm {
+    admin_email: String,
+    organization_id: String,
+    provider_name: String,
+    provider_title: String,
+    referral_source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCreateEncounterForm {
+    admin_email: String,
+    patient_id: String,
+    encounter_type: String,
+    provider_id: String,
+    notes: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,6 +720,40 @@ async fn render_app_dashboard(
         None
     };
 
+    let patients = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_patients_by_project(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let providers = if let Some(org_id) = selected_org_id {
+        ctx.db
+            .list_providers_by_organization(org_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let selected_patient_id = query
+        .patient_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .filter(|pid| patients.iter().any(|patient| patient.id == *pid))
+        .or_else(|| patients.first().map(|patient| patient.id));
+
+    let encounters = if let Some(patient_id) = selected_patient_id {
+        ctx.db
+            .list_encounters_by_patient(patient_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
     let notice_html = query
         .notice
         .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
@@ -589,11 +766,12 @@ async fn render_app_dashboard(
             .iter()
             .map(|org| {
                 format!(
-                    r#"<li><a href="/ui/app?admin_email={}&organization_id={}">{}</a> <small>({})</small></li>"#,
+                    r#"<li><a href="/ui/app?admin_email={}&organization_id={}">{}</a> <small>(id: {} · hex: {})</small></li>"#,
                     admin_email_q,
                     org.id,
                     html_escape(&org.name),
-                    org.id
+                    org.id,
+                    html_escape(org.hex_code.as_deref().unwrap_or("pending"))
                 )
             })
             .collect::<Vec<_>>()
@@ -610,12 +788,13 @@ async fn render_app_dashboard(
                     .map(|org_id| format!("&organization_id={}", org_id))
                     .unwrap_or_default();
                 format!(
-                    r#"<li><a href="/ui/app?admin_email={}{}&project_id={}">{}</a> <small>({})</small></li>"#,
+                    r#"<li><a href="/ui/app?admin_email={}{}&project_id={}">{}</a> <small>(area: {} · hex: {})</small></li>"#,
                     admin_email_q,
                     selected_org,
                     project.id,
                     html_escape(&project.name),
-                    html_escape(&project.therapeutic_area)
+                    html_escape(&project.therapeutic_area),
+                    html_escape(project.hex_code.as_deref().unwrap_or("pending"))
                 )
             })
             .collect::<Vec<_>>()
@@ -629,9 +808,11 @@ async fn render_app_dashboard(
             .iter()
             .map(|site| {
                 format!(
-                    "<li><strong>{}</strong> <small>(PI: {})</small></li>",
+                    "<li><strong>{}</strong> <small>(PI: {} · hex: {} · id: {})</small></li>",
                     html_escape(&site.name),
-                    html_escape(&site.principal_investigator)
+                    html_escape(&site.principal_investigator),
+                    html_escape(site.hex_code.as_deref().unwrap_or("pending")),
+                    site.id
                 )
             })
             .collect::<Vec<_>>()
@@ -659,6 +840,9 @@ async fn render_app_dashboard(
     let selected_project_value = selected_project_id
         .map(|id| id.to_string())
         .unwrap_or_default();
+    let selected_patient_value = selected_patient_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
 
     let org_summary_html = if let Some(summary) = org_summary {
         format!(
@@ -676,6 +860,76 @@ async fn render_app_dashboard(
         )
     } else {
         "<p class=\"muted\">Select a project to view summary.</p>".to_string()
+    };
+
+    let patients_html = if patients.is_empty() {
+        "<li>No patients yet for selected project.</li>".to_string()
+    } else {
+        patients
+            .iter()
+            .take(12)
+            .map(|patient| {
+                let selected_org = selected_org_id
+                    .map(|org_id| format!("&organization_id={org_id}"))
+                    .unwrap_or_default();
+                let selected_project = selected_project_id
+                    .map(|project_id| format!("&project_id={project_id}"))
+                    .unwrap_or_default();
+                format!(
+                    r#"<li><a href="/ui/app?admin_email={}{}{}&patient_id={}">{}</a> <small>(id: {} · site: {})</small></li>"#,
+                    admin_email_q,
+                    selected_org,
+                    selected_project,
+                    patient.id,
+                    html_escape(patient.hex_code.as_deref().unwrap_or("pending")),
+                    patient.id,
+                    patient
+                        .site_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let providers_html = if providers.is_empty() {
+        "<li>No providers yet for selected organization.</li>".to_string()
+    } else {
+        providers
+            .iter()
+            .take(12)
+            .map(|provider| {
+                format!(
+                    "<li><strong>{}</strong> <small>(hex: {} · title: {})</small></li>",
+                    html_escape(&provider.name),
+                    html_escape(&provider.hex_code),
+                    html_escape(&provider.title)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let encounters_html = if encounters.is_empty() {
+        "<li>No encounters yet for selected patient.</li>".to_string()
+    } else {
+        encounters
+            .iter()
+            .take(16)
+            .map(|encounter| {
+                format!(
+                    "<li><strong>{}</strong> <small>(type: {} · provider: {})</small></li>",
+                    html_escape(&encounter.hex_code),
+                    html_escape(&encounter.encounter_type),
+                    encounter
+                        .provider_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
     };
 
     let body = format!(
@@ -740,6 +994,20 @@ async fn render_app_dashboard(
 
 <section class="card">
   <h2>4) Patient Workflow</h2>
+  <form method="post" action="/ui/app/create-patient" style="margin-bottom:1rem;">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Site ID</label>
+    <input name="site_id" placeholder="site-uuid" required />
+    <label>External subject label (optional)</label>
+    <input name="external_subject_id" placeholder="SUBJ-001" />
+    <label>Patient email (optional)</label>
+    <input type="email" name="email" placeholder="patient@example.org" />
+    <label>Date of birth (optional, YYYY-MM-DD)</label>
+    <input name="date_of_birth" placeholder="1980-01-01" />
+    <button type="submit">Create Patient + Cascading Hex ID</button>
+  </form>
+
   <form method="post" action="/ui/app/send-invite" style="margin-bottom:1rem;">
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
@@ -767,16 +1035,62 @@ async fn render_app_dashboard(
     <input name="mime_type" placeholder="video/mp4" required />
     <button type="submit">Generate Media Upload Link</button>
   </form>
+
+  <h3 style="margin-top:1rem;">Patients</h3>
+  <ul>{}</ul>
 </section>
 
 <section class="card">
-  <h2>5) Analytics Summary</h2>
+  <h2>5) Providers + Encounters</h2>
+  <form method="post" action="/ui/app/create-provider" style="margin-bottom:1rem;">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Organization ID</label>
+    <input name="organization_id" value="{}" required />
+    <label>Provider name</label>
+    <input name="provider_name" placeholder="Dr. Jane Doe" required />
+    <label>Provider title</label>
+    <input name="provider_title" placeholder="Cardiology" />
+    <label>Referral source</label>
+    <input name="referral_source" placeholder="External referral network" />
+    <button type="submit">Register Provider + Hex Block</button>
+  </form>
+
+  <form method="post" action="/ui/app/create-encounter">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Patient ID</label>
+    <input name="patient_id" value="{}" placeholder="patient-uuid" required />
+    <label>Encounter type</label>
+    <select name="encounter_type" required>
+      <option value="outpatient">outpatient (000-2FF)</option>
+      <option value="inpatient">inpatient (300-5FF)</option>
+      <option value="labs">labs (600-8FF)</option>
+      <option value="imaging">imaging (900-BFF)</option>
+      <option value="procedures">procedures (C00-EFF)</option>
+      <option value="misc">misc (F00-FFF)</option>
+    </select>
+    <label>Provider ID (optional)</label>
+    <input name="provider_id" placeholder="provider-uuid" />
+    <label>Notes (optional)</label>
+    <input name="notes" placeholder="Encounter notes" />
+    <button type="submit">Create Encounter + Range-Aware Hex</button>
+  </form>
+
+  <h3 style="margin-top:1rem;">Providers</h3>
+  <ul>{}</ul>
+  <h3 style="margin-top:1rem;">Encounters for selected patient</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>6) Analytics Summary</h2>
   {}
   {}
 </section>
 
 <section class="card">
-  <h2>6) Legal / DUA</h2>
+  <h2>7) Legal / DUA</h2>
   <ul>{}</ul>
 </section>
 "#,
@@ -796,12 +1110,13 @@ async fn render_app_dashboard(
         html_escape(admin_email.trim()),
         organizations_html,
         html_escape(admin_email.trim()),
-        selected_org_value,
+        selected_org_value.clone(),
         projects_html,
         html_escape(admin_email.trim()),
-        selected_project_value,
+        selected_project_value.clone(),
         sites_html,
         html_escape(admin_email.trim()),
+        html_escape(admin_email.trim()),
         selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
         selected_project_id
             .map(|v| v.to_string())
@@ -811,6 +1126,13 @@ async fn render_app_dashboard(
         selected_project_id
             .map(|v| v.to_string())
             .unwrap_or_default(),
+        patients_html,
+        html_escape(admin_email.trim()),
+        selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+        html_escape(admin_email.trim()),
+        selected_patient_value,
+        providers_html,
+        encounters_html,
         org_summary_html,
         project_summary_html,
         dua_html
@@ -929,6 +1251,143 @@ async fn submit_app_create_site(
         project.organization_id,
         project_id,
         query_escape("Site created")
+    )))
+}
+
+async fn submit_app_create_patient(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppCreatePatientForm>,
+) -> Result<Redirect, ApiError> {
+    let site_id = parse_uuid_field(&form.site_id, "site_id")?;
+    let site = ctx
+        .db
+        .get_site(site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(site.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+
+    let external_subject_id = if form.external_subject_id.trim().is_empty() {
+        None
+    } else {
+        Some(form.external_subject_id.trim())
+    };
+    let patient_email = if form.email.trim().is_empty() {
+        None
+    } else {
+        Some(form.email.trim())
+    };
+    let date_of_birth = parse_optional_date(&form.date_of_birth)?;
+    let patient = ctx
+        .db
+        .create_patient(site_id, external_subject_id, patient_email, date_of_birth)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&patient_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        patient.id,
+        query_escape("Patient created with cascading hex identifier")
+    )))
+}
+
+async fn submit_app_create_provider(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppCreateProviderForm>,
+) -> Result<Redirect, ApiError> {
+    let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    if form.provider_name.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "provider_name is required".to_string(),
+        ));
+    }
+    ctx.db
+        .create_provider(
+            organization_id,
+            form.provider_name.trim(),
+            form.provider_title.trim(),
+            form.referral_source.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        organization_id,
+        query_escape("Provider created with reserved hex block")
+    )))
+}
+
+async fn submit_app_create_encounter(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppCreateEncounterForm>,
+) -> Result<Redirect, ApiError> {
+    let patient_id = parse_uuid_field(&form.patient_id, "patient_id")?;
+    let patient = ctx
+        .db
+        .get_patient(patient_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("patient not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), patient.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let provider_id = if form.provider_id.trim().is_empty() {
+        None
+    } else {
+        Some(parse_uuid_field(&form.provider_id, "provider_id")?)
+    };
+    ctx.db
+        .create_encounter(
+            patient_id,
+            form.encounter_type.trim(),
+            provider_id,
+            form.notes.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&patient_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        patient.organization_id,
+        patient.project_id,
+        patient.id,
+        query_escape("Encounter created with range-based hex identifier")
     )))
 }
 

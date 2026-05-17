@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub struct Organization {
     pub id: Uuid,
     pub name: String,
+    pub hex_code: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -15,6 +16,7 @@ pub struct Project {
     pub organization_id: Uuid,
     pub name: String,
     pub therapeutic_area: String,
+    pub hex_code: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -24,6 +26,42 @@ pub struct Site {
     pub project_id: Uuid,
     pub name: String,
     pub principal_investigator: String,
+    pub hex_code: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Patient {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub site_id: Option<Uuid>,
+    pub external_subject_id: Option<String>,
+    pub email: Option<String>,
+    pub date_of_birth: Option<NaiveDate>,
+    pub hex_code: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Provider {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub name: String,
+    pub title: String,
+    pub referral_source: String,
+    pub hex_code: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Encounter {
+    pub id: Uuid,
+    pub patient_id: Uuid,
+    pub provider_id: Option<Uuid>,
+    pub encounter_type: String,
+    pub notes: String,
+    pub hex_code: String,
     pub created_at: DateTime<Utc>,
 }
 

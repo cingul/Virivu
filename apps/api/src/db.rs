@@ -1,13 +1,14 @@
 use anyhow::anyhow;
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use std::net::IpAddr;
 use tokio_postgres::{NoTls, Row};
 use uuid::Uuid;
 
 use crate::models::{
-    DataUseAgreement, DataUseAgreementSignature, FormInvite, MediaUploadTicket, Organization,
-    OrganizationSummaryRow, OutboundEmail, Project, ProjectProgressRow, Site, User, UserMembership,
+    DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite, MediaUploadTicket,
+    Organization, OrganizationSummaryRow, OutboundEmail, Patient, Project, ProjectProgressRow,
+    Provider, Site, User, UserMembership,
 };
 
 #[derive(Clone)]
@@ -34,19 +35,21 @@ impl Db {
 
     pub async fn create_organization(&self, name: &str) -> anyhow::Result<Organization> {
         let client = self.pool.get().await?;
+        let hex_code = self.generate_unique_org_hex(&client).await?;
         let row = client
             .query_one(
                 r#"
-                INSERT INTO organizations (name)
-                VALUES ($1)
-                RETURNING id, name, created_at
+                INSERT INTO organizations (name, hex_code)
+                VALUES ($1, $2)
+                RETURNING id, name, hex_code, created_at
                 "#,
-                &[&name],
+                &[&name, &hex_code],
             )
             .await?;
         Ok(Organization {
             id: row.get("id"),
             name: row.get("name"),
+            hex_code: row.get("hex_code"),
             created_at: row.get("created_at"),
         })
     }
@@ -59,7 +62,7 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT id, organization_id, name, therapeutic_area, created_at
+                SELECT id, organization_id, name, therapeutic_area, hex_code, created_at
                 FROM projects
                 WHERE organization_id = $1
                 ORDER BY created_at DESC
@@ -74,6 +77,7 @@ impl Db {
                 organization_id: r.get("organization_id"),
                 name: r.get("name"),
                 therapeutic_area: r.get("therapeutic_area"),
+                hex_code: r.get("hex_code"),
                 created_at: r.get("created_at"),
             })
             .collect())
@@ -84,7 +88,7 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT id, project_id, name, principal_investigator, created_at
+                SELECT id, project_id, name, principal_investigator, hex_code, created_at
                 FROM sites
                 WHERE project_id = $1
                 ORDER BY created_at DESC
@@ -99,6 +103,7 @@ impl Db {
                 project_id: r.get("project_id"),
                 name: r.get("name"),
                 principal_investigator: r.get("principal_investigator"),
+                hex_code: r.get("hex_code"),
                 created_at: r.get("created_at"),
             })
             .collect())
@@ -111,14 +116,18 @@ impl Db {
         therapeutic_area: &str,
     ) -> anyhow::Result<Project> {
         let client = self.pool.get().await?;
+        let org_hex = self
+            .ensure_organization_hex_code(&client, organization_id)
+            .await?;
+        let hex_code = self.generate_unique_project_hex(&client, &org_hex).await?;
         let row = client
             .query_one(
                 r#"
-                INSERT INTO projects (organization_id, name, therapeutic_area)
-                VALUES ($1, $2, $3)
-                RETURNING id, organization_id, name, therapeutic_area, created_at
+                INSERT INTO projects (organization_id, name, therapeutic_area, hex_code)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, organization_id, name, therapeutic_area, hex_code, created_at
                 "#,
-                &[&organization_id, &name, &therapeutic_area],
+                &[&organization_id, &name, &therapeutic_area, &hex_code],
             )
             .await?;
         Ok(Project {
@@ -126,6 +135,7 @@ impl Db {
             organization_id: row.get("organization_id"),
             name: row.get("name"),
             therapeutic_area: row.get("therapeutic_area"),
+            hex_code: row.get("hex_code"),
             created_at: row.get("created_at"),
         })
     }
@@ -137,14 +147,16 @@ impl Db {
         principal_investigator: &str,
     ) -> anyhow::Result<Site> {
         let client = self.pool.get().await?;
+        let project_hex = self.ensure_project_hex_code(&client, project_id).await?;
+        let hex_code = self.generate_unique_site_hex(&client, &project_hex).await?;
         let row = client
             .query_one(
                 r#"
-                INSERT INTO sites (project_id, name, principal_investigator)
-                VALUES ($1, $2, $3)
-                RETURNING id, project_id, name, principal_investigator, created_at
+                INSERT INTO sites (project_id, name, principal_investigator, hex_code)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, project_id, name, principal_investigator, hex_code, created_at
                 "#,
-                &[&project_id, &name, &principal_investigator],
+                &[&project_id, &name, &principal_investigator, &hex_code],
             )
             .await?;
         Ok(Site {
@@ -152,6 +164,7 @@ impl Db {
             project_id: row.get("project_id"),
             name: row.get("name"),
             principal_investigator: row.get("principal_investigator"),
+            hex_code: row.get("hex_code"),
             created_at: row.get("created_at"),
         })
     }
@@ -234,7 +247,7 @@ impl Db {
         let row = client
             .query_opt(
                 r#"
-                SELECT id, organization_id, name, therapeutic_area, created_at
+                SELECT id, organization_id, name, therapeutic_area, hex_code, created_at
                 FROM projects
                 WHERE id = $1
                 "#,
@@ -247,6 +260,29 @@ impl Db {
             organization_id: r.get("organization_id"),
             name: r.get("name"),
             therapeutic_area: r.get("therapeutic_area"),
+            hex_code: r.get("hex_code"),
+            created_at: r.get("created_at"),
+        }))
+    }
+
+    pub async fn get_site(&self, site_id: Uuid) -> anyhow::Result<Option<Site>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT id, project_id, name, principal_investigator, hex_code, created_at
+                FROM sites
+                WHERE id = $1
+                "#,
+                &[&site_id],
+            )
+            .await?;
+        Ok(row.map(|r| Site {
+            id: r.get("id"),
+            project_id: r.get("project_id"),
+            name: r.get("name"),
+            principal_investigator: r.get("principal_investigator"),
+            hex_code: r.get("hex_code"),
             created_at: r.get("created_at"),
         }))
     }
@@ -427,7 +463,7 @@ impl Db {
             let rows = client
                 .query(
                     r#"
-                    SELECT id, name, created_at
+                    SELECT id, name, hex_code, created_at
                     FROM organizations
                     ORDER BY created_at DESC
                     "#,
@@ -440,7 +476,7 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT DISTINCT o.id, o.name, o.created_at
+                SELECT DISTINCT o.id, o.name, o.hex_code, o.created_at
                 FROM organizations o
                 JOIN user_memberships um ON um.organization_id = o.id
                 JOIN users u ON u.id = um.user_id
@@ -514,6 +550,474 @@ impl Db {
             )
             .await?;
         Ok(row.get("has_access"))
+    }
+
+    pub async fn create_patient(
+        &self,
+        site_id: Uuid,
+        external_subject_id: Option<&str>,
+        email: Option<&str>,
+        date_of_birth: Option<NaiveDate>,
+    ) -> anyhow::Result<Patient> {
+        let client = self.pool.get().await?;
+        let relation = client
+            .query_one(
+                r#"
+                SELECT p.id AS project_id, p.organization_id
+                FROM sites s
+                JOIN projects p ON p.id = s.project_id
+                WHERE s.id = $1
+                "#,
+                &[&site_id],
+            )
+            .await?;
+
+        let project_id: Uuid = relation.get("project_id");
+        let organization_id: Uuid = relation.get("organization_id");
+        let site_hex = self.ensure_site_hex_code(&client, site_id).await?;
+        let hex_code = self.generate_unique_patient_hex(&client, &site_hex).await?;
+
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO patients (
+                    organization_id,
+                    project_id,
+                    site_id,
+                    external_subject_id,
+                    email,
+                    date_of_birth,
+                    hex_code
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING
+                    id,
+                    organization_id,
+                    project_id,
+                    site_id,
+                    external_subject_id,
+                    email,
+                    date_of_birth,
+                    hex_code,
+                    created_at
+                "#,
+                &[
+                    &organization_id,
+                    &project_id,
+                    &site_id,
+                    &external_subject_id,
+                    &email,
+                    &date_of_birth,
+                    &hex_code,
+                ],
+            )
+            .await?;
+        Ok(row_to_patient(&row))
+    }
+
+    pub async fn list_patients_by_project(&self, project_id: Uuid) -> anyhow::Result<Vec<Patient>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    organization_id,
+                    project_id,
+                    site_id,
+                    external_subject_id,
+                    email,
+                    date_of_birth,
+                    hex_code,
+                    created_at
+                FROM patients
+                WHERE project_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_patient).collect())
+    }
+
+    pub async fn create_provider(
+        &self,
+        organization_id: Uuid,
+        name: &str,
+        title: &str,
+        referral_source: &str,
+    ) -> anyhow::Result<Provider> {
+        let client = self.pool.get().await?;
+        let org_hex = self
+            .ensure_organization_hex_code(&client, organization_id)
+            .await?;
+        let hex_code = self.generate_unique_provider_hex(&client, &org_hex).await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO providers (organization_id, name, title, referral_source, hex_code)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, organization_id, name, title, referral_source, hex_code, created_at
+                "#,
+                &[&organization_id, &name, &title, &referral_source, &hex_code],
+            )
+            .await?;
+        Ok(row_to_provider(&row))
+    }
+
+    pub async fn list_providers_by_organization(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<Provider>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, organization_id, name, title, referral_source, hex_code, created_at
+                FROM providers
+                WHERE organization_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&organization_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_provider).collect())
+    }
+
+    pub async fn get_patient(&self, patient_id: Uuid) -> anyhow::Result<Option<Patient>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    organization_id,
+                    project_id,
+                    site_id,
+                    external_subject_id,
+                    email,
+                    date_of_birth,
+                    hex_code,
+                    created_at
+                FROM patients
+                WHERE id = $1
+                "#,
+                &[&patient_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_patient))
+    }
+
+    pub async fn create_encounter(
+        &self,
+        patient_id: Uuid,
+        encounter_type: &str,
+        provider_id: Option<Uuid>,
+        notes: &str,
+    ) -> anyhow::Result<Encounter> {
+        let normalized_type = normalize_encounter_type(encounter_type)
+            .ok_or_else(|| anyhow!("unsupported encounter_type"))?;
+        let client = self.pool.get().await?;
+        let patient_hex = self.ensure_patient_hex_code(&client, patient_id).await?;
+        let (range_start, range_end) = encounter_range(&normalized_type);
+
+        let row = client
+            .query_one(
+                r#"
+                SELECT COUNT(*)::BIGINT AS total
+                FROM encounters
+                WHERE patient_id = $1 AND encounter_type = $2
+                "#,
+                &[&patient_id, &normalized_type],
+            )
+            .await?;
+        let current_total: i64 = row.get("total");
+        let next_value = range_start + current_total as i32;
+        if next_value > range_end {
+            return Err(anyhow!(
+                "encounter code range exhausted for encounter_type={normalized_type}"
+            ));
+        }
+        let suffix = format!("{next_value:03X}");
+        let hex_code = format!("{patient_hex}{suffix}");
+
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO encounters (
+                    patient_id,
+                    provider_id,
+                    encounter_type,
+                    notes,
+                    hex_code
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING
+                    id,
+                    patient_id,
+                    provider_id,
+                    encounter_type,
+                    notes,
+                    hex_code,
+                    created_at
+                "#,
+                &[
+                    &patient_id,
+                    &provider_id,
+                    &normalized_type,
+                    &notes,
+                    &hex_code,
+                ],
+            )
+            .await?;
+        Ok(row_to_encounter(&row))
+    }
+
+    pub async fn list_encounters_by_patient(
+        &self,
+        patient_id: Uuid,
+    ) -> anyhow::Result<Vec<Encounter>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    patient_id,
+                    provider_id,
+                    encounter_type,
+                    notes,
+                    hex_code,
+                    created_at
+                FROM encounters
+                WHERE patient_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&patient_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_encounter).collect())
+    }
+
+    async fn ensure_organization_hex_code(
+        &self,
+        client: &deadpool_postgres::Client,
+        organization_id: Uuid,
+    ) -> anyhow::Result<String> {
+        let row = client
+            .query_opt(
+                "SELECT hex_code FROM organizations WHERE id = $1",
+                &[&organization_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("organization not found"))?;
+        let current_code: Option<String> = row.get("hex_code");
+        if let Some(code) = current_code {
+            if !code.trim().is_empty() {
+                return Ok(code);
+            }
+        }
+
+        let candidate = self.generate_unique_org_hex(client).await?;
+        client
+            .execute(
+                "UPDATE organizations SET hex_code = $1 WHERE id = $2",
+                &[&candidate, &organization_id],
+            )
+            .await?;
+        Ok(candidate)
+    }
+
+    async fn ensure_project_hex_code(
+        &self,
+        client: &deadpool_postgres::Client,
+        project_id: Uuid,
+    ) -> anyhow::Result<String> {
+        let row = client
+            .query_opt(
+                "SELECT organization_id, hex_code FROM projects WHERE id = $1",
+                &[&project_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("project not found"))?;
+        let current_code: Option<String> = row.get("hex_code");
+        if let Some(code) = current_code {
+            if !code.trim().is_empty() {
+                return Ok(code);
+            }
+        }
+        let organization_id: Uuid = row.get("organization_id");
+        let org_hex = self
+            .ensure_organization_hex_code(client, organization_id)
+            .await?;
+        let candidate = self.generate_unique_project_hex(client, &org_hex).await?;
+        client
+            .execute(
+                "UPDATE projects SET hex_code = $1 WHERE id = $2",
+                &[&candidate, &project_id],
+            )
+            .await?;
+        Ok(candidate)
+    }
+
+    async fn ensure_site_hex_code(
+        &self,
+        client: &deadpool_postgres::Client,
+        site_id: Uuid,
+    ) -> anyhow::Result<String> {
+        let row = client
+            .query_opt(
+                "SELECT project_id, hex_code FROM sites WHERE id = $1",
+                &[&site_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("site not found"))?;
+        let current_code: Option<String> = row.get("hex_code");
+        if let Some(code) = current_code {
+            if !code.trim().is_empty() {
+                return Ok(code);
+            }
+        }
+        let project_id: Uuid = row.get("project_id");
+        let project_hex = self.ensure_project_hex_code(client, project_id).await?;
+        let candidate = self.generate_unique_site_hex(client, &project_hex).await?;
+        client
+            .execute(
+                "UPDATE sites SET hex_code = $1 WHERE id = $2",
+                &[&candidate, &site_id],
+            )
+            .await?;
+        Ok(candidate)
+    }
+
+    async fn ensure_patient_hex_code(
+        &self,
+        client: &deadpool_postgres::Client,
+        patient_id: Uuid,
+    ) -> anyhow::Result<String> {
+        let row = client
+            .query_opt(
+                "SELECT site_id, hex_code FROM patients WHERE id = $1",
+                &[&patient_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("patient not found"))?;
+        let current_code: Option<String> = row.get("hex_code");
+        if let Some(code) = current_code {
+            if !code.trim().is_empty() {
+                return Ok(code);
+            }
+        }
+        let site_id: Option<Uuid> = row.get("site_id");
+        let site_id = site_id.ok_or_else(|| anyhow!("patient has no site_id for hex cascading"))?;
+        let site_hex = self.ensure_site_hex_code(client, site_id).await?;
+        let candidate = self.generate_unique_patient_hex(client, &site_hex).await?;
+        client
+            .execute(
+                "UPDATE patients SET hex_code = $1 WHERE id = $2",
+                &[&candidate, &patient_id],
+            )
+            .await?;
+        Ok(candidate)
+    }
+
+    async fn generate_unique_org_hex(
+        &self,
+        client: &deadpool_postgres::Client,
+    ) -> anyhow::Result<String> {
+        for _ in 0..1024 {
+            let candidate = random_hex_segment(3, 1);
+            let row = client
+                .query_opt(
+                    "SELECT 1 FROM organizations WHERE hex_code = $1 LIMIT 1",
+                    &[&candidate],
+                )
+                .await?;
+            if row.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow!("unable to allocate unique organization hex code"))
+    }
+
+    async fn generate_unique_project_hex(
+        &self,
+        client: &deadpool_postgres::Client,
+        org_hex: &str,
+    ) -> anyhow::Result<String> {
+        for _ in 0..4096 {
+            let candidate = format!("{org_hex}{}", random_hex_segment(3, 1));
+            let row = client
+                .query_opt(
+                    "SELECT 1 FROM projects WHERE hex_code = $1 LIMIT 1",
+                    &[&candidate],
+                )
+                .await?;
+            if row.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow!("unable to allocate unique project hex code"))
+    }
+
+    async fn generate_unique_site_hex(
+        &self,
+        client: &deadpool_postgres::Client,
+        project_hex: &str,
+    ) -> anyhow::Result<String> {
+        for _ in 0..4096 {
+            let candidate = format!("{project_hex}{}", random_hex_segment(3, 1));
+            let row = client
+                .query_opt(
+                    "SELECT 1 FROM sites WHERE hex_code = $1 LIMIT 1",
+                    &[&candidate],
+                )
+                .await?;
+            if row.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow!("unable to allocate unique site hex code"))
+    }
+
+    async fn generate_unique_patient_hex(
+        &self,
+        client: &deadpool_postgres::Client,
+        site_hex: &str,
+    ) -> anyhow::Result<String> {
+        for _ in 0..8192 {
+            let candidate = format!("{site_hex}{}", random_hex_segment(4, 1));
+            let row = client
+                .query_opt(
+                    "SELECT 1 FROM patients WHERE hex_code = $1 LIMIT 1",
+                    &[&candidate],
+                )
+                .await?;
+            if row.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow!("unable to allocate unique patient hex code"))
+    }
+
+    async fn generate_unique_provider_hex(
+        &self,
+        client: &deadpool_postgres::Client,
+        org_hex: &str,
+    ) -> anyhow::Result<String> {
+        for _ in 0..4096 {
+            let candidate = format!("{org_hex}{}", random_hex_segment(3, 1));
+            let row = client
+                .query_opt(
+                    "SELECT 1 FROM providers WHERE hex_code = $1 LIMIT 1",
+                    &[&candidate],
+                )
+                .await?;
+            if row.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow!("unable to allocate unique provider hex code"))
     }
 
     pub async fn queue_hospital_signing_email(
@@ -1056,6 +1560,41 @@ impl Db {
     }
 }
 
+fn normalize_encounter_type(raw: &str) -> Option<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "outpatient" => Some("outpatient".to_string()),
+        "inpatient" => Some("inpatient".to_string()),
+        "labs" => Some("labs".to_string()),
+        "imaging" => Some("imaging".to_string()),
+        "procedures" => Some("procedures".to_string()),
+        "misc" => Some("misc".to_string()),
+        _ => None,
+    }
+}
+
+fn encounter_range(encounter_type: &str) -> (i32, i32) {
+    match encounter_type {
+        "outpatient" => (0x000, 0x2FF),
+        "inpatient" => (0x300, 0x5FF),
+        "labs" => (0x600, 0x8FF),
+        "imaging" => (0x900, 0xBFF),
+        "procedures" => (0xC00, 0xEFF),
+        "misc" => (0xF00, 0xFFF),
+        _ => (0xF00, 0xFFF),
+    }
+}
+
+fn random_hex_segment(len: usize, min_letters: usize) -> String {
+    loop {
+        let raw = Uuid::new_v4().as_simple().to_string().to_uppercase();
+        let candidate = &raw[..len];
+        let letter_count = candidate.chars().filter(|c| matches!(c, 'A'..='F')).count();
+        if letter_count >= min_letters {
+            return candidate.to_string();
+        }
+    }
+}
+
 fn row_to_data_use_agreement(row: &Row) -> DataUseAgreement {
     DataUseAgreement {
         id: row.get("id"),
@@ -1111,6 +1650,45 @@ fn row_to_organization(row: &Row) -> Organization {
     Organization {
         id: row.get("id"),
         name: row.get("name"),
+        hex_code: row.get("hex_code"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_patient(row: &Row) -> Patient {
+    Patient {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        project_id: row.get("project_id"),
+        site_id: row.get("site_id"),
+        external_subject_id: row.get("external_subject_id"),
+        email: row.get("email"),
+        date_of_birth: row.get("date_of_birth"),
+        hex_code: row.get("hex_code"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_provider(row: &Row) -> Provider {
+    Provider {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        name: row.get("name"),
+        title: row.get("title"),
+        referral_source: row.get("referral_source"),
+        hex_code: row.get("hex_code"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_encounter(row: &Row) -> Encounter {
+    Encounter {
+        id: row.get("id"),
+        patient_id: row.get("patient_id"),
+        provider_id: row.get("provider_id"),
+        encounter_type: row.get("encounter_type"),
+        notes: row.get("notes"),
+        hex_code: row.get("hex_code"),
         created_at: row.get("created_at"),
     }
 }
