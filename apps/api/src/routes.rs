@@ -3642,7 +3642,7 @@ async fn render_study_workbench(
             .map(|id| format!("/ui/studies/{id}/startup-checklist"))
             .unwrap_or_else(|| "#".to_string());
         format!(
-            r#"<section class="card" style="margin:0.7rem 0;">
+            r#"<section id="startup-next-task" class="card" style="margin:0.7rem 0;">
   <h3>Next required task</h3>
   <p><strong>{}</strong></p>
   <p class="muted">Complete this task first to unblock study initiation.</p>
@@ -4058,7 +4058,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="startup">
+<section id="startup-checklist-panel" class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="startup">
   <h2>8) Study Startup Checklist</h2>
   <p class="muted">Use this checklist to move from setup to launch. Work through pending tasks and mark them complete.</p>
   {}
@@ -4083,7 +4083,7 @@ async fn render_study_workbench(
   </details>
 </section>
 
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="close">
+<section id="close-checklist-panel" class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="close">
   <h2>9) Study Close Checklist</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -4858,7 +4858,7 @@ async fn submit_set_study_startup_checklist_item(
         .await
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=startup&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=startup&notice={}#startup-next-task",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
@@ -4909,7 +4909,7 @@ async fn submit_set_study_close_checklist_item(
         .await
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=close&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=close&notice={}#close-checklist-panel",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
@@ -6598,6 +6598,15 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
           btn.addEventListener('click', () => activate(btn.getAttribute('data-tab-id')));
         }});
       }});
+      const hashId = window.location.hash ? window.location.hash.slice(1) : '';
+      if (hashId) {{
+        const target = document.getElementById(hashId);
+        if (target) {{
+          window.requestAnimationFrame(() => {{
+            target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+          }});
+        }}
+      }}
     }})();
   </script>
 </body>
