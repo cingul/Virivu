@@ -43,6 +43,19 @@ pub struct AppContext {
 pub fn router(ctx: AppContext) -> Router {
     let public_router = Router::new()
         .route("/health", get(health))
+        .route("/ui", get(redirect_ui_home))
+        .route("/ui/app", get(render_app_dashboard))
+        .route(
+            "/ui/app/create-organization",
+            post(submit_app_create_organization),
+        )
+        .route("/ui/app/create-project", post(submit_app_create_project))
+        .route("/ui/app/create-site", post(submit_app_create_site))
+        .route("/ui/app/send-invite", post(submit_app_send_invite))
+        .route(
+            "/ui/app/create-media-ticket",
+            post(submit_app_create_media_ticket),
+        )
         .route(
             "/v1/auth/google/token-introspect",
             post(google_token_introspect),
@@ -433,6 +446,574 @@ async fn project_progress_report(
         total_media_captures_requested: report.total_media_captures_requested,
         report_generated_at: Utc::now().to_rfc3339(),
     }))
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AppDashboardQuery {
+    admin_email: Option<String>,
+    organization_id: Option<String>,
+    project_id: Option<String>,
+    notice: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCreateOrganizationForm {
+    admin_email: String,
+    organization_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCreateProjectForm {
+    admin_email: String,
+    organization_id: String,
+    project_name: String,
+    therapeutic_area: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCreateSiteForm {
+    admin_email: String,
+    project_id: String,
+    site_name: String,
+    principal_investigator: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppSendInviteForm {
+    admin_email: String,
+    organization_id: String,
+    project_id: String,
+    patient_email: String,
+    form_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppCreateMediaTicketForm {
+    admin_email: String,
+    organization_id: String,
+    project_id: String,
+    patient_id: String,
+    mime_type: String,
+}
+
+async fn redirect_ui_home() -> Redirect {
+    Redirect::to("/ui/app")
+}
+
+async fn render_app_dashboard(
+    State(ctx): State<AppContext>,
+    Query(query): Query<AppDashboardQuery>,
+) -> Result<Html<String>, ApiError> {
+    let admin_email = query
+        .admin_email
+        .unwrap_or_else(|| "arcot@cingulum.org".to_string());
+    let admin_email_q = query_escape(admin_email.trim());
+
+    let organizations = ctx
+        .db
+        .list_organizations_for_email(admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+
+    let selected_org_id = query
+        .organization_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .or_else(|| organizations.first().map(|org| org.id));
+
+    let projects = if let Some(org_id) = selected_org_id {
+        ctx.db
+            .list_projects_by_organization(org_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let selected_project_id = query
+        .project_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .filter(|pid| projects.iter().any(|project| project.id == *pid))
+        .or_else(|| projects.first().map(|project| project.id));
+
+    let sites = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_sites_by_project(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let duas = if let Some(org_id) = selected_org_id {
+        ctx.db
+            .list_data_use_agreements(org_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let org_summary = if let Some(org_id) = selected_org_id {
+        Some(
+            ctx.db
+                .organization_summary(org_id)
+                .await
+                .map_err(ApiError::internal)?,
+        )
+    } else {
+        None
+    };
+
+    let project_report = if let Some(project_id) = selected_project_id {
+        Some(
+            ctx.db
+                .project_progress_report(project_id)
+                .await
+                .map_err(ApiError::internal)?,
+        )
+    } else {
+        None
+    };
+
+    let notice_html = query
+        .notice
+        .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
+        .unwrap_or_default();
+
+    let organizations_html = if organizations.is_empty() {
+        "<li>No organizations available yet.</li>".to_string()
+    } else {
+        organizations
+            .iter()
+            .map(|org| {
+                format!(
+                    r#"<li><a href="/ui/app?admin_email={}&organization_id={}">{}</a> <small>({})</small></li>"#,
+                    admin_email_q,
+                    org.id,
+                    html_escape(&org.name),
+                    org.id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let projects_html = if projects.is_empty() {
+        "<li>No projects yet for selected organization.</li>".to_string()
+    } else {
+        projects
+            .iter()
+            .map(|project| {
+                let selected_org = selected_org_id
+                    .map(|org_id| format!("&organization_id={}", org_id))
+                    .unwrap_or_default();
+                format!(
+                    r#"<li><a href="/ui/app?admin_email={}{}&project_id={}">{}</a> <small>({})</small></li>"#,
+                    admin_email_q,
+                    selected_org,
+                    project.id,
+                    html_escape(&project.name),
+                    html_escape(&project.therapeutic_area)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let sites_html = if sites.is_empty() {
+        "<li>No sites yet for selected project.</li>".to_string()
+    } else {
+        sites
+            .iter()
+            .map(|site| {
+                format!(
+                    "<li><strong>{}</strong> <small>(PI: {})</small></li>",
+                    html_escape(&site.name),
+                    html_escape(&site.principal_investigator)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let dua_html = if duas.is_empty() {
+        "<li>No DUAs yet for selected organization.</li>".to_string()
+    } else {
+        duas.iter()
+            .take(8)
+            .map(|dua| {
+                format!(
+                    r#"<li><a href="/ui/dua/{}">{}</a> <span class="status-chip">{}</span></li>"#,
+                    dua.id,
+                    html_escape(&dua.hospital_name),
+                    html_escape(&dua.status)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_project_value = selected_project_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+
+    let org_summary_html = if let Some(summary) = org_summary {
+        format!(
+            "<p><strong>Projects:</strong> {} · <strong>Sites:</strong> {} · <strong>Form Invites:</strong> {} · <strong>Media Links:</strong> {}</p>",
+            summary.projects, summary.sites, summary.sent_form_invites, summary.generated_media_upload_links
+        )
+    } else {
+        "<p class=\"muted\">Select an organization to view summary.</p>".to_string()
+    };
+
+    let project_summary_html = if let Some(summary) = project_report {
+        format!(
+            "<p><strong>Sites:</strong> {} · <strong>Form Invites:</strong> {} · <strong>Media Capture Requests:</strong> {}</p>",
+            summary.total_sites, summary.total_form_invites, summary.total_media_captures_requested
+        )
+    } else {
+        "<p class=\"muted\">Select a project to view summary.</p>".to_string()
+    };
+
+    let body = format!(
+        r#"
+<h1>Virivu Research Web App</h1>
+<p class="muted">Unified operations workspace: institutions, trial setup, patient workflows, legal agreements, and analytics.</p>
+{}
+<section class="card">
+  <h2>Workspace Context</h2>
+  <p><strong>Admin:</strong> {}</p>
+  <p><strong>Organization:</strong> {}</p>
+  <p><strong>Project:</strong> {}</p>
+  <p><a href="/ui/dua?admin_email={}">Open dedicated DUA console</a></p>
+</section>
+
+<section class="card">
+  <h2>1) Organizations</h2>
+  <form method="post" action="/ui/app/create-organization">
+    <label>Admin email (platform admin)</label>
+    <input name="admin_email" value="{}" required />
+    <label>Organization legal name</label>
+    <input name="organization_name" placeholder="Cingulum Foundation Inc." required />
+    <button type="submit">Create Organization</button>
+  </form>
+  <h3 style="margin-top:1rem;">Available organizations</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>2) Project Setup</h2>
+  <form method="post" action="/ui/app/create-project">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Organization ID</label>
+    <input name="organization_id" value="{}" required />
+    <label>Project name</label>
+    <input name="project_name" placeholder="Stroke Registry 2026" required />
+    <label>Therapeutic area</label>
+    <input name="therapeutic_area" placeholder="Neurology" required />
+    <button type="submit">Create Project</button>
+  </form>
+  <h3 style="margin-top:1rem;">Projects</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>3) Site Setup</h2>
+  <form method="post" action="/ui/app/create-site">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Project ID</label>
+    <input name="project_id" value="{}" required />
+    <label>Site name</label>
+    <input name="site_name" placeholder="North Campus Site A" required />
+    <label>Principal investigator</label>
+    <input name="principal_investigator" placeholder="Dr. Example" required />
+    <button type="submit">Create Site</button>
+  </form>
+  <h3 style="margin-top:1rem;">Sites</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>4) Patient Workflow</h2>
+  <form method="post" action="/ui/app/send-invite" style="margin-bottom:1rem;">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Organization ID</label>
+    <input name="organization_id" value="{}" required />
+    <label>Project ID</label>
+    <input name="project_id" value="{}" required />
+    <label>Patient email</label>
+    <input type="email" name="patient_email" placeholder="patient@example.org" required />
+    <label>Form type</label>
+    <input name="form_type" placeholder="demographics-intake" required />
+    <button type="submit">Send Patient Form Invite</button>
+  </form>
+
+  <form method="post" action="/ui/app/create-media-ticket">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Organization ID</label>
+    <input name="organization_id" value="{}" required />
+    <label>Project ID</label>
+    <input name="project_id" value="{}" required />
+    <label>Patient ID</label>
+    <input name="patient_id" placeholder="subject-001" required />
+    <label>MIME type</label>
+    <input name="mime_type" placeholder="video/mp4" required />
+    <button type="submit">Generate Media Upload Link</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>5) Analytics Summary</h2>
+  {}
+  {}
+</section>
+
+<section class="card">
+  <h2>6) Legal / DUA</h2>
+  <ul>{}</ul>
+</section>
+"#,
+        notice_html,
+        html_escape(admin_email.trim()),
+        if selected_org_value.is_empty() {
+            "<span class=\"muted\">none selected</span>".to_string()
+        } else {
+            selected_org_value.clone()
+        },
+        if selected_project_value.is_empty() {
+            "<span class=\"muted\">none selected</span>".to_string()
+        } else {
+            selected_project_value.clone()
+        },
+        admin_email_q,
+        html_escape(admin_email.trim()),
+        organizations_html,
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        projects_html,
+        html_escape(admin_email.trim()),
+        selected_project_value,
+        sites_html,
+        html_escape(admin_email.trim()),
+        selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+        selected_project_id
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        html_escape(admin_email.trim()),
+        selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+        selected_project_id
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        org_summary_html,
+        project_summary_html,
+        dua_html
+    );
+
+    Ok(Html(render_cingulum_page("Virivu Research Web App", body)))
+}
+
+async fn submit_app_create_organization(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppCreateOrganizationForm>,
+) -> Result<Redirect, ApiError> {
+    if form.organization_name.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "organization_name is required".to_string(),
+        ));
+    }
+    let is_platform_admin = ctx
+        .db
+        .email_has_platform_admin_role(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    if !is_platform_admin {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email is not a platform_admin".to_string(),
+        )));
+    }
+    let organization = ctx
+        .db
+        .create_organization(form.organization_name.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    ctx.db
+        .ensure_org_admin_membership(form.admin_email.trim(), organization.id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        organization.id,
+        query_escape("Organization created")
+    )))
+}
+
+async fn submit_app_create_project(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppCreateProjectForm>,
+) -> Result<Redirect, ApiError> {
+    let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
+    if form.project_name.trim().is_empty() {
+        return Err(ApiError::Validation("project_name is required".to_string()));
+    }
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let project = ctx
+        .db
+        .create_project(
+            organization_id,
+            form.project_name.trim(),
+            form.therapeutic_area.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        organization_id,
+        project.id,
+        query_escape("Project created")
+    )))
+}
+
+async fn submit_app_create_site(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppCreateSiteForm>,
+) -> Result<Redirect, ApiError> {
+    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+
+    ctx.db
+        .create_site(
+            project_id,
+            form.site_name.trim(),
+            form.principal_investigator.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        query_escape("Site created")
+    )))
+}
+
+async fn submit_app_send_invite(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppSendInviteForm>,
+) -> Result<Redirect, ApiError> {
+    let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
+    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    ctx.db
+        .create_form_invite(
+            organization_id,
+            project_id,
+            form.patient_email.trim(),
+            form.form_type.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        organization_id,
+        project_id,
+        query_escape("Form invite sent")
+    )))
+}
+
+async fn submit_app_create_media_ticket(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppCreateMediaTicketForm>,
+) -> Result<Html<String>, ApiError> {
+    let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
+    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let ticket = ctx
+        .db
+        .create_media_upload_ticket(
+            organization_id,
+            project_id,
+            form.patient_id.trim(),
+            form.mime_type.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    let body = format!(
+        r#"<section class="card">
+  <h1>Media Upload Ticket Created</h1>
+  <p><strong>Ticket ID:</strong> {}</p>
+  <p><strong>Upload URL:</strong> <a href="{}">{}</a></p>
+  <p><strong>Expires At:</strong> {}</p>
+  <p><a href="/ui/app?admin_email={}&organization_id={}&project_id={}">Back to app dashboard</a></p>
+</section>"#,
+        ticket.id,
+        html_escape(&ticket.upload_url),
+        html_escape(&ticket.upload_url),
+        ticket.expires_at,
+        query_escape(form.admin_email.trim()),
+        organization_id,
+        project_id
+    );
+    Ok(Html(render_cingulum_page(
+        "Media Upload Ticket Created",
+        body,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1476,6 +2057,22 @@ fn parse_optional_date(raw: &str) -> Result<Option<chrono::NaiveDate>, ApiError>
     chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
         .map(Some)
         .map_err(|_| ApiError::Validation("date must use YYYY-MM-DD format".to_string()))
+}
+
+fn parse_uuid_field(raw: &str, field_name: &str) -> Result<Uuid, ApiError> {
+    raw.trim()
+        .parse::<Uuid>()
+        .map_err(|_| ApiError::Validation(format!("{field_name} must be a valid UUID")))
+}
+
+fn query_escape(input: &str) -> String {
+    input
+        .replace('%', "%25")
+        .replace(' ', "+")
+        .replace('&', "%26")
+        .replace('?', "%3F")
+        .replace('#', "%23")
+        .replace('=', "%3D")
 }
 
 fn default_dua_text() -> &'static str {

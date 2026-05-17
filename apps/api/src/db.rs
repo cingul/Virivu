@@ -51,6 +51,59 @@ impl Db {
         })
     }
 
+    pub async fn list_projects_by_organization(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<Project>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, organization_id, name, therapeutic_area, created_at
+                FROM projects
+                WHERE organization_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&organization_id],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| Project {
+                id: r.get("id"),
+                organization_id: r.get("organization_id"),
+                name: r.get("name"),
+                therapeutic_area: r.get("therapeutic_area"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    pub async fn list_sites_by_project(&self, project_id: Uuid) -> anyhow::Result<Vec<Site>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, project_id, name, principal_investigator, created_at
+                FROM sites
+                WHERE project_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| Site {
+                id: r.get("id"),
+                project_id: r.get("project_id"),
+                name: r.get("name"),
+                principal_investigator: r.get("principal_investigator"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
     pub async fn create_project(
         &self,
         organization_id: Uuid,

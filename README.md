@@ -18,6 +18,7 @@ It is designed to reduce operational friction in clinical and translational rese
 - Electronic Data Use Agreement (DUA) workflows for hospitals and Cingulum Foundation Inc.
 - Browser-accessible DUA drafting/signing pages and PDF export endpoints
 - In-browser organization setup for end-to-end DUA onboarding
+- Unified web app dashboard at `/ui/app` that ties operations, patient workflows, analytics, and legal flows together
 
 ## Core Stack (v1 scaffold)
 

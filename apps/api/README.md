@@ -126,6 +126,14 @@ xdg-open http://localhost:8080/ui/dua
 
 The DUA UI now includes an in-browser **Step 1** to create organizations, so you no longer need terminal commands just to get an organization UUID.
 
+Open unified web app dashboard:
+
+```bash
+xdg-open http://localhost:8080/ui/app
+```
+
+`/ui/app` combines organization setup, project/site setup, patient invite/media actions, analytics snapshots, and links into legal DUA workflows.
+
 ## Notes
 
 - `ALLOW_DEV_AUTH_BYPASS=true` allows local development auth via `x-dev-user-email`.
