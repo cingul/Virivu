@@ -48,6 +48,7 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
         .route("/ui/studies/create", post(submit_create_study_from_ui))
+        .route("/ui/studies/phase", post(submit_study_phase_transition_v2))
         .route(
             "/ui/studies/{project_id}/phase",
             post(submit_study_phase_transition),
@@ -1546,6 +1547,7 @@ struct StudyCreateForm {
 
 #[derive(Debug, Deserialize)]
 struct StudyPhaseTransitionForm {
+    project_id: Option<String>,
     admin_email: String,
     next_phase: String,
     notes: String,
@@ -3076,9 +3078,7 @@ async fn render_study_workbench(
     let selected_submission_value = selected_submission_id
         .map(|id| id.to_string())
         .unwrap_or_default();
-    let phase_action = selected_project_id
-        .map(|id| format!("/ui/studies/{id}/phase"))
-        .unwrap_or_else(|| "#".to_string());
+    let phase_action = "/ui/studies/phase".to_string();
     let crf_template_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/crf-template"))
         .unwrap_or_else(|| "#".to_string());
@@ -3167,6 +3167,7 @@ async fn render_study_workbench(
   {}
   {}
   <form method="post" action="{}">
+    <input type="hidden" name="project_id" value="{}" />
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Next phase</label>
@@ -3383,6 +3384,7 @@ async fn render_study_workbench(
         readiness_html,
         operational_summary_html,
         phase_action,
+        selected_project_value.clone(),
         html_escape(admin_email.trim()),
         phase_events_html,
         crf_template_action,
@@ -3485,6 +3487,40 @@ async fn submit_study_phase_transition(
     State(ctx): State<AppContext>,
     Path(project_id): Path<Uuid>,
     Form(form): Form<StudyPhaseTransitionForm>,
+) -> Result<Redirect, ApiError> {
+    perform_study_phase_transition(&ctx, project_id, &form).await
+}
+
+async fn submit_study_phase_transition_v2(
+    State(ctx): State<AppContext>,
+    Form(form): Form<StudyPhaseTransitionForm>,
+) -> Result<Redirect, ApiError> {
+    let project_id = match form.project_id.as_deref().map(str::trim) {
+        Some(value) if !value.is_empty() => match parse_uuid_field(value, "project_id") {
+            Ok(project_id) => project_id,
+            Err(_) => {
+                return Ok(Redirect::to(&format!(
+                    "/ui/studies?admin_email={}&notice={}",
+                    query_escape(form.admin_email.trim()),
+                    query_escape("Select a study before transitioning phase")
+                )));
+            }
+        },
+        _ => {
+            return Ok(Redirect::to(&format!(
+                "/ui/studies?admin_email={}&notice={}",
+                query_escape(form.admin_email.trim()),
+                query_escape("Select a study before transitioning phase")
+            )));
+        }
+    };
+    perform_study_phase_transition(&ctx, project_id, &form).await
+}
+
+async fn perform_study_phase_transition(
+    ctx: &AppContext,
+    project_id: Uuid,
+    form: &StudyPhaseTransitionForm,
 ) -> Result<Redirect, ApiError> {
     let project = ctx
         .db
