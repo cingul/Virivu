@@ -3014,6 +3014,12 @@ async fn render_study_workbench(
         .and_then(|raw| raw.parse::<Uuid>().ok())
         .filter(|pid| projects.iter().any(|p| p.id == *pid))
         .or_else(|| projects.first().map(|p| p.id));
+    if let Some(project_id) = selected_project_id {
+        ctx.db
+            .ensure_default_study_startup_checklist_items(project_id)
+            .await
+            .map_err(ApiError::internal)?;
+    }
     let readiness = if let Some(project_id) = selected_project_id {
         Some(
             ctx.db
@@ -3616,6 +3622,57 @@ async fn render_study_workbench(
             startup_next_task
         )
     };
+    let startup_workflow_framework_html = if selected_project_id.is_none() {
+        String::new()
+    } else {
+        "<h3>Startup workflow map</h3>
+<ol>
+  <li><strong>Protocol and budget readiness:</strong> final protocol package and site budget/contract alignment.</li>
+  <li><strong>Regulatory approvals:</strong> IRB/ethics and essential regulatory documentation complete.</li>
+  <li><strong>Site activation:</strong> site resources, investigator assignment, and operational readiness confirmed.</li>
+  <li><strong>EDC/CRF go-live:</strong> forms, permissions, and data review configuration validated.</li>
+  <li><strong>Team training:</strong> protocol and SOP training complete for all active staff.</li>
+</ol>"
+            .to_string()
+    };
+    let startup_next_action_html = if let Some(next_item) =
+        startup_checklist_items.iter().find(|item| !item.completed)
+    {
+        let mark_complete_action = selected_project_id
+            .map(|id| format!("/ui/studies/{id}/startup-checklist"))
+            .unwrap_or_else(|| "#".to_string());
+        format!(
+            r#"<section class="card" style="margin:0.7rem 0;">
+  <h3>Next required task</h3>
+  <p><strong>{}</strong></p>
+  <p class="muted">Complete this task first to unblock study initiation.</p>
+  <form method="post" action="{}" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.5rem;align-items:center;">
+    <input type="hidden" name="admin_email" value="{}" />
+    <input type="hidden" name="item_code" value="{}" />
+    <input type="hidden" name="item_label" value="{}" />
+    <input type="hidden" name="completed" value="true" />
+    <input name="notes" value="{}" placeholder="Completion note (optional)" />
+    <button type="submit">Mark complete and continue</button>
+  </form>
+</section>"#,
+            html_escape(&next_item.item_label),
+            mark_complete_action,
+            html_escape(admin_email.trim()),
+            html_escape(&next_item.item_code),
+            html_escape(&next_item.item_label),
+            html_escape(&next_item.notes)
+        )
+    } else if selected_project_id.is_some() {
+        format!(
+            r#"<p class="notice">Startup checklist is complete. Next: <a href="{}">open Lifecycle tab</a> and transition study phase.</p>"#,
+            format!(
+                "/ui/studies?admin_email={}{}{}&tab=lifecycle",
+                admin_email_q, selected_org_q, selected_project_q
+            )
+        )
+    } else {
+        String::new()
+    };
     let startup_checklist_html = if startup_checklist_items.is_empty() {
         "<li>No startup checklist items yet. Add one in the advanced section below.</li>"
             .to_string()
@@ -4005,6 +4062,8 @@ async fn render_study_workbench(
   <h2>8) Study Startup Checklist</h2>
   <p class="muted">Use this checklist to move from setup to launch. Work through pending tasks and mark them complete.</p>
   {}
+  {}
+  {}
   <ul>{}</ul>
   <details style="margin-top:0.9rem;">
     <summary><strong>Add or edit startup item (advanced)</strong></summary>
@@ -4105,6 +4164,8 @@ async fn render_study_workbench(
         selected_submission_value,
         data_queries_html,
         startup_summary_html,
+        startup_workflow_framework_html,
+        startup_next_action_html,
         startup_checklist_html,
         startup_checklist_action,
         html_escape(admin_email.trim()),
@@ -4797,7 +4858,7 @@ async fn submit_set_study_startup_checklist_item(
         .await
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=startup&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
@@ -4848,7 +4909,7 @@ async fn submit_set_study_close_checklist_item(
         .await
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=close&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,

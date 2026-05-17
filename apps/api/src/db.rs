@@ -18,6 +18,41 @@ pub struct Db {
     pool: Pool,
 }
 
+const DEFAULT_STUDY_STARTUP_CHECKLIST_ITEMS: [(&str, &str); 8] = [
+    (
+        "protocol_finalized",
+        "Protocol and schedule of assessments finalized for operational launch",
+    ),
+    (
+        "budget_contracts_executed",
+        "Study budget and site contract package executed",
+    ),
+    (
+        "irb_approval_documented",
+        "IRB / ethics approval documented for study launch",
+    ),
+    (
+        "regulatory_documents_complete",
+        "Essential regulatory documents (delegation log, CVs, disclosures, approvals) complete",
+    ),
+    (
+        "site_activation_complete",
+        "At least one site is activated with investigator assignment",
+    ),
+    (
+        "crf_publish_complete",
+        "Core CRF templates are published and validated",
+    ),
+    (
+        "edc_permissions_validated",
+        "EDC roles, permissions, and production-ready data review views validated",
+    ),
+    (
+        "team_training_complete",
+        "Study team training and SOP acknowledgement completed",
+    ),
+];
+
 impl Db {
     pub async fn connect(database_url: &str) -> anyhow::Result<Self> {
         let pg_config: tokio_postgres::Config = database_url.parse()?;
@@ -277,24 +312,7 @@ impl Db {
             )
             .await?;
         let project_id: Uuid = row.get("id");
-        for (item_code, item_label) in [
-            (
-                "irb_approval_documented",
-                "IRB / ethics approval documented for study launch",
-            ),
-            (
-                "site_activation_complete",
-                "At least one site is activated with investigator assignment",
-            ),
-            (
-                "crf_publish_complete",
-                "Core CRF templates are published and validated",
-            ),
-            (
-                "team_training_complete",
-                "Study team training and SOP acknowledgement completed",
-            ),
-        ] {
+        for (item_code, item_label) in DEFAULT_STUDY_STARTUP_CHECKLIST_ITEMS {
             client
                 .execute(
                     r#"
@@ -1415,6 +1433,26 @@ impl Db {
             .iter()
             .map(row_to_study_startup_checklist_item)
             .collect())
+    }
+
+    pub async fn ensure_default_study_startup_checklist_items(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        for (item_code, item_label) in DEFAULT_STUDY_STARTUP_CHECKLIST_ITEMS {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO study_startup_checklist_items (project_id, item_code, item_label)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (project_id, item_code) DO NOTHING
+                    "#,
+                    &[&project_id, &item_code, &item_label],
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn set_study_startup_checklist_item(
