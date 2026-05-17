@@ -6,6 +6,9 @@ use uuid::Uuid;
 pub struct Organization {
     pub id: Uuid,
     pub name: String,
+    pub parent_organization_id: Option<Uuid>,
+    pub organization_kind: String,
+    pub workspace_slug: Option<String>,
     pub hex_code: Option<String>,
     pub created_at: DateTime<Utc>,
 }

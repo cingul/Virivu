@@ -377,6 +377,8 @@ async fn google_token_introspect(
 #[derive(Debug, Deserialize)]
 struct CreateOrganizationRequest {
     name: String,
+    parent_organization_id: Option<Uuid>,
+    organization_kind: Option<String>,
 }
 
 async fn create_organization(
@@ -394,7 +396,11 @@ async fn create_organization(
 
     let org = ctx
         .db
-        .create_organization(payload.name.trim())
+        .create_organization(
+            payload.name.trim(),
+            payload.parent_organization_id,
+            payload.organization_kind.as_deref().map(str::trim),
+        )
         .await
         .map_err(ApiError::internal)?;
     Ok((StatusCode::CREATED, Json(org)))
@@ -1460,6 +1466,8 @@ struct AppDashboardQuery {
 struct AppCreateOrganizationForm {
     admin_email: String,
     organization_name: String,
+    parent_organization_id: String,
+    organization_kind: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1661,7 +1669,13 @@ async fn render_app_dashboard(
         .organization_id
         .as_deref()
         .and_then(|raw| raw.parse::<Uuid>().ok())
-        .or_else(|| organizations.first().map(|org| org.id));
+        .or_else(|| {
+            organizations
+                .iter()
+                .find(|org| org.organization_kind == "platform_root")
+                .map(|org| org.id)
+                .or_else(|| organizations.first().map(|org| org.id))
+        });
 
     let projects = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -1691,6 +1705,15 @@ async fn render_app_dashboard(
     let duas = if let Some(org_id) = selected_org_id {
         ctx.db
             .list_data_use_agreements(org_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let child_organizations = if let Some(org_id) = selected_org_id {
+        ctx.db
+            .list_child_organizations(org_id)
             .await
             .map_err(ApiError::internal)?
     } else {
@@ -1765,12 +1788,16 @@ async fn render_app_dashboard(
             .iter()
             .map(|org| {
                 format!(
-                    r#"<li><a href="/ui/app?admin_email={}&organization_id={}">{}</a> <small>(id: {} · hex: {})</small></li>"#,
+                    r#"<li><a href="/ui/app?admin_email={}&organization_id={}">{}</a> <small>(kind: {} · id: {} · hex: {} · parent: {})</small></li>"#,
                     admin_email_q,
                     org.id,
                     html_escape(&org.name),
+                    html_escape(&org.organization_kind),
                     org.id,
-                    html_escape(org.hex_code.as_deref().unwrap_or("pending"))
+                    html_escape(org.hex_code.as_deref().unwrap_or("pending")),
+                    org.parent_organization_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string())
                 )
             })
             .collect::<Vec<_>>()
@@ -1825,8 +1852,9 @@ async fn render_app_dashboard(
             .take(8)
             .map(|dua| {
                 format!(
-                    r#"<li><a href="/ui/dua/{}">{}</a> <span class="status-chip">{}</span></li>"#,
+                    r#"<li><a href="/ui/dua/{}?admin_email={}">{}</a> <span class="status-chip">{}</span></li>"#,
                     dua.id,
+                    admin_email_q,
                     html_escape(&dua.hospital_name),
                     html_escape(&dua.status)
                 )
@@ -1931,6 +1959,23 @@ async fn render_app_dashboard(
             .join("")
     };
 
+    let child_organizations_html = if child_organizations.is_empty() {
+        "<li>No child organizations under current workspace.</li>".to_string()
+    } else {
+        child_organizations
+            .iter()
+            .map(|org| {
+                format!(
+                    "<li><strong>{}</strong> <small>(kind: {} · id: {})</small></li>",
+                    html_escape(&org.name),
+                    html_escape(&org.organization_kind),
+                    org.id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
     let organization_options_html = organizations
         .iter()
         .map(|org| {
@@ -2012,6 +2057,8 @@ async fn render_app_dashboard(
   <p><strong>Admin:</strong> {}</p>
   <p><strong>Organization:</strong> {}</p>
   <p><strong>Project:</strong> {}</p>
+  <h3 style="margin-top:0.8rem;">Child organizations</h3>
+  <ul>{}</ul>
   <p><a href="/ui/studies">Open study lifecycle + CRF workbench</a></p>
   <p><a href="/ui/dua?admin_email={}">Open dedicated DUA console</a></p>
 </section>
@@ -2023,6 +2070,15 @@ async fn render_app_dashboard(
     <input name="admin_email" value="{}" required />
     <label>Organization legal name</label>
     <input name="organization_name" placeholder="Cingulum Foundation Inc." required />
+    <label>Parent organization ID (optional; blank = Cingulum Foundation root)</label>
+    <input name="parent_organization_id" list="app-organization-options" value="{}" placeholder="root-managed child org" />
+    <label>Organization type</label>
+    <select name="organization_kind">
+      <option value="tenant" selected>tenant</option>
+      <option value="research_network">research_network</option>
+      <option value="hospital">hospital</option>
+      <option value="sponsor">sponsor</option>
+    </select>
     <button type="submit">Create Organization</button>
   </form>
   <h3 style="margin-top:1rem;">Available organizations</h3>
@@ -2184,8 +2240,10 @@ async fn render_app_dashboard(
         } else {
             selected_project_value.clone()
         },
+        child_organizations_html,
         admin_email_q,
         html_escape(admin_email.trim()),
+        selected_org_value.clone(),
         organizations_html,
         html_escape(admin_email.trim()),
         selected_org_value.clone(),
@@ -2243,9 +2301,22 @@ async fn submit_app_create_organization(
             "admin_email is not a platform_admin".to_string(),
         )));
     }
+    let parent_organization_id = if form.parent_organization_id.trim().is_empty() {
+        None
+    } else {
+        Some(parse_uuid_field(
+            form.parent_organization_id.trim(),
+            "parent_organization_id",
+        )?)
+    };
+    let organization_kind = optional_non_empty(form.organization_kind.trim());
     let organization = ctx
         .db
-        .create_organization(form.organization_name.trim())
+        .create_organization(
+            form.organization_name.trim(),
+            parent_organization_id,
+            organization_kind,
+        )
         .await
         .map_err(ApiError::internal)?;
     ctx.db
@@ -2575,7 +2646,13 @@ async fn render_study_workbench(
         .organization_id
         .as_deref()
         .and_then(|raw| raw.parse::<Uuid>().ok())
-        .or_else(|| organizations.first().map(|o| o.id));
+        .or_else(|| {
+            organizations
+                .iter()
+                .find(|org| org.organization_kind == "platform_root")
+                .map(|org| org.id)
+                .or_else(|| organizations.first().map(|org| org.id))
+        });
     let projects = if let Some(org_id) = selected_org_id {
         ctx.db
             .list_projects_by_organization(org_id)
@@ -4214,6 +4291,11 @@ struct DuaExportQuery {
     admin_email: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct DuaAgreementPageQuery {
+    admin_email: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct DuaAdminPageQuery {
     admin_email: Option<String>,
@@ -4225,10 +4307,13 @@ struct DuaAdminPageQuery {
 struct DuaCreateOrganizationForm {
     admin_email: String,
     organization_name: String,
+    parent_organization_id: String,
+    organization_kind: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct DuaOpenAgreementForm {
+    admin_email: String,
     agreement_id: String,
 }
 
@@ -4247,8 +4332,15 @@ async fn render_dua_admin_page(
 
     let selected_organization_id = query
         .organization_id
-        .or_else(|| organizations.first().map(|o| o.id.to_string()))
+        .or_else(|| {
+            organizations
+                .iter()
+                .find(|org| org.organization_kind == "platform_root")
+                .map(|org| org.id.to_string())
+                .or_else(|| organizations.first().map(|o| o.id.to_string()))
+        })
         .unwrap_or_default();
+    let selected_organization_uuid = selected_organization_id.parse::<Uuid>().ok();
 
     let organization_options = organizations
         .iter()
@@ -4269,9 +4361,38 @@ async fn render_dua_admin_page(
             .iter()
             .map(|org| {
                 format!(
-                    "<li><strong>{}</strong> — {}</li>",
+                    "<li><strong>{}</strong> — {} <small>(kind: {} · parent: {})</small></li>",
                     html_escape(&org.name),
-                    org.id
+                    org.id,
+                    html_escape(&org.organization_kind),
+                    org.parent_organization_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let org_duas = if let Some(org_id) = selected_organization_uuid {
+        ctx.db
+            .list_data_use_agreements(org_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let org_duas_html = if org_duas.is_empty() {
+        "<li>No DUAs for selected organization yet.</li>".to_string()
+    } else {
+        org_duas
+            .iter()
+            .map(|dua| {
+                format!(
+                    r#"<li><a href="/ui/dua/{}?admin_email={}">{}</a> <span class="status-chip">{}</span></li>"#,
+                    dua.id,
+                    query_escape(admin_email.trim()),
+                    html_escape(&dua.hospital_name),
+                    html_escape(&dua.status)
                 )
             })
             .collect::<Vec<_>>()
@@ -4296,6 +4417,15 @@ async fn render_dua_admin_page(
 
       <label>New organization legal name</label>
       <input name="organization_name" placeholder="Cingulum Foundation Inc." required />
+      <label>Parent organization ID (optional; blank = Cingulum Foundation root)</label>
+      <input name="parent_organization_id" list="organization-options" value="{}" placeholder="child under foundation" />
+      <label>Organization type</label>
+      <select name="organization_kind">
+        <option value="tenant" selected>tenant</option>
+        <option value="research_network">research_network</option>
+        <option value="hospital">hospital</option>
+        <option value="sponsor">sponsor</option>
+      </select>
 
       <button type="submit">Create Organization</button>
     </form>
@@ -4306,10 +4436,18 @@ async fn render_dua_admin_page(
   <section class="card">
     <h2>Return to existing agreement workspace</h2>
     <form method="post" action="/ui/dua/open-agreement">
+      <label>Admin email</label>
+      <input name="admin_email" value="{}" required />
       <label>Agreement ID (UUID)</label>
       <input name="agreement_id" placeholder="agreement-uuid" required />
       <button type="submit">Open Agreement Workspace</button>
     </form>
+  </section>
+
+  <section class="card">
+    <h2>Selected organization DUA workspace</h2>
+    <p class="muted">DUAs below are scoped only to the chosen organization.</p>
+    <ul>{}</ul>
   </section>
 
   <section class="card">
@@ -4351,7 +4489,10 @@ async fn render_dua_admin_page(
 "#,
         notice_html,
         html_escape(&admin_email),
+        html_escape(&selected_organization_id),
         managed_orgs_html,
+        html_escape(&admin_email),
+        org_duas_html,
         html_escape(&admin_email),
         html_escape(&selected_organization_id),
         organization_options,
@@ -4381,10 +4522,23 @@ async fn submit_create_organization_from_ui(
             "admin_email is not a platform_admin".to_string(),
         )));
     }
+    let parent_organization_id = if form.parent_organization_id.trim().is_empty() {
+        None
+    } else {
+        Some(parse_uuid_field(
+            form.parent_organization_id.trim(),
+            "parent_organization_id",
+        )?)
+    };
+    let organization_kind = optional_non_empty(form.organization_kind.trim());
 
     let organization = ctx
         .db
-        .create_organization(form.organization_name.trim())
+        .create_organization(
+            form.organization_name.trim(),
+            parent_organization_id,
+            organization_kind,
+        )
         .await
         .map_err(ApiError::internal)?;
     ctx.db
@@ -4412,12 +4566,21 @@ async fn submit_create_organization_from_ui(
 async fn open_dua_agreement_workspace(
     Form(form): Form<DuaOpenAgreementForm>,
 ) -> Result<Redirect, ApiError> {
+    if form.admin_email.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "admin_email is required to open agreement workspace".to_string(),
+        ));
+    }
     let agreement_id = form
         .agreement_id
         .trim()
         .parse::<Uuid>()
         .map_err(|_| ApiError::Validation("agreement_id must be a valid UUID".to_string()))?;
-    Ok(Redirect::to(&format!("/ui/dua/{}", agreement_id)))
+    Ok(Redirect::to(&format!(
+        "/ui/dua/{}?admin_email={}",
+        agreement_id,
+        query_escape(form.admin_email.trim())
+    )))
 }
 
 async fn render_create_dua_from_form(
@@ -4483,15 +4646,17 @@ async fn render_create_dua_from_form(
   <p><strong>Agreement ID:</strong> {}</p>
   <p><strong>Status:</strong> <span class="status-chip">{}</span></p>
   <p><strong>Hospital signing URL:</strong> <a href="{}">{}</a></p>
-  <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
-  <p><a href="/ui/dua">Create another agreement</a></p>
+  <p><a href="/ui/dua/{}?admin_email={}">Open agreement workspace</a></p>
+  <p><a href="/ui/dua?admin_email={}">Create another agreement</a></p>
 </section>
 "#,
         agreement.id,
         html_escape(&agreement.status),
         html_escape(&signing_url),
         html_escape(&signing_url),
-        agreement.id
+        agreement.id,
+        query_escape(form.admin_email.trim()),
+        query_escape(form.admin_email.trim())
     );
     Ok(Html(render_cingulum_page("DUA Created", body)))
 }
@@ -4514,7 +4679,7 @@ async fn render_dua_hospital_sign_page(
   <p><strong>Hospital:</strong> {}</p>
   <p><strong>Counterparty:</strong> {}</p>
   <p><strong>Agreement Version:</strong> {}</p>
-  <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
+  <p><a href="/ui/dua">Cingulum admin workspace</a></p>
   <form method="post" action="/ui/dua/sign/{}">
     <label>Signer name</label>
     <input name="signer_name" required />
@@ -4533,7 +4698,6 @@ async fn render_dua_hospital_sign_page(
         html_escape(&agreement.hospital_name),
         html_escape(&agreement.counterparty_name),
         html_escape(&agreement.agreement_version),
-        agreement.id,
         agreement.hospital_signing_token,
         html_escape(&agreement.hospital_name),
     );
@@ -4573,13 +4737,11 @@ async fn submit_dua_hospital_sign_form(
   <h1>Signature received</h1>
   <p>Thank you. Your hospital signature has been recorded for agreement <strong>{}</strong>.</p>
   <p>Current status: <span class="status-chip">{}</span></p>
-  <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
   <p><a href="/ui/dua">Back to DUA home</a></p>
 </section>
 "#,
         agreement.id,
-        html_escape(&agreement.status),
-        agreement.id
+        html_escape(&agreement.status)
     );
     Ok(Html(render_cingulum_page("Signature Submitted", body)))
 }
@@ -4587,13 +4749,31 @@ async fn submit_dua_hospital_sign_form(
 async fn render_dua_agreement_page(
     State(ctx): State<AppContext>,
     Path(agreement_id): Path<Uuid>,
+    Query(query): Query<DuaAgreementPageQuery>,
 ) -> Result<Html<String>, ApiError> {
+    let admin_email = query
+        .admin_email
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            ApiError::Validation("admin_email query parameter is required for DUA workspace".into())
+        })?;
     let agreement = ctx
         .db
         .get_data_use_agreement(agreement_id)
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(&admin_email, agreement.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks permission for this organization's DUA workspace".to_string(),
+        )));
+    }
     let signatures = ctx
         .db
         .list_data_use_agreement_signatures(agreement_id)
@@ -4642,6 +4822,7 @@ async fn render_dua_agreement_page(
         r#"
 <section class="card">
   <h1>DUA Workspace</h1>
+  <p><strong>Organization ID:</strong> {}</p>
   <p><strong>Agreement ID:</strong> {}</p>
   <p><strong>Hospital:</strong> {}</p>
   <p><strong>Status:</strong> <span class="status-chip">{}</span></p>
@@ -4652,12 +4833,12 @@ async fn render_dua_agreement_page(
   <h2>Actions</h2>
   <form method="post" action="/ui/dua/{}/send-hospital-link" style="margin-bottom:1rem;">
     <label>Admin email for send action</label>
-    <input name="admin_email" placeholder="arcot@cingulum.org" required style="max-width:480px;" />
+    <input name="admin_email" value="{}" required style="max-width:480px;" />
     <button type="submit">Queue Hospital Signing Email</button>
   </form>
 
   <form method="post" action="/ui/dua/{}/sign-cingulum" style="margin-bottom:1rem;">
-    <input type="hidden" name="admin_email" value="arcot@cingulum.org" />
+    <input type="hidden" name="admin_email" value="{}" />
     <label>Cingulum signer name</label><input name="signer_name" required style="max-width:480px;" />
     <label>Cingulum signer email</label><input name="signer_email" required style="max-width:480px;" />
     <label>Cingulum signer title</label><input name="signer_title" required style="max-width:480px;" />
@@ -4665,7 +4846,8 @@ async fn render_dua_agreement_page(
     <button type="submit">Apply Cingulum Signature</button>
   </form>
 
-  <p><a href="/ui/dua/{}/export.pdf?admin_email=arcot@cingulum.org">Download PDF (requires admin_email query)</a></p>
+  <p><a href="/ui/dua/{}/export.pdf?admin_email={}">Download PDF</a></p>
+  <p><a href="/ui/dua?admin_email={}">Back to DUA home</a></p>
 </section>
 
 <section class="card">
@@ -4681,14 +4863,19 @@ async fn render_dua_agreement_page(
   <pre style="white-space: pre-wrap; border:1px solid #C5B7AB; padding:1rem; border-radius:10px; background:#fff;">{}</pre>
 </section>
 "#,
+        agreement.organization_id,
         agreement.id,
         html_escape(&agreement.hospital_name),
         html_escape(&agreement.status),
         signing_link,
         signing_link,
         agreement.id,
+        html_escape(&admin_email),
         agreement.id,
+        html_escape(&admin_email),
         agreement.id,
+        query_escape(&admin_email),
+        query_escape(&admin_email),
         if signatures_html.is_empty() {
             "<li>No signatures yet</li>".to_string()
         } else {
@@ -4740,10 +4927,12 @@ async fn submit_dua_send_hospital_link_form(
 <section class="card">
   <h1>Email queued</h1>
   <p>Hospital signing email has been queued for agreement <strong>{}</strong>.</p>
-  <p><a href="/ui/dua/{}">Back to agreement</a></p>
+  <p><a href="/ui/dua/{}?admin_email={}">Back to agreement</a></p>
 </section>
 "#,
-        agreement_id, agreement_id
+        agreement_id,
+        agreement_id,
+        query_escape(form.admin_email.trim())
     );
     Ok(Html(render_cingulum_page("Email queued", body)))
 }
@@ -4794,10 +4983,11 @@ async fn submit_dua_cingulum_sign_form(
         r#"
 <section class="card">
   <h1>Cingulum signature recorded</h1>
-  <p><a href="/ui/dua/{}">Back to agreement</a></p>
+  <p><a href="/ui/dua/{}?admin_email={}">Back to agreement</a></p>
 </section>
 "#,
-        agreement_id
+        agreement_id,
+        query_escape(form.admin_email.trim())
     );
     Ok(Html(render_cingulum_page(
         "Cingulum signature recorded",
@@ -5429,6 +5619,12 @@ fn cingulum_theme_css() -> &'static str {
       box-shadow: 0 14px 28px rgba(2, 24, 43, 0.09);
       padding: 1rem 1.1rem 1.15rem;
       margin-bottom: 1.05rem;
+      transition: transform 160ms ease, box-shadow 220ms ease, border-color 160ms ease;
+    }
+    .card:hover {
+      transform: translateY(-1.5px);
+      box-shadow: 0 18px 34px rgba(2, 24, 43, 0.12);
+      border-color: rgba(240, 87, 8, 0.36);
     }
     h1, h2, h3 { margin-top: 0; color: var(--cg-navy); letter-spacing: 0.01em; }
     h1 { font-size: 1.95rem; margin-bottom: 0.5rem; }
@@ -5524,7 +5720,14 @@ fn cingulum_theme_css() -> &'static str {
       box-shadow: 0 7px 16px rgba(2, 24, 43, 0.22);
     }
     .tab-panel { display: none; }
-    .tab-panel.is-active { display: block; }
+    .tab-panel.is-active {
+      display: block;
+      animation: tab-fade-in 220ms ease;
+    }
+    @keyframes tab-fade-in {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
     @media (max-width: 740px) {
       .brand-wrap { flex-direction: column; align-items: flex-start; gap: 0.35rem; }
       .tab-bar { position: static; }

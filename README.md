@@ -24,6 +24,7 @@ It is designed to reduce operational friction in clinical and translational rese
 - Operational study execution modules: visit templates/scheduling, CRF submission workflow (draft/submitted/locked), monitor query management, and close-checklist gating before closure
 - Startup checklist gating before study initiation and operational summary signals (enrollment gap, open queries, pending startup/close items)
 - UI datalist selectors in `/ui/app` and `/ui/studies` to reduce UUID copy/paste friction during daily operations
+- Organization hierarchy with Cingulum Foundation root tenancy (`platform_root` + child org workspaces), org-scoped DUA consoles, and card-based animated UI refinements
 
 ## Core Stack (v1 scaffold)
 

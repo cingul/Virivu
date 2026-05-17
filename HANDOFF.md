@@ -32,8 +32,11 @@ This file is the continuity bridge for new chat sessions and new machines.
   - AI transcript-to-note placeholder endpoint
   - Electronic Data Use Agreement (DUA) endpoints and e-signature flow
   - DUA admin web UI (`/ui/dua`) and hospital token-signing page
+  - Org-scoped DUA workspace access (requires admin_email + org-manager authorization)
   - In-browser organization creation/selection flow in DUA UI
+  - Organization hierarchy model with `platform_root` + child org workspaces
   - Unified web app dashboard (`/ui/app`) linking org/project/site, patient workflows, analytics, and legal operations
+  - Card-based UI refresh with subtle tab/card animations for a more modern workspace feel
   - DUA PDF export endpoint
   - Outbound email queue for hospital signing-link delivery
 - Postgres persistence integrated (via `deadpool-postgres` + `tokio-postgres`)
@@ -54,6 +57,7 @@ This is the highest-priority production hardening task.
 - `apps/api/migrations/2026-05-17-000001_init` - core schema
 - `apps/api/migrations/2026-05-17-000002_dev_seed` - local dev seed users/roles
 - `apps/api/migrations/2026-05-17-000003_data_use_agreements` - DUA + signature + outbound email tables
+- `apps/api/migrations/2026-05-17-000008_organization_hierarchy` - parent org tree, organization kind, workspace slug, root seed + child backfill
   - Includes:
     - `admin@cingulum.org` (`platform_admin`)
     - `arcot@cingulum.org` (`platform_admin`)

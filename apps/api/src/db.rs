@@ -35,25 +35,68 @@ impl Db {
         Ok(Self { pool })
     }
 
-    pub async fn create_organization(&self, name: &str) -> anyhow::Result<Organization> {
+    pub async fn create_organization(
+        &self,
+        name: &str,
+        parent_organization_id: Option<Uuid>,
+        organization_kind: Option<&str>,
+    ) -> anyhow::Result<Organization> {
         let client = self.pool.get().await?;
+        let kind = normalize_organization_kind(organization_kind.unwrap_or("tenant"))
+            .ok_or_else(|| anyhow!("invalid organization_kind"))?;
+        if kind == "platform_root" {
+            let row = client
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM organizations WHERE organization_kind = 'platform_root') AS exists",
+                    &[],
+                )
+                .await?;
+            let has_root: bool = row.get("exists");
+            if has_root {
+                return Err(anyhow!(
+                    "platform_root organization already exists; only one root is supported"
+                ));
+            }
+        }
+        let effective_parent_organization_id = if kind == "platform_root" {
+            None
+        } else if let Some(explicit_parent) = parent_organization_id {
+            Some(explicit_parent)
+        } else {
+            Some(self.get_platform_root_organization_id(&client).await?)
+        };
+        let workspace_slug = self.generate_unique_workspace_slug(&client, name).await?;
         let hex_code = self.generate_unique_org_hex(&client).await?;
         let row = client
             .query_one(
                 r#"
-                INSERT INTO organizations (name, hex_code)
-                VALUES ($1, $2)
-                RETURNING id, name, hex_code, created_at
+                INSERT INTO organizations (
+                    name,
+                    parent_organization_id,
+                    organization_kind,
+                    workspace_slug,
+                    hex_code
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING
+                    id,
+                    name,
+                    parent_organization_id,
+                    organization_kind,
+                    workspace_slug,
+                    hex_code,
+                    created_at
                 "#,
-                &[&name, &hex_code],
+                &[
+                    &name,
+                    &effective_parent_organization_id,
+                    &kind,
+                    &workspace_slug,
+                    &hex_code,
+                ],
             )
             .await?;
-        Ok(Organization {
-            id: row.get("id"),
-            name: row.get("name"),
-            hex_code: row.get("hex_code"),
-            created_at: row.get("created_at"),
-        })
+        Ok(row_to_organization(&row))
     }
 
     pub async fn list_projects_by_organization(
@@ -1855,7 +1898,14 @@ impl Db {
             let rows = client
                 .query(
                     r#"
-                    SELECT id, name, hex_code, created_at
+                    SELECT
+                        id,
+                        name,
+                        parent_organization_id,
+                        organization_kind,
+                        workspace_slug,
+                        hex_code,
+                        created_at
                     FROM organizations
                     ORDER BY created_at DESC
                     "#,
@@ -1868,7 +1918,14 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT DISTINCT o.id, o.name, o.hex_code, o.created_at
+                SELECT DISTINCT
+                    o.id,
+                    o.name,
+                    o.parent_organization_id,
+                    o.organization_kind,
+                    o.workspace_slug,
+                    o.hex_code,
+                    o.created_at
                 FROM organizations o
                 JOIN user_memberships um ON um.organization_id = o.id
                 JOIN users u ON u.id = um.user_id
@@ -1878,6 +1935,32 @@ impl Db {
                 ORDER BY o.created_at DESC
                 "#,
                 &[&email],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_organization).collect())
+    }
+
+    pub async fn list_child_organizations(
+        &self,
+        parent_organization_id: Uuid,
+    ) -> anyhow::Result<Vec<Organization>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    name,
+                    parent_organization_id,
+                    organization_kind,
+                    workspace_slug,
+                    hex_code,
+                    created_at
+                FROM organizations
+                WHERE parent_organization_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&parent_organization_id],
             )
             .await?;
         Ok(rows.iter().map(row_to_organization).collect())
@@ -2410,6 +2493,55 @@ impl Db {
             }
         }
         Err(anyhow!("unable to allocate unique provider hex code"))
+    }
+
+    async fn get_platform_root_organization_id(
+        &self,
+        client: &deadpool_postgres::Client,
+    ) -> anyhow::Result<Uuid> {
+        let row = client
+            .query_opt(
+                r#"
+                SELECT id
+                FROM organizations
+                WHERE organization_kind = 'platform_root'
+                ORDER BY created_at ASC
+                LIMIT 1
+                "#,
+                &[],
+            )
+            .await?;
+        match row {
+            Some(row) => Ok(row.get("id")),
+            None => Err(anyhow!(
+                "platform_root organization not found; run latest migrations first"
+            )),
+        }
+    }
+
+    async fn generate_unique_workspace_slug(
+        &self,
+        client: &deadpool_postgres::Client,
+        name: &str,
+    ) -> anyhow::Result<String> {
+        let base_slug = slugify_workspace(name);
+        for attempt in 0..1024 {
+            let candidate = if attempt == 0 {
+                base_slug.clone()
+            } else {
+                format!("{base_slug}-{attempt}")
+            };
+            let row = client
+                .query_opt(
+                    "SELECT 1 FROM organizations WHERE workspace_slug = $1 LIMIT 1",
+                    &[&candidate],
+                )
+                .await?;
+            if row.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow!("unable to allocate unique workspace_slug"))
     }
 
     pub async fn queue_hospital_signing_email(
@@ -2964,6 +3096,44 @@ fn normalize_encounter_type(raw: &str) -> Option<String> {
     }
 }
 
+fn normalize_organization_kind(raw: &str) -> Option<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "platform_root" => Some("platform_root".to_string()),
+        "research_network" => Some("research_network".to_string()),
+        "hospital" => Some("hospital".to_string()),
+        "tenant" => Some("tenant".to_string()),
+        "sponsor" => Some("sponsor".to_string()),
+        _ => None,
+    }
+}
+
+fn slugify_workspace(raw: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_was_dash = false;
+    for ch in raw.chars() {
+        let mapped = match ch {
+            'A'..='Z' => ch.to_ascii_lowercase(),
+            'a'..='z' | '0'..='9' => ch,
+            _ => '-',
+        };
+        if mapped == '-' {
+            if !previous_was_dash && !slug.is_empty() {
+                slug.push('-');
+                previous_was_dash = true;
+            }
+            continue;
+        }
+        previous_was_dash = false;
+        slug.push(mapped);
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "workspace".to_string()
+    } else {
+        slug
+    }
+}
+
 fn normalize_study_phase(raw: &str) -> Option<String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "pre_study" => Some("pre_study".to_string()),
@@ -3079,6 +3249,9 @@ fn row_to_organization(row: &Row) -> Organization {
     Organization {
         id: row.get("id"),
         name: row.get("name"),
+        parent_organization_id: row.get("parent_organization_id"),
+        organization_kind: row.get("organization_kind"),
+        workspace_slug: row.get("workspace_slug"),
         hex_code: row.get("hex_code"),
         created_at: row.get("created_at"),
     }
