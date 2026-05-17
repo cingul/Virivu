@@ -50,9 +50,9 @@ This is the highest-priority production hardening task.
 
 ## Database migrations
 
-- `apps/api/migrations/0001_init.sql` - core schema
-- `apps/api/migrations/0002_dev_seed.sql` - local dev seed users/roles
-- `apps/api/migrations/0003_data_use_agreements.sql` - DUA + signature + outbound email tables
+- `apps/api/migrations/2026-05-17-000001_init` - core schema
+- `apps/api/migrations/2026-05-17-000002_dev_seed` - local dev seed users/roles
+- `apps/api/migrations/2026-05-17-000003_data_use_agreements` - DUA + signature + outbound email tables
   - Includes:
     - `admin@cingulum.org` (`platform_admin`)
     - `arcot@cingulum.org` (`platform_admin`)
@@ -67,6 +67,8 @@ export DATABASE_URL=postgres://postgres:postgres@localhost:5432/virivu
 ./scripts/apply_migrations.sh
 cargo run
 ```
+
+Migrations are now managed with Diesel (`src/bin/migrate.rs` + migration directories under `apps/api/migrations/`).
 
 Health check:
 

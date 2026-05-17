@@ -1,6 +1,3 @@
--- Virivu core schema (initial draft)
--- This migration is intentionally compact for v1 scaffolding and can be evolved with SQLx/SeaORM migrations.
-
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE organizations (
@@ -42,14 +39,16 @@ CREATE TABLE user_memberships (
     role TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CHECK (role IN (
-        'platform_admin',
-        'org_admin',
-        'investigator',
-        'site_coordinator',
-        'analyst',
-        'patient'
-    ))
+    CHECK (
+        role IN (
+            'platform_admin',
+            'org_admin',
+            'investigator',
+            'site_coordinator',
+            'analyst',
+            'patient'
+        )
+    )
 );
 
 CREATE TABLE patients (

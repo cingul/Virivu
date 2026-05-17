@@ -18,3 +18,8 @@ uuid = { version = "=1.8.0", features = ["v4", "serde"] }
 deadpool-postgres = "=0.14.1"
 tokio-postgres = { version = "=0.7.13", features = ["with-uuid-1", "with-chrono-0_4"] }
 base64 = "=0.21.7"
+diesel = { version = "=2.2.4", default-features = false, features = ["postgres", "chrono", "uuid"] }
+diesel_migrations = "=2.2.0"
+migrations_internals = "=2.2.0"
+migrations_macros = "=2.2.0"
+indexmap = "=2.2.6"

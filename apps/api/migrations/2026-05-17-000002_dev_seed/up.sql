@@ -1,6 +1,3 @@
--- Optional local-development seed data.
--- Adjust emails/domain to match GOOGLE_WORKSPACE_DOMAIN before running.
-
 INSERT INTO users (email, google_subject, display_name)
 VALUES ('admin@cingulum.org', 'dev-admin@cingulum.org', 'Virivu Admin')
 ON CONFLICT (email)

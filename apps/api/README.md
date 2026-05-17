@@ -26,7 +26,8 @@ export DATABASE_URL=postgres://postgres:postgres@localhost:5432/virivu
 cargo run
 ```
 
-`./scripts/apply_migrations.sh` is idempotent and can be safely re-run; it tracks applied files in `schema_migrations`.
+`./scripts/apply_migrations.sh` runs Diesel migrations and is safe to re-run.
+It uses Diesel's migration tracking table (`__diesel_schema_migrations`) and includes a compatibility bootstrap for legacy local databases.
 
 ## Example Requests
 
@@ -128,7 +129,7 @@ The DUA UI now includes an in-browser **Step 1** to create organizations, so you
 ## Notes
 
 - `ALLOW_DEV_AUTH_BYPASS=true` allows local development auth via `x-dev-user-email`.
-- `migrations/0002_dev_seed.sql` creates `admin@cingulum.org` and `arcot@cingulum.org` as `platform_admin` for local testing.
-- `migrations/0003_data_use_agreements.sql` includes DUA tables and `outbound_emails` queue table.
+- Diesel migration `2026-05-17-000002_dev_seed` seeds `admin@cingulum.org` and `arcot@cingulum.org` as `platform_admin` for local testing.
+- Diesel migration `2026-05-17-000003_data_use_agreements` includes DUA tables and `outbound_emails` queue table.
 - For production, keep `ALLOW_DEV_AUTH_BYPASS=false` and enforce real Google token verification.
 - Current Google token handling validates claims and domain; cryptographic signature verification is marked as a TODO before production.

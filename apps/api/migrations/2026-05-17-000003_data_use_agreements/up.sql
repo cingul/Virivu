@@ -1,5 +1,3 @@
--- Electronic Data Use Agreement (DUA) support for Cingulum + hospital counterparties.
-
 CREATE TABLE data_use_agreements (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
