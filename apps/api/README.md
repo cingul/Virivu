@@ -14,6 +14,8 @@ Rust Axum API scaffold for Virivu Research Cloud.
 - Google Workspace-aligned auth claim checks + role-based access control
 - Postgres-backed persistence
 - Electronic Data Use Agreement (DUA) creation + e-signature workflow
+- DUA admin UI, hospital signing page, and PDF agreement export
+- Outbound email queue for hospital signing links
 
 ## Run
 
@@ -98,9 +100,31 @@ curl -X POST http://localhost:8080/v1/legal/data-use-agreements/<agreement-id>/s
   }'
 ```
 
+Queue hospital signing email:
+
+```bash
+curl -X POST http://localhost:8080/v1/legal/data-use-agreements/<agreement-id>/send-hospital-sign-link \
+  -H "x-dev-user-email: arcot@cingulum.org"
+```
+
+Download DUA PDF:
+
+```bash
+curl -L http://localhost:8080/v1/legal/data-use-agreements/<agreement-id>/export.pdf \
+  -H "x-dev-user-email: arcot@cingulum.org" \
+  -o dua.pdf
+```
+
+Open DUA admin UI:
+
+```bash
+xdg-open http://localhost:8080/ui/dua
+```
+
 ## Notes
 
 - `ALLOW_DEV_AUTH_BYPASS=true` allows local development auth via `x-dev-user-email`.
-- `migrations/0002_dev_seed.sql` creates `admin@cingulum.org` with `platform_admin` role for local testing.
+- `migrations/0002_dev_seed.sql` creates `admin@cingulum.org` and `arcot@cingulum.org` as `platform_admin` for local testing.
+- `migrations/0003_data_use_agreements.sql` includes DUA tables and `outbound_emails` queue table.
 - For production, keep `ALLOW_DEV_AUTH_BYPASS=false` and enforce real Google token verification.
 - Current Google token handling validates claims and domain; cryptographic signature verification is marked as a TODO before production.

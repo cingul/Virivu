@@ -8,6 +8,7 @@ pub struct Config {
     pub allowed_google_workspace_domain: String,
     pub google_client_id: Option<String>,
     pub allow_dev_auth_bypass: bool,
+    pub app_base_url: String,
 }
 
 impl Config {
@@ -22,6 +23,8 @@ impl Config {
         let allow_dev_auth_bypass = env::var("ALLOW_DEV_AUTH_BYPASS")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
+        let app_base_url =
+            env::var("APP_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
 
         Self {
             app_name,
@@ -30,6 +33,7 @@ impl Config {
             allowed_google_workspace_domain,
             google_client_id,
             allow_dev_auth_bypass,
+            app_base_url,
         }
     }
 }

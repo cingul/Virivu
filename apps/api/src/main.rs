@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         app_name = %config.app_name,
         bind_address = %config.bind_address,
+        app_base_url = %config.app_base_url,
         database_url = %config.database_url,
         allowed_google_workspace_domain = %config.allowed_google_workspace_domain,
         allow_dev_auth_bypass = config.allow_dev_auth_bypass,

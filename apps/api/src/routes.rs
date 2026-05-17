@@ -1,8 +1,8 @@
 use axum::{
-    extract::{Path, Request, State},
-    http::StatusCode,
+    extract::{Form, Path, Query, Request, State},
+    http::{header, HeaderValue, StatusCode},
     middleware::{from_fn_with_state, Next},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -15,7 +15,7 @@ use crate::{
     auth::{extract_bearer_token, verify_google_workspace_user, AuthError, AuthenticatedUser},
     config::Config,
     db::Db,
-    models::{DataUseAgreement, DataUseAgreementSignature},
+    models::{DataUseAgreement, DataUseAgreementSignature, OutboundEmail},
 };
 
 const ROLE_PLATFORM_ADMIN: &[&str] = &["platform_admin"];
@@ -47,6 +47,29 @@ pub fn router(ctx: AppContext) -> Router {
             "/v1/auth/google/token-introspect",
             post(google_token_introspect),
         )
+        .route("/ui/dua", get(render_dua_admin_page))
+        .route("/ui/dua/draft", post(render_create_dua_from_form))
+        .route(
+            "/ui/dua/sign/{signing_token}",
+            get(render_dua_hospital_sign_page),
+        )
+        .route(
+            "/ui/dua/sign/{signing_token}",
+            post(submit_dua_hospital_sign_form),
+        )
+        .route("/ui/dua/{agreement_id}", get(render_dua_agreement_page))
+        .route(
+            "/ui/dua/{agreement_id}/send-hospital-link",
+            post(submit_dua_send_hospital_link_form),
+        )
+        .route(
+            "/ui/dua/{agreement_id}/export.pdf",
+            get(download_data_use_agreement_pdf_ui),
+        )
+        .route(
+            "/ui/dua/{agreement_id}/sign-cingulum",
+            post(submit_dua_cingulum_sign_form),
+        )
         .route(
             "/v1/legal/data-use-agreements/sign-hospital",
             post(sign_data_use_agreement_hospital),
@@ -67,6 +90,18 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/v1/legal/data-use-agreements/{agreement_id}",
             get(get_data_use_agreement),
+        )
+        .route(
+            "/v1/legal/data-use-agreements/{agreement_id}/send-hospital-sign-link",
+            post(send_hospital_signing_link_email),
+        )
+        .route(
+            "/v1/legal/data-use-agreements/{agreement_id}/emails",
+            get(list_data_use_agreement_emails),
+        )
+        .route(
+            "/v1/legal/data-use-agreements/{agreement_id}/export.pdf",
+            get(download_data_use_agreement_pdf),
         )
         .route(
             "/v1/legal/data-use-agreements/{agreement_id}/sign-cingulum",
@@ -396,6 +431,499 @@ async fn project_progress_report(
 }
 
 #[derive(Debug, Deserialize)]
+struct DuaDraftForm {
+    admin_email: String,
+    organization_id: String,
+    hospital_name: String,
+    hospital_contact_name: String,
+    hospital_contact_email: String,
+    agreement_version: String,
+    effective_date: String,
+    expiration_date: String,
+    agreement_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DuaCingulumSignForm {
+    admin_email: String,
+    signer_name: String,
+    signer_email: String,
+    signer_title: String,
+    signature_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DuaHospitalSignForm {
+    signer_name: String,
+    signer_email: String,
+    signer_title: String,
+    signer_organization: String,
+    signature_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DuaSendLinkForm {
+    admin_email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DuaExportQuery {
+    admin_email: String,
+}
+
+async fn render_dua_admin_page() -> Html<String> {
+    Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Virivu DUA Console</title>
+  <style>
+    body {{ font-family: Inter, Arial, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; color: #102a43; }}
+    h1 {{ margin-bottom: 0.5rem; }}
+    .card {{ border: 1px solid #d9e2ec; border-radius: 12px; padding: 1rem; margin-bottom: 1rem; background: #fff; }}
+    label {{ display:block; font-weight:600; margin-top: 0.75rem; }}
+    input, textarea {{ width: 100%; padding: 0.6rem; border: 1px solid #bcccdc; border-radius: 8px; }}
+    textarea {{ min-height: 180px; }}
+    button {{ margin-top: 1rem; background: #0b7285; color: white; border: none; border-radius: 8px; padding: 0.7rem 1rem; cursor: pointer; }}
+    .muted {{ color: #486581; font-size: 0.95rem; }}
+  </style>
+</head>
+<body>
+  <h1>Electronic Data Use Agreements</h1>
+  <p class="muted">Create and manage DUA records between hospitals and Cingulum Foundation Inc.</p>
+  <div class="card">
+    <form method="post" action="/ui/dua/draft">
+      <label>Admin email (must be org manager or platform admin)</label>
+      <input name="admin_email" placeholder="arcot@cingulum.org" required />
+
+      <label>Organization ID (UUID)</label>
+      <input name="organization_id" placeholder="organization-uuid" required />
+
+      <label>Hospital legal name</label>
+      <input name="hospital_name" placeholder="Hospital Name" required />
+
+      <label>Hospital contact name</label>
+      <input name="hospital_contact_name" placeholder="Contact Name" required />
+
+      <label>Hospital contact email</label>
+      <input type="email" name="hospital_contact_email" placeholder="legal@hospital.org" required />
+
+      <label>Agreement version</label>
+      <input name="agreement_version" value="1.0" required />
+
+      <label>Effective date (YYYY-MM-DD)</label>
+      <input name="effective_date" placeholder="2026-06-01" />
+
+      <label>Expiration date (YYYY-MM-DD)</label>
+      <input name="expiration_date" placeholder="2027-06-01" />
+
+      <label>Agreement text</label>
+      <textarea name="agreement_text" required>{}</textarea>
+
+      <button type="submit">Create DUA + Queue Hospital Signing Link</button>
+    </form>
+  </div>
+</body>
+</html>"#,
+        html_escape(default_dua_text())
+    ))
+}
+
+async fn render_create_dua_from_form(
+    State(ctx): State<AppContext>,
+    Form(form): Form<DuaDraftForm>,
+) -> Result<Html<String>, ApiError> {
+    let organization_id =
+        form.organization_id.trim().parse::<Uuid>().map_err(|_| {
+            ApiError::Validation("organization_id must be a valid UUID".to_string())
+        })?;
+
+    let has_access = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !has_access {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks permission for this organization".to_string(),
+        )));
+    }
+
+    let effective_date = parse_optional_date(&form.effective_date)?;
+    let expiration_date = parse_optional_date(&form.expiration_date)?;
+    let created_by_user_id = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+
+    let agreement = ctx
+        .db
+        .create_data_use_agreement(
+            organization_id,
+            form.hospital_name.trim(),
+            form.hospital_contact_name.trim(),
+            form.hospital_contact_email.trim(),
+            form.agreement_version.trim(),
+            effective_date,
+            expiration_date,
+            form.agreement_text.trim(),
+            created_by_user_id,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    ctx.db
+        .queue_hospital_signing_email(agreement.id, created_by_user_id, &ctx.config.app_base_url)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let signing_url = format!(
+        "{}/ui/dua/sign/{}",
+        ctx.config.app_base_url.trim_end_matches('/'),
+        agreement.hospital_signing_token
+    );
+
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>DUA Created</title></head>
+<body style="font-family: Inter, Arial, sans-serif; max-width: 900px; margin: 2rem auto;">
+  <h1>DUA Created</h1>
+  <p><strong>Agreement ID:</strong> {}</p>
+  <p><strong>Status:</strong> {}</p>
+  <p><strong>Hospital signing URL:</strong> <a href="{}">{}</a></p>
+  <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
+  <p><a href="/ui/dua">Create another agreement</a></p>
+</body>
+</html>"#,
+        agreement.id,
+        html_escape(&agreement.status),
+        html_escape(&signing_url),
+        html_escape(&signing_url),
+        agreement.id
+    )))
+}
+
+async fn render_dua_hospital_sign_page(
+    State(ctx): State<AppContext>,
+    Path(signing_token): Path<Uuid>,
+) -> Result<Html<String>, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement_by_signing_token(signing_token)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("signing token is invalid or expired".to_string()))?;
+
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hospital DUA Signature</title>
+</head>
+<body style="font-family: Inter, Arial, sans-serif; max-width: 900px; margin: 2rem auto;">
+  <h1>Sign Data Use Agreement</h1>
+  <p><strong>Hospital:</strong> {}</p>
+  <p><strong>Counterparty:</strong> {}</p>
+  <p><strong>Agreement Version:</strong> {}</p>
+  <form method="post" action="/ui/dua/sign/{}">
+    <label>Signer name</label><br/>
+    <input name="signer_name" required style="width:100%;padding:.5rem;" /><br/><br/>
+    <label>Signer email</label><br/>
+    <input type="email" name="signer_email" required style="width:100%;padding:.5rem;" /><br/><br/>
+    <label>Signer title</label><br/>
+    <input name="signer_title" required style="width:100%;padding:.5rem;" /><br/><br/>
+    <label>Signer organization</label><br/>
+    <input name="signer_organization" value="{}" required style="width:100%;padding:.5rem;" /><br/><br/>
+    <label>Electronic signature text</label><br/>
+    <input name="signature_text" placeholder="/s/ Your Name" required style="width:100%;padding:.5rem;" /><br/><br/>
+    <button type="submit" style="padding:.7rem 1rem;background:#0b7285;color:white;border:0;border-radius:8px;">Submit Signature</button>
+  </form>
+</body>
+</html>"#,
+        html_escape(&agreement.hospital_name),
+        html_escape(&agreement.counterparty_name),
+        html_escape(&agreement.agreement_version),
+        agreement.hospital_signing_token,
+        html_escape(&agreement.hospital_name),
+    )))
+}
+
+async fn submit_dua_hospital_sign_form(
+    State(ctx): State<AppContext>,
+    Path(signing_token): Path<Uuid>,
+    Form(form): Form<DuaHospitalSignForm>,
+) -> Result<Html<String>, ApiError> {
+    let (agreement, _signature) = ctx
+        .db
+        .sign_data_use_agreement_by_token(
+            signing_token,
+            form.signer_name.trim(),
+            form.signer_email.trim(),
+            form.signer_title.trim(),
+            form.signer_organization.trim(),
+            "typed",
+            form.signature_text.trim(),
+            None,
+        )
+        .await
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("not found for token") {
+                ApiError::NotFound("signing token is invalid or expired".to_string())
+            } else {
+                ApiError::internal(message)
+            }
+        })?;
+
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Signature Submitted</title></head>
+<body style="font-family: Inter, Arial, sans-serif; max-width: 820px; margin: 2rem auto;">
+  <h1>Signature received</h1>
+  <p>Thank you. Your hospital signature has been recorded for agreement <strong>{}</strong>.</p>
+  <p>Current status: <strong>{}</strong></p>
+</body></html>"#,
+        agreement.id,
+        html_escape(&agreement.status)
+    )))
+}
+
+async fn render_dua_agreement_page(
+    State(ctx): State<AppContext>,
+    Path(agreement_id): Path<Uuid>,
+) -> Result<Html<String>, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    let signatures = ctx
+        .db
+        .list_data_use_agreement_signatures(agreement_id)
+        .await
+        .map_err(ApiError::internal)?;
+    let emails = ctx
+        .db
+        .list_outbound_emails_for_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let signatures_html = signatures
+        .iter()
+        .map(|s| {
+            format!(
+                "<li><strong>{}</strong> - {} ({}) at {}</li>",
+                html_escape(&s.signer_role),
+                html_escape(&s.signer_name),
+                html_escape(&s.signer_email),
+                s.signed_at
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let email_html = emails
+        .iter()
+        .map(|e| {
+            format!(
+                "<li>{} | {} | {}</li>",
+                e.created_at,
+                html_escape(&e.recipient_email),
+                html_escape(&e.status)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let signing_link = format!(
+        "{}/ui/dua/sign/{}",
+        ctx.config.app_base_url.trim_end_matches('/'),
+        agreement.hospital_signing_token
+    );
+
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>DUA Workspace</title></head>
+<body style="font-family: Inter, Arial, sans-serif; max-width: 980px; margin: 2rem auto;">
+  <h1>DUA Workspace</h1>
+  <p><strong>Agreement ID:</strong> {}</p>
+  <p><strong>Hospital:</strong> {}</p>
+  <p><strong>Status:</strong> {}</p>
+  <p><strong>Hospital signing link:</strong> <a href="{}">{}</a></p>
+
+  <h2>Actions</h2>
+  <form method="post" action="/ui/dua/{}/send-hospital-link" style="margin-bottom:1rem;">
+    <label>Admin email for send action</label><br/>
+    <input name="admin_email" placeholder="arcot@cingulum.org" required style="width:100%;padding:.5rem;max-width:480px;" />
+    <button type="submit" style="margin-left:.5rem;padding:.6rem 1rem;">Queue Hospital Signing Email</button>
+  </form>
+
+  <form method="post" action="/ui/dua/{}/sign-cingulum" style="margin-bottom:1rem;">
+    <input type="hidden" name="admin_email" value="arcot@cingulum.org" />
+    <label>Cingulum signer name</label><br/><input name="signer_name" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
+    <label>Cingulum signer email</label><br/><input name="signer_email" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
+    <label>Cingulum signer title</label><br/><input name="signer_title" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
+    <label>Signature text</label><br/><input name="signature_text" placeholder="/s/ Name" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
+    <button type="submit" style="margin-top:.5rem;padding:.6rem 1rem;">Apply Cingulum Signature</button>
+  </form>
+
+  <p><a href="/ui/dua/{}/export.pdf?admin_email=arcot@cingulum.org">Download PDF (requires admin_email query)</a></p>
+
+  <h2>Signatures</h2>
+  <ul>{}</ul>
+
+  <h2>Email Queue</h2>
+  <ul>{}</ul>
+
+  <h2>Agreement Text</h2>
+  <pre style="white-space: pre-wrap; border:1px solid #d9e2ec; padding:1rem; border-radius:8px;">{}</pre>
+</body></html>"#,
+        agreement.id,
+        html_escape(&agreement.hospital_name),
+        html_escape(&agreement.status),
+        signing_link,
+        signing_link,
+        agreement.id,
+        agreement.id,
+        agreement.id,
+        if signatures_html.is_empty() {
+            "<li>No signatures yet</li>".to_string()
+        } else {
+            signatures_html
+        },
+        if email_html.is_empty() {
+            "<li>No queued/sent emails yet</li>".to_string()
+        } else {
+            email_html
+        },
+        html_escape(&agreement.agreement_text)
+    )))
+}
+
+async fn submit_dua_send_hospital_link_form(
+    State(ctx): State<AppContext>,
+    Path(agreement_id): Path<Uuid>,
+    Form(form): Form<DuaSendLinkForm>,
+) -> Result<Html<String>, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), agreement.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks permission for this organization".to_string(),
+        )));
+    }
+    let requested_by = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+    ctx.db
+        .queue_hospital_signing_email(agreement_id, requested_by, &ctx.config.app_base_url)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Html(format!(
+        "<html><body style=\"font-family: Arial; max-width: 720px; margin: 2rem auto;\"><h1>Email queued</h1><p>Hospital signing email has been queued for agreement {}</p><p><a href=\"/ui/dua/{}\">Back to agreement</a></p></body></html>",
+        agreement_id, agreement_id
+    )))
+}
+
+async fn submit_dua_cingulum_sign_form(
+    State(ctx): State<AppContext>,
+    Path(agreement_id): Path<Uuid>,
+    Form(form): Form<DuaCingulumSignForm>,
+) -> Result<Html<String>, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), agreement.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks permission for this organization".to_string(),
+        )));
+    }
+    let user_id = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+
+    ctx.db
+        .sign_data_use_agreement_as_cingulum(
+            agreement_id,
+            form.signer_name.trim(),
+            form.signer_email.trim(),
+            form.signer_title.trim(),
+            "typed",
+            form.signature_text.trim(),
+            None,
+            user_id,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Html(format!(
+        "<html><body style=\"font-family: Arial; max-width: 720px; margin: 2rem auto;\"><h1>Cingulum signature recorded</h1><p><a href=\"/ui/dua/{}\">Back to agreement</a></p></body></html>",
+        agreement_id
+    )))
+}
+
+async fn download_data_use_agreement_pdf_ui(
+    State(ctx): State<AppContext>,
+    Path(agreement_id): Path<Uuid>,
+    Query(query): Query<DuaExportQuery>,
+) -> Result<Response, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(query.admin_email.trim(), agreement.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks permission for this organization".to_string(),
+        )));
+    }
+
+    let signatures = ctx
+        .db
+        .list_data_use_agreement_signatures(agreement_id)
+        .await
+        .map_err(ApiError::internal)?;
+    let bytes = build_data_use_agreement_pdf(&agreement, &signatures);
+    pdf_download_response(agreement_id, bytes)
+}
+
+#[derive(Debug, Deserialize)]
 struct CreateDataUseAgreementRequest {
     organization_id: Uuid,
     hospital_name: String,
@@ -412,6 +940,7 @@ struct DataUseAgreementDetailResponse {
     agreement: DataUseAgreement,
     signatures: Vec<DataUseAgreementSignature>,
     hospital_signature_endpoint: String,
+    hospital_signing_url: String,
 }
 
 async fn create_data_use_agreement(
@@ -459,6 +988,11 @@ async fn create_data_use_agreement(
     Ok((
         StatusCode::CREATED,
         Json(DataUseAgreementDetailResponse {
+            hospital_signing_url: format!(
+                "{}/ui/dua/sign/{}",
+                ctx.config.app_base_url.trim_end_matches('/'),
+                agreement.hospital_signing_token
+            ),
             agreement,
             signatures: Vec::new(),
             hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
@@ -500,10 +1034,98 @@ async fn get_data_use_agreement(
         .map_err(ApiError::internal)?;
 
     Ok(Json(DataUseAgreementDetailResponse {
+        hospital_signing_url: format!(
+            "{}/ui/dua/sign/{}",
+            ctx.config.app_base_url.trim_end_matches('/'),
+            agreement.hospital_signing_token
+        ),
         agreement,
         signatures,
         hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
     }))
+}
+
+#[derive(Debug, Serialize)]
+struct SendHospitalSigningEmailResponse {
+    email: OutboundEmail,
+    signing_url: String,
+}
+
+async fn send_hospital_signing_link_email(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(agreement_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+
+    let queued_email = ctx
+        .db
+        .queue_hospital_signing_email(agreement_id, Some(user.user_id), &ctx.config.app_base_url)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let signing_url = format!(
+        "{}/ui/dua/sign/{}",
+        ctx.config.app_base_url.trim_end_matches('/'),
+        agreement.hospital_signing_token
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(SendHospitalSigningEmailResponse {
+            email: queued_email,
+            signing_url,
+        }),
+    ))
+}
+
+async fn list_data_use_agreement_emails(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(agreement_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+
+    let emails = ctx
+        .db
+        .list_outbound_emails_for_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(emails))
+}
+
+async fn download_data_use_agreement_pdf(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(agreement_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let agreement = ctx
+        .db
+        .get_data_use_agreement(agreement_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+    let signatures = ctx
+        .db
+        .list_data_use_agreement_signatures(agreement_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let bytes = build_data_use_agreement_pdf(&agreement, &signatures);
+    pdf_download_response(agreement_id, bytes)
 }
 
 #[derive(Debug, Deserialize)]
@@ -570,6 +1192,11 @@ async fn sign_data_use_agreement_cingulum(
         .map_err(ApiError::internal)?;
 
     Ok(Json(DataUseAgreementDetailResponse {
+        hospital_signing_url: format!(
+            "{}/ui/dua/sign/{}",
+            ctx.config.app_base_url.trim_end_matches('/'),
+            updated_agreement.hospital_signing_token
+        ),
         agreement: updated_agreement,
         signatures,
         hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
@@ -639,10 +1266,187 @@ async fn sign_data_use_agreement_hospital(
         .map_err(ApiError::internal)?;
 
     Ok(Json(DataUseAgreementDetailResponse {
+        hospital_signing_url: format!(
+            "{}/ui/dua/sign/{}",
+            ctx.config.app_base_url.trim_end_matches('/'),
+            agreement.hospital_signing_token
+        ),
         agreement,
         signatures,
         hospital_signature_endpoint: "/v1/legal/data-use-agreements/sign-hospital".to_string(),
     }))
+}
+
+fn pdf_download_response(agreement_id: Uuid, bytes: Vec<u8>) -> Result<Response, ApiError> {
+    let mut response = Response::new(bytes.into());
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+
+    let filename = format!("data-use-agreement-{}.pdf", agreement_id);
+    let content_disposition = format!("attachment; filename=\"{}\"", filename);
+    let header_value = HeaderValue::from_str(&content_disposition)
+        .map_err(|e| ApiError::internal(format!("invalid header value: {e}")))?;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_DISPOSITION, header_value);
+    Ok(response)
+}
+
+fn parse_optional_date(raw: &str) -> Result<Option<chrono::NaiveDate>, ApiError> {
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+        .map(Some)
+        .map_err(|_| ApiError::Validation("date must use YYYY-MM-DD format".to_string()))
+}
+
+fn default_dua_text() -> &'static str {
+    "This Data Use Agreement is entered into between [HOSPITAL LEGAL NAME] and Cingulum Foundation Inc. for approved medical research data workflows. The parties agree to HIPAA-aligned safeguards, role-based access controls, minimum necessary use, and auditable electronic signatures."
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn build_data_use_agreement_pdf(
+    agreement: &DataUseAgreement,
+    signatures: &[DataUseAgreementSignature],
+) -> Vec<u8> {
+    let mut lines = vec![
+        format!("Data Use Agreement {}", agreement.id),
+        format!("Hospital: {}", agreement.hospital_name),
+        format!("Counterparty: {}", agreement.counterparty_name),
+        format!("Status: {}", agreement.status),
+        format!("Version: {}", agreement.agreement_version),
+        format!(
+            "Effective: {}",
+            agreement
+                .effective_date
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "N/A".to_string())
+        ),
+        format!(
+            "Expiration: {}",
+            agreement
+                .expiration_date
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "N/A".to_string())
+        ),
+        String::new(),
+        "Signatures".to_string(),
+    ];
+
+    if signatures.is_empty() {
+        lines.push("- none recorded".to_string());
+    } else {
+        for signature in signatures {
+            lines.push(format!(
+                "- {} | {} | {} | {}",
+                signature.signer_role,
+                signature.signer_name,
+                signature.signer_email,
+                signature.signed_at
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Agreement Text".to_string());
+    for wrapped in wrap_text(&agreement.agreement_text, 92) {
+        lines.push(wrapped);
+    }
+
+    let mut content = String::from("BT\n/F1 10 Tf\n50 790 Td\n12 TL\n");
+    for line in lines.into_iter().take(280) {
+        content.push_str(&format!("({}) Tj\nT*\n", pdf_escape(&line)));
+    }
+    content.push_str("ET\n");
+    let content_bytes = content.as_bytes();
+
+    let mut pdf = Vec::<u8>::new();
+    let mut offsets = Vec::<usize>::new();
+
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+    );
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    );
+
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        format!("5 0 obj\n<< /Length {} >>\nstream\n", content_bytes.len()).as_bytes(),
+    );
+    pdf.extend_from_slice(content_bytes);
+    pdf.extend_from_slice(b"endstream\nendobj\n");
+
+    let xref_offset = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+    }
+
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            6, xref_offset
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+fn wrap_text(input: &str, max_chars: usize) -> Vec<String> {
+    let mut wrapped = Vec::new();
+    for paragraph in input.lines() {
+        if paragraph.trim().is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+            } else if current.len() + 1 + word.len() > max_chars {
+                wrapped.push(current);
+                current = word.to_string();
+            } else {
+                current.push(' ');
+                current.push_str(word);
+            }
+        }
+        if !current.is_empty() {
+            wrapped.push(current);
+        }
+    }
+    wrapped
+}
+
+fn pdf_escape(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('(', "\\(")
+        .replace(')', "\\)")
 }
 
 fn parse_ip_address(raw: Option<String>) -> Result<Option<IpAddr>, ApiError> {

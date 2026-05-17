@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::models::{
     DataUseAgreement, DataUseAgreementSignature, FormInvite, MediaUploadTicket, Organization,
-    OrganizationSummaryRow, Project, ProjectProgressRow, Site, User, UserMembership,
+    OrganizationSummaryRow, OutboundEmail, Project, ProjectProgressRow, Site, User, UserMembership,
 };
 
 #[derive(Clone)]
@@ -322,6 +322,145 @@ impl Db {
             .collect())
     }
 
+    pub async fn get_user_by_email(&self, email: &str) -> anyhow::Result<Option<User>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT id, email, google_subject, display_name, created_at
+                FROM users
+                WHERE email = $1
+                "#,
+                &[&email],
+            )
+            .await?;
+        Ok(row.map(|r| User {
+            id: r.get("id"),
+            email: r.get("email"),
+            google_subject: r.get("google_subject"),
+            display_name: r.get("display_name"),
+            created_at: r.get("created_at"),
+        }))
+    }
+
+    pub async fn email_has_org_manager_role(
+        &self,
+        email: &str,
+        organization_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM user_memberships um
+                    JOIN users u ON u.id = um.user_id
+                    WHERE u.email = $1
+                      AND um.status = 'active'
+                      AND (
+                        (um.organization_id = $2 AND um.role IN ('org_admin'))
+                        OR (um.organization_id IS NULL AND um.project_id IS NULL AND um.role = 'platform_admin')
+                      )
+                ) AS has_access
+                "#,
+                &[&email, &organization_id],
+            )
+            .await?;
+        Ok(row.get("has_access"))
+    }
+
+    pub async fn queue_hospital_signing_email(
+        &self,
+        agreement_id: Uuid,
+        requested_by_user_id: Option<Uuid>,
+        app_base_url: &str,
+    ) -> anyhow::Result<OutboundEmail> {
+        let agreement = self
+            .get_data_use_agreement(agreement_id)
+            .await?
+            .ok_or_else(|| anyhow!("data use agreement not found"))?;
+
+        let signing_url = format!(
+            "{}/ui/dua/sign/{}",
+            app_base_url.trim_end_matches('/'),
+            agreement.hospital_signing_token
+        );
+        let subject = format!(
+            "Signature request: Data Use Agreement with {}",
+            agreement.counterparty_name
+        );
+        let body = format!(
+            "Hello {},\n\nA Data Use Agreement is ready for your electronic signature.\n\nHospital: {}\nCounterparty: {}\nAgreement ID: {}\n\nReview and sign here:\n{}\n\nThank you,\nCingulum Foundation Inc.",
+            agreement.hospital_contact_name,
+            agreement.hospital_name,
+            agreement.counterparty_name,
+            agreement.id,
+            signing_url
+        );
+
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO outbound_emails (
+                    agreement_id,
+                    recipient_email,
+                    subject,
+                    body,
+                    status,
+                    requested_by_user_id
+                )
+                VALUES ($1, $2, $3, $4, 'queued', $5)
+                RETURNING
+                    id,
+                    agreement_id,
+                    recipient_email,
+                    subject,
+                    body,
+                    status,
+                    requested_by_user_id,
+                    created_at
+                "#,
+                &[
+                    &agreement.id,
+                    &agreement.hospital_contact_email,
+                    &subject,
+                    &body,
+                    &requested_by_user_id,
+                ],
+            )
+            .await?;
+        Ok(row_to_outbound_email(&row))
+    }
+
+    pub async fn list_outbound_emails_for_agreement(
+        &self,
+        agreement_id: Uuid,
+    ) -> anyhow::Result<Vec<OutboundEmail>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    agreement_id,
+                    recipient_email,
+                    subject,
+                    body,
+                    status,
+                    requested_by_user_id,
+                    created_at
+                FROM outbound_emails
+                WHERE agreement_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&agreement_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_outbound_email).collect())
+    }
+
     pub async fn create_data_use_agreement(
         &self,
         organization_id: Uuid,
@@ -451,6 +590,40 @@ impl Db {
                 WHERE id = $1
                 "#,
                 &[&agreement_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_data_use_agreement))
+    }
+
+    pub async fn get_data_use_agreement_by_signing_token(
+        &self,
+        signing_token: Uuid,
+    ) -> anyhow::Result<Option<DataUseAgreement>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    organization_id,
+                    hospital_name,
+                    hospital_contact_name,
+                    hospital_contact_email,
+                    counterparty_name,
+                    agreement_version,
+                    status,
+                    effective_date,
+                    expiration_date,
+                    agreement_text,
+                    hospital_signing_token,
+                    created_by_user_id,
+                    signed_at,
+                    created_at,
+                    updated_at
+                FROM data_use_agreements
+                WHERE hospital_signing_token = $1
+                "#,
+                &[&signing_token],
             )
             .await?;
         Ok(row.as_ref().map(row_to_data_use_agreement))
@@ -772,5 +945,18 @@ fn row_to_data_use_agreement_signature(row: &Row) -> DataUseAgreementSignature {
         ip_address: row.get("ip_address"),
         signed_by_user_id: row.get("signed_by_user_id"),
         signed_at: row.get("signed_at"),
+    }
+}
+
+fn row_to_outbound_email(row: &Row) -> OutboundEmail {
+    OutboundEmail {
+        id: row.get("id"),
+        agreement_id: row.get("agreement_id"),
+        recipient_email: row.get("recipient_email"),
+        subject: row.get("subject"),
+        body: row.get("body"),
+        status: row.get("status"),
+        requested_by_user_id: row.get("requested_by_user_id"),
+        created_at: row.get("created_at"),
     }
 }

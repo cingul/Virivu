@@ -14,6 +14,7 @@ This file is the continuity bridge for new chat sessions and new machines.
 3. `d264794` - Set default Google Workspace domain to `cingulum.org`
 4. `146e442` - Seed `arcot@cingulum.org` as `platform_admin`
 5. `1b41b4d` - Add `HANDOFF.md` for cross-session continuity
+6. `80faa01` - Add electronic DUA workflow (schema, API, legal template)
 
 ## Current implementation status
 
@@ -30,6 +31,9 @@ This file is the continuity bridge for new chat sessions and new machines.
   - Analytics summary endpoints
   - AI transcript-to-note placeholder endpoint
   - Electronic Data Use Agreement (DUA) endpoints and e-signature flow
+  - DUA admin web UI (`/ui/dua`) and hospital token-signing page
+  - DUA PDF export endpoint
+  - Outbound email queue for hospital signing-link delivery
 - Postgres persistence integrated (via `deadpool-postgres` + `tokio-postgres`)
 - RBAC scaffold with authenticated user context and role checks
 - Domain policy set to `cingulum.org`
@@ -47,7 +51,7 @@ This is the highest-priority production hardening task.
 
 - `apps/api/migrations/0001_init.sql` - core schema
 - `apps/api/migrations/0002_dev_seed.sql` - local dev seed users/roles
-- `apps/api/migrations/0003_data_use_agreements.sql` - DUA + signature tables
+- `apps/api/migrations/0003_data_use_agreements.sql` - DUA + signature + outbound email tables
   - Includes:
     - `admin@cingulum.org` (`platform_admin`)
     - `arcot@cingulum.org` (`platform_admin`)

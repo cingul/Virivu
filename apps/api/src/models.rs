@@ -115,3 +115,15 @@ pub struct DataUseAgreementSignature {
     pub signed_by_user_id: Option<Uuid>,
     pub signed_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboundEmail {
+    pub id: Uuid,
+    pub agreement_id: Option<Uuid>,
+    pub recipient_email: String,
+    pub subject: String,
+    pub body: String,
+    pub status: String,
+    pub requested_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}

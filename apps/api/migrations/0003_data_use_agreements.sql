@@ -41,3 +41,18 @@ CREATE UNIQUE INDEX idx_dua_signature_unique_role
 CREATE INDEX idx_dua_org_id ON data_use_agreements(organization_id);
 CREATE INDEX idx_dua_status ON data_use_agreements(status);
 CREATE INDEX idx_dua_signatures_agreement_id ON data_use_agreement_signatures(agreement_id);
+
+CREATE TABLE outbound_emails (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agreement_id UUID REFERENCES data_use_agreements(id) ON DELETE CASCADE,
+    recipient_email TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    requested_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (status IN ('queued', 'sent', 'failed'))
+);
+
+CREATE INDEX idx_outbound_emails_agreement_id ON outbound_emails(agreement_id);
+CREATE INDEX idx_outbound_emails_status ON outbound_emails(status);
