@@ -3132,6 +3132,54 @@ async fn render_study_workbench(
         .notice
         .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
         .unwrap_or_default();
+    let selected_org_q = selected_org_id
+        .map(|org_id| format!("&organization_id={org_id}"))
+        .unwrap_or_default();
+    let selected_project_q = selected_project_id
+        .map(|project_id| format!("&project_id={project_id}"))
+        .unwrap_or_default();
+    let app_dashboard_url = format!(
+        "/ui/app?admin_email={}{}{}",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let setup_tab_url = format!(
+        "/ui/studies?admin_email={}{}{}&tab=setup",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let startup_tab_url = format!(
+        "/ui/studies?admin_email={}{}{}&tab=startup",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let templates_tab_url = format!(
+        "/ui/studies?admin_email={}{}{}&tab=crf-templates",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let visits_tab_url = format!(
+        "/ui/studies?admin_email={}{}{}&tab=visits",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let submissions_tab_url = format!(
+        "/ui/studies?admin_email={}{}{}&tab=submissions",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let queries_tab_url = format!(
+        "/ui/studies?admin_email={}{}{}&tab=queries",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let close_tab_url = format!(
+        "/ui/studies?admin_email={}{}{}&tab=close",
+        admin_email_q, selected_org_q, selected_project_q
+    );
+    let selected_study_label = selected_project_id
+        .and_then(|project_id| projects.iter().find(|project| project.id == project_id))
+        .map(|project| {
+            format!(
+                "{} (phase: {})",
+                html_escape(&project.name),
+                html_escape(&project.lifecycle_phase)
+            )
+        })
+        .unwrap_or_else(|| "<span class=\"muted\">none selected</span>".to_string());
 
     let study_rows_html = if projects.is_empty() {
         "<li>No studies yet for this organization.</li>".to_string()
@@ -3143,7 +3191,7 @@ async fn render_study_workbench(
                     .map(|org_id| format!("&organization_id={org_id}"))
                     .unwrap_or_default();
                 format!(
-                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
+                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&tab=overview">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
                     admin_email_q,
                     selected_org,
                     project.id,
@@ -3155,6 +3203,131 @@ async fn render_study_workbench(
             })
             .collect::<Vec<_>>()
             .join("")
+    };
+    let active_studies_html = {
+        let active_studies = projects
+            .iter()
+            .filter(|project| {
+                matches!(
+                    project.lifecycle_phase.trim().to_ascii_lowercase().as_str(),
+                    "initiated" | "active" | "monitoring"
+                )
+            })
+            .collect::<Vec<_>>();
+        if active_studies.is_empty() {
+            "<li>No studies are in initiated/active/monitoring yet.</li>".to_string()
+        } else {
+            active_studies
+                .iter()
+                .map(|project| {
+                    format!(
+                        r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&tab=overview">{}</a> <small>(phase: {} · enrollment target: {})</small></li>"#,
+                        admin_email_q,
+                        selected_org_q,
+                        project.id,
+                        html_escape(&project.name),
+                        html_escape(&project.lifecycle_phase),
+                        project.planned_enrollment
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        }
+    };
+    let startup_pending_count = startup_checklist_items
+        .iter()
+        .filter(|item| !item.completed)
+        .count();
+    let close_pending_count = checklist_items
+        .iter()
+        .filter(|item| !item.completed)
+        .count();
+    let unpublished_templates_count = templates
+        .iter()
+        .filter(|template| template.status.trim().to_ascii_lowercase() != "published")
+        .count();
+    let draft_submission_count = submissions
+        .iter()
+        .filter(|submission| submission.status.trim().to_ascii_lowercase() == "draft")
+        .count();
+    let submitted_unlocked_count = submissions
+        .iter()
+        .filter(|submission| submission.status.trim().to_ascii_lowercase() == "submitted")
+        .count();
+    let open_query_count = data_queries
+        .iter()
+        .filter(|query| query.status.trim().to_ascii_lowercase() != "closed")
+        .count();
+    let today = Utc::now().date_naive();
+    let overdue_visit_count = patient_visits
+        .iter()
+        .filter(|visit| {
+            let status = visit.status.trim().to_ascii_lowercase();
+            if status == "completed" || status == "cancelled" {
+                return false;
+            }
+            match visit.scheduled_for {
+                Some(scheduled_for) => scheduled_for < today,
+                None => false,
+            }
+        })
+        .count();
+    let pending_actions_html = if selected_project_id.is_none() {
+        format!(
+            r#"<li>Select an active study from the <a href="{}">Study Setup</a> tab to view targeted next steps.</li>"#,
+            setup_tab_url
+        )
+    } else {
+        let mut actions = Vec::new();
+        if startup_pending_count > 0 {
+            actions.push(format!(
+                r#"<li><strong>{}</strong> startup checklist item(s) are incomplete. <a href="{}">Complete startup tasks</a>.</li>"#,
+                startup_pending_count, startup_tab_url
+            ));
+        }
+        if unpublished_templates_count > 0 {
+            actions.push(format!(
+                r#"<li><strong>{}</strong> CRF template(s) are still draft. <a href="{}">Publish templates</a> before broad data capture.</li>"#,
+                unpublished_templates_count, templates_tab_url
+            ));
+        }
+        if overdue_visit_count > 0 {
+            actions.push(format!(
+                r#"<li><strong>{}</strong> visit(s) appear overdue. <a href="{}">Review visit schedule</a>.</li>"#,
+                overdue_visit_count, visits_tab_url
+            ));
+        }
+        if draft_submission_count > 0 {
+            actions.push(format!(
+                r#"<li><strong>{}</strong> CRF submission(s) remain in draft. <a href="{}">Submit or complete drafts</a>.</li>"#,
+                draft_submission_count, submissions_tab_url
+            ));
+        }
+        if submitted_unlocked_count > 0 {
+            actions.push(format!(
+                r#"<li><strong>{}</strong> submission(s) are submitted but not locked. <a href="{}">Lock finalized submissions</a>.</li>"#,
+                submitted_unlocked_count, submissions_tab_url
+            ));
+        }
+        if open_query_count > 0 {
+            actions.push(format!(
+                r#"<li><strong>{}</strong> monitor query(ies) are still open. <a href="{}">Respond to queries</a>.</li>"#,
+                open_query_count, queries_tab_url
+            ));
+        }
+        if close_pending_count > 0 {
+            actions.push(format!(
+                r#"<li><strong>{}</strong> close checklist item(s) remain. <a href="{}">Prepare close-out</a> when study reaches closure phase.</li>"#,
+                close_pending_count, close_tab_url
+            ));
+        }
+        if actions.is_empty() {
+            actions.push(
+                "<li>No blocking actions detected for the selected study right now.</li>"
+                    .to_string(),
+            );
+        }
+        actions.join("")
     };
 
     let readiness_html = if let Some(readiness) = readiness {
@@ -3554,11 +3727,22 @@ async fn render_study_workbench(
 </nav>
 
 <section class="card tab-panel is-active" data-tab-group="study-tabs" data-tab-panel="overview">
-  <h2>Workspace</h2>
+  <h2>Overview</h2>
+  <p class="muted">Start here: review active studies, then execute pending actions for the selected study.</p>
   <p><strong>Admin:</strong> {}</p>
   <p><strong>Organization:</strong> {}</p>
-  <p><strong>Study:</strong> {}</p>
-  <p><a href="/ui/app">Back to unified app dashboard</a></p>
+  <p><strong>Selected study:</strong> {}</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.8rem;margin-top:0.7rem;">
+    <section class="card" style="margin:0;">
+      <h3>Active studies</h3>
+      <ul>{}</ul>
+    </section>
+    <section class="card" style="margin:0;">
+      <h3>Pending actions</h3>
+      <ul>{}</ul>
+    </section>
+  </div>
+  <p style="margin-top:0.8rem;"><a href="{}">Back to unified app dashboard</a></p>
 </section>
 
 <section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="setup">
@@ -3797,11 +3981,10 @@ async fn render_study_workbench(
         } else {
             selected_org_value.clone()
         },
-        if selected_project_value.is_empty() {
-            "<span class=\"muted\">none selected</span>".to_string()
-        } else {
-            selected_project_value.clone()
-        },
+        selected_study_label,
+        active_studies_html,
+        pending_actions_html,
+        app_dashboard_url,
         html_escape(admin_email.trim()),
         selected_org_value,
         study_rows_html,
@@ -6251,6 +6434,7 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
   <script>
     (() => {{
       const bars = document.querySelectorAll('.tab-bar[data-tab-group]');
+      const tabParam = new URLSearchParams(window.location.search).get('tab');
       bars.forEach((bar) => {{
         const group = bar.getAttribute('data-tab-group');
         const buttons = Array.from(bar.querySelectorAll('.tab-button[data-tab-id]'));
@@ -6268,6 +6452,9 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
           }});
         }};
         let initial = buttons.find((b) => b.classList.contains('is-active'))?.getAttribute('data-tab-id');
+        if (tabParam && buttons.some((b) => b.getAttribute('data-tab-id') === tabParam)) {{
+          initial = tabParam;
+        }}
         if (!initial) initial = buttons[0].getAttribute('data-tab-id');
         activate(initial);
         buttons.forEach((btn) => {{
