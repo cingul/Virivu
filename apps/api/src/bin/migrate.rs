@@ -3,8 +3,8 @@ use diesel::{pg::PgConnection, prelude::*, sql_query};
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
-const MIGRATION_INIT: &str = "2026-05-17-000001_init";
-const MIGRATION_DUA: &str = "2026-05-17-000003_data_use_agreements";
+const MIGRATION_INIT: &str = "2026-05-17-000001";
+const MIGRATION_DUA: &str = "2026-05-17-000003";
 
 #[derive(diesel::deserialize::QueryableByName)]
 struct ExistsRow {
