@@ -3335,6 +3335,51 @@ async fn render_study_workbench(
         }
         actions.join("")
     };
+    let lifecycle_gate_html = if let Some(readiness) = &readiness {
+        let site_gate = if readiness.total_sites > 0 {
+            "<span class=\"status-chip\">ready</span>"
+        } else {
+            "<span class=\"status-chip\">blocked</span>"
+        };
+        let crf_gate = if readiness.published_crf_templates > 0 {
+            "<span class=\"status-chip\">ready</span>"
+        } else {
+            "<span class=\"status-chip\">blocked</span>"
+        };
+        let startup_gate = if startup_pending_count == 0 {
+            "<span class=\"status-chip\">ready</span>"
+        } else {
+            "<span class=\"status-chip\">blocked</span>"
+        };
+        let active_gate = if readiness.total_patients > 0 {
+            "<span class=\"status-chip\">ready</span>"
+        } else {
+            "<span class=\"status-chip\">blocked</span>"
+        };
+        let close_query_gate = if open_query_count == 0 {
+            "<span class=\"status-chip\">ready</span>"
+        } else {
+            "<span class=\"status-chip\">blocked</span>"
+        };
+        let close_checklist_gate = if close_pending_count == 0 {
+            "<span class=\"status-chip\">ready</span>"
+        } else {
+            "<span class=\"status-chip\">blocked</span>"
+        };
+        format!(
+            r#"<section class="card" style="margin:0.75rem 0;">
+  <h3>Phase readiness gates</h3>
+  <ul>
+    <li><strong>To initiate:</strong> site configured {} · CRF published {} · startup checklist complete {}</li>
+    <li><strong>To set active:</strong> at least one enrolled patient {}</li>
+    <li><strong>To close:</strong> no open queries {} · close checklist complete {}</li>
+  </ul>
+</section>"#,
+            site_gate, crf_gate, startup_gate, active_gate, close_query_gate, close_checklist_gate
+        )
+    } else {
+        "<p class=\"muted\">Select a study to view phase readiness gates.</p>".to_string()
+    };
 
     let readiness_html = if let Some(readiness) = readiness {
         format!(
@@ -3590,11 +3635,33 @@ async fn render_study_workbench(
                         html_escape(&item.notes)
                     )
                 };
+                let undo_action = if item.completed {
+                    let mark_pending_action = selected_project_id
+                        .map(|id| format!("/ui/studies/{id}/close-checklist"))
+                        .unwrap_or_else(|| "#".to_string());
+                    format!(
+                        r#"<form method="post" action="{}" style="margin-top:0.4rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.45rem;align-items:center;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <input type="hidden" name="item_code" value="{}" />
+  <input type="hidden" name="item_label" value="{}" />
+  <input name="notes" value="{}" placeholder="Optional note" />
+  <button type="submit">Undo complete</button>
+</form>"#,
+                        mark_pending_action,
+                        html_escape(admin_email.trim()),
+                        html_escape(&item.item_code),
+                        html_escape(&item.item_label),
+                        html_escape(&item.notes)
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
-                    "<li><strong>{}</strong> {}{}</li>",
+                    "<li><strong>{}</strong> {}{} {}</li>",
                     html_escape(&item.item_label),
                     status,
-                    notes
+                    notes,
+                    undo_action
                 )
             })
             .collect::<Vec<_>>()
@@ -3694,7 +3761,23 @@ async fn render_study_workbench(
                     )
                 };
                 let completion_action = if item.completed {
-                    String::new()
+                    let mark_pending_action = selected_project_id
+                        .map(|id| format!("/ui/studies/{id}/startup-checklist"))
+                        .unwrap_or_else(|| "#".to_string());
+                    format!(
+                        r#"<form method="post" action="{}" style="margin-top:0.45rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.45rem;align-items:center;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <input type="hidden" name="item_code" value="{}" />
+  <input type="hidden" name="item_label" value="{}" />
+  <input name="notes" value="{}" placeholder="Optional note" />
+  <button type="submit">Undo complete</button>
+</form>"#,
+                        mark_pending_action,
+                        html_escape(admin_email.trim()),
+                        html_escape(&item.item_code),
+                        html_escape(&item.item_label),
+                        html_escape(&item.notes)
+                    )
                 } else {
                     let mark_complete_action = selected_project_id
                         .map(|id| format!("/ui/studies/{id}/startup-checklist"))
@@ -3899,6 +3982,7 @@ async fn render_study_workbench(
 
 <section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="lifecycle">
   <h2>2) Lifecycle Transition</h2>
+  {}
   {}
   {}
   <form method="post" action="{}">
@@ -4124,6 +4208,7 @@ async fn render_study_workbench(
         study_rows_html,
         readiness_html,
         operational_summary_html,
+        lifecycle_gate_html,
         phase_action,
         selected_project_value.clone(),
         html_escape(admin_email.trim()),
@@ -4288,7 +4373,8 @@ async fn perform_study_phase_transition(
         .await
         .map_err(ApiError::internal)?
         .map(|u| u.id);
-    ctx.db
+    if let Err(err) = ctx
+        .db
         .transition_study_phase(
             project_id,
             form.next_phase.trim(),
@@ -4296,14 +4382,62 @@ async fn perform_study_phase_transition(
             form.notes.trim(),
         )
         .await
-        .map_err(ApiError::internal)?;
+    {
+        let error_text = err.to_string();
+        if let Some(user_notice) = map_study_phase_transition_error_to_notice(&error_text) {
+            return Ok(Redirect::to(&format!(
+                "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=lifecycle&notice={}",
+                query_escape(form.admin_email.trim()),
+                project.organization_id,
+                project_id,
+                query_escape(&user_notice)
+            )));
+        }
+        return Err(ApiError::internal(err));
+    }
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=lifecycle&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
         query_escape("Study phase updated")
     )))
+}
+
+fn map_study_phase_transition_error_to_notice(error_text: &str) -> Option<String> {
+    let normalized = error_text.trim().to_ascii_lowercase();
+    if normalized
+        .contains("cannot initiate study without at least one site and one published crf template")
+    {
+        return Some(
+            "Cannot initiate study yet: add at least one site and publish at least one CRF template."
+                .to_string(),
+        );
+    }
+    if normalized.contains("cannot initiate study until startup checklist is fully completed") {
+        return Some(
+            "Cannot initiate study yet: complete all startup checklist tasks first.".to_string(),
+        );
+    }
+    if normalized.contains("cannot set study active without at least one enrolled patient") {
+        return Some(
+            "Cannot set study to active yet: enroll at least one patient first.".to_string(),
+        );
+    }
+    if normalized.contains("cannot close study while data queries remain open") {
+        return Some("Cannot close study yet: resolve all open data queries first.".to_string());
+    }
+    if normalized.contains("cannot close study until close checklist is fully completed") {
+        return Some(
+            "Cannot close study yet: complete all close checklist tasks first.".to_string(),
+        );
+    }
+    if normalized.contains("invalid phase transition") {
+        return Some(
+            "That phase transition is not allowed from the current study phase.".to_string(),
+        );
+    }
+    None
 }
 
 async fn submit_create_study_crf_template(
@@ -4857,12 +4991,17 @@ async fn submit_set_study_startup_checklist_item(
         )
         .await
         .map_err(ApiError::internal)?;
+    let notice = if completed {
+        "Startup task completed"
+    } else {
+        "Startup task marked pending"
+    };
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=startup&notice={}#startup-next-task",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
-        query_escape("Startup checklist item updated")
+        query_escape(notice)
     )))
 }
 
@@ -4908,12 +5047,17 @@ async fn submit_set_study_close_checklist_item(
         )
         .await
         .map_err(ApiError::internal)?;
+    let notice = if completed {
+        "Close checklist task completed"
+    } else {
+        "Close checklist task marked pending"
+    };
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=close&notice={}#close-checklist-panel",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
-        query_escape("Checklist item updated")
+        query_escape(notice)
     )))
 }
 
