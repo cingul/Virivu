@@ -45,6 +45,7 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/health", get(health))
         .route("/favicon.ico", get(favicon))
         .route("/ui", get(redirect_ui_home))
+        .route("/ui/foundation", get(render_foundation_command_center))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
         .route("/ui/studies/create", post(submit_create_study_from_ui))
@@ -1647,7 +1648,301 @@ struct StudyChecklistItemForm {
 }
 
 async fn redirect_ui_home() -> Redirect {
-    Redirect::to("/ui/app")
+    Redirect::to("/ui/foundation")
+}
+
+async fn render_foundation_command_center(
+    State(ctx): State<AppContext>,
+    Query(query): Query<AppDashboardQuery>,
+) -> Result<Html<String>, ApiError> {
+    let admin_email = query
+        .admin_email
+        .unwrap_or_else(|| "arcot@cingulum.org".to_string());
+    let admin_email_q = query_escape(admin_email.trim());
+
+    let organizations = ctx
+        .db
+        .list_organizations_for_email(admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+
+    let selected_org_id = query
+        .organization_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .filter(|org_id| organizations.iter().any(|org| org.id == *org_id))
+        .or_else(|| {
+            organizations
+                .iter()
+                .find(|org| {
+                    org.organization_kind == "platform_root"
+                        || org.name.eq_ignore_ascii_case("Cingulum Foundation Inc.")
+                })
+                .map(|org| org.id)
+        })
+        .or_else(|| organizations.first().map(|org| org.id));
+
+    let selected_org = selected_org_id
+        .and_then(|org_id| organizations.iter().find(|org| org.id == org_id).cloned());
+
+    let child_organizations = if let Some(org_id) = selected_org_id {
+        ctx.db
+            .list_child_organizations(org_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
+    let mut research_network_count = 0usize;
+    let mut hospital_count = 0usize;
+    let mut tenant_count = 0usize;
+    let mut sponsor_count = 0usize;
+    let mut other_kind_count = 0usize;
+    for org in &child_organizations {
+        match org.organization_kind.trim().to_ascii_lowercase().as_str() {
+            "research_network" => research_network_count += 1,
+            "hospital" => hospital_count += 1,
+            "tenant" => tenant_count += 1,
+            "sponsor" => sponsor_count += 1,
+            _ => other_kind_count += 1,
+        }
+    }
+
+    let mut total_projects = 0usize;
+    let mut total_sites = 0usize;
+    let mut total_duas = 0usize;
+    let mut pending_duas = 0usize;
+    let mut managed_org_ids = Vec::new();
+    if let Some(org_id) = selected_org_id {
+        managed_org_ids.push(org_id);
+    }
+    managed_org_ids.extend(child_organizations.iter().map(|org| org.id));
+
+    for org_id in managed_org_ids {
+        let projects = ctx
+            .db
+            .list_projects_by_organization(org_id)
+            .await
+            .map_err(ApiError::internal)?;
+        total_projects += projects.len();
+        for project in projects {
+            total_sites += ctx
+                .db
+                .list_sites_by_project(project.id)
+                .await
+                .map_err(ApiError::internal)?
+                .len();
+        }
+        let org_duas = ctx
+            .db
+            .list_data_use_agreements(org_id)
+            .await
+            .map_err(ApiError::internal)?;
+        total_duas += org_duas.len();
+        pending_duas += org_duas
+            .iter()
+            .filter(|dua| {
+                let status = dua.status.trim().to_ascii_lowercase();
+                status.contains("pending") || status.contains("draft")
+            })
+            .count();
+    }
+
+    let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_org_q = selected_org_id
+        .map(|org_id| format!("&organization_id={org_id}"))
+        .unwrap_or_default();
+    let app_workspace_url = format!("/ui/app?admin_email={}{}", admin_email_q, selected_org_q);
+    let study_workspace_url = format!(
+        "/ui/studies?admin_email={}{}",
+        admin_email_q, selected_org_q
+    );
+    let dua_workspace_url = format!("/ui/dua?admin_email={}{}", admin_email_q, selected_org_q);
+
+    let notice_html = query
+        .notice
+        .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
+        .unwrap_or_default();
+
+    let selected_workspace_label = selected_org
+        .as_ref()
+        .map(|org| {
+            format!(
+                "{} ({})",
+                html_escape(&org.name),
+                html_escape(&org.organization_kind)
+            )
+        })
+        .unwrap_or_else(|| "none selected".to_string());
+
+    let organization_options_html = organizations
+        .iter()
+        .map(|org| {
+            format!(
+                r#"<option value="{}">{} ({})</option>"#,
+                org.id,
+                html_escape(&org.name),
+                html_escape(&org.organization_kind)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let managed_organizations_html = if child_organizations.is_empty() {
+        "<li>No partner organizations yet. Use Operations Workspace to create hospitals, tenants, and sponsors under Cingulum Foundation.</li>".to_string()
+    } else {
+        child_organizations
+            .iter()
+            .map(|org| {
+                format!(
+                    r#"<li><strong>{}</strong> <small>(kind: {} · workspace: {} · hex: {})</small><br/><a href="/ui/app?admin_email={}&organization_id={}">Operations</a> · <a href="/ui/studies?admin_email={}&organization_id={}">Studies</a> · <a href="/ui/dua?admin_email={}&organization_id={}">DUA</a></li>"#,
+                    html_escape(&org.name),
+                    html_escape(&org.organization_kind),
+                    html_escape(org.workspace_slug.as_deref().unwrap_or("pending")),
+                    html_escape(org.hex_code.as_deref().unwrap_or("pending")),
+                    admin_email_q,
+                    org.id,
+                    admin_email_q,
+                    org.id,
+                    admin_email_q,
+                    org.id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let mut next_actions = Vec::new();
+    if selected_org_id.is_none() {
+        next_actions.push(
+            "<li>Select the Cingulum Foundation workspace to activate network-level controls.</li>"
+                .to_string(),
+        );
+    }
+    if child_organizations.is_empty() {
+        next_actions.push(format!(
+            r#"<li>Onboard the first partner site or institution in <a href="{}">Operations Workspace</a>.</li>"#,
+            app_workspace_url
+        ));
+    }
+    if total_projects == 0 {
+        next_actions.push(format!(
+            r#"<li>Launch the first study in <a href="{}">Study Workbench</a> to kick off enrollment.</li>"#,
+            study_workspace_url
+        ));
+    }
+    if total_duas == 0 {
+        next_actions.push(format!(
+            r#"<li>Draft your first cross-site DUA in the <a href="{}">DUA Console</a>.</li>"#,
+            dua_workspace_url
+        ));
+    }
+    if pending_duas > 0 {
+        next_actions.push(format!(
+            r#"<li>Review {} pending DUA record(s) in the <a href="{}">DUA Console</a> to unblock study startup.</li>"#,
+            pending_duas, dua_workspace_url
+        ));
+    }
+    if next_actions.is_empty() {
+        next_actions.push(format!(
+            r#"<li>Network looks active. Continue monitoring execution in <a href="{}">Study Workbench</a> and <a href="{}">Operations Workspace</a>.</li>"#,
+            study_workspace_url, app_workspace_url
+        ));
+    }
+    let next_actions_html = next_actions.join("");
+
+    let body = format!(
+        r#"
+<h1>Cingulum Foundation Command Center</h1>
+<p class="muted">Administer all partner sites, coordinate legal and operational workflows, and accelerate research delivery through a single digital control plane.</p>
+{}
+
+<section class="card">
+  <h2>Foundation workspace context</h2>
+  <form method="get" action="/ui/foundation">
+    <label>Foundation admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Workspace to administer</label>
+    <input name="organization_id" list="foundation-organization-options" value="{}" placeholder="Select Cingulum Foundation root" />
+    <button type="submit">Load command center</button>
+  </form>
+  <p style="margin-top:0.75rem;"><strong>Active workspace:</strong> {}</p>
+  <p class="muted">Tenant-isolated controls remain in effect. All actions are scoped to the selected organization and its managed sites.</p>
+</section>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.8rem;">
+  <section class="card">
+    <h2>Network coverage</h2>
+    <p><strong>Managed organizations:</strong> {}</p>
+    <p><strong>Research networks:</strong> {}</p>
+    <p><strong>Hospitals:</strong> {}</p>
+    <p><strong>Tenants:</strong> {}</p>
+    <p><strong>Sponsors:</strong> {}</p>
+    <p><strong>Other kinds:</strong> {}</p>
+  </section>
+  <section class="card">
+    <h2>Research operations snapshot</h2>
+    <p><strong>Projects tracked:</strong> {}</p>
+    <p><strong>Sites configured:</strong> {}</p>
+    <p><strong>DUAs tracked:</strong> {}</p>
+    <p><strong>Pending DUA actions:</strong> {}</p>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Guided execution path</h2>
+  <ol>
+    <li><strong>Onboard institutions:</strong> setup organizations and site structure in <a href="{}">Operations Workspace</a>.</li>
+    <li><strong>Launch and monitor studies:</strong> manage startup, CRFs, visits, and query resolution in <a href="{}">Study Workbench</a>.</li>
+    <li><strong>Close legal bottlenecks:</strong> draft and finalize agreements in <a href="{}">DUA Console</a>.</li>
+    <li><strong>Accelerate with digital tools:</strong> standardize data capture, reduce manual handoffs, and maintain real-time program visibility.</li>
+  </ol>
+</section>
+
+<section class="card">
+  <h2>Recommended next actions</h2>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>Managed organizations</h2>
+  <ul>{}</ul>
+</section>
+"#,
+        notice_html,
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_workspace_label,
+        child_organizations.len(),
+        research_network_count,
+        hospital_count,
+        tenant_count,
+        sponsor_count,
+        other_kind_count,
+        total_projects,
+        total_sites,
+        total_duas,
+        pending_duas,
+        app_workspace_url,
+        study_workspace_url,
+        dua_workspace_url,
+        next_actions_html,
+        managed_organizations_html
+    );
+
+    let page = format!(
+        r#"
+{}
+<datalist id="foundation-organization-options">{}</datalist>
+"#,
+        body, organization_options_html
+    );
+
+    Ok(Html(render_cingulum_page(
+        "Cingulum Foundation Command Center",
+        page,
+    )))
 }
 
 async fn render_app_dashboard(
@@ -2036,6 +2331,14 @@ async fn render_app_dashboard(
         })
         .collect::<Vec<_>>()
         .join("");
+    let foundation_hub_url = selected_org_id
+        .map(|org_id| {
+            format!(
+                "/ui/foundation?admin_email={}&organization_id={org_id}",
+                admin_email_q
+            )
+        })
+        .unwrap_or_else(|| format!("/ui/foundation?admin_email={}", admin_email_q));
 
     let body = format!(
         r#"
@@ -2059,6 +2362,7 @@ async fn render_app_dashboard(
   <p><strong>Project:</strong> {}</p>
   <h3 style="margin-top:0.8rem;">Child organizations</h3>
   <ul>{}</ul>
+  <p><a href="{}">Open Cingulum Foundation command center</a></p>
   <p><a href="/ui/studies">Open study lifecycle + CRF workbench</a></p>
   <p><a href="/ui/dua?admin_email={}">Open dedicated DUA console</a></p>
 </section>
@@ -2241,6 +2545,7 @@ async fn render_app_dashboard(
             selected_project_value.clone()
         },
         child_organizations_html,
+        foundation_hub_url,
         admin_email_q,
         html_escape(admin_email.trim()),
         selected_org_value.clone(),
