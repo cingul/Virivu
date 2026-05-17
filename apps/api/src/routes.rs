@@ -5582,6 +5582,12 @@ fn cingulum_theme_css() -> &'static str {
         radial-gradient(circle at 10% 0%, rgba(240, 87, 8, 0.12) 0%, transparent 35%),
         radial-gradient(circle at 90% 12%, rgba(2, 24, 43, 0.12) 0%, transparent 32%),
         linear-gradient(180deg, #f7f5ef 0%, var(--cg-cream) 100%);
+      background-size: 120% 120%;
+      animation: page-shift 14s ease-in-out infinite alternate;
+    }
+    @keyframes page-shift {
+      from { background-position: 0% 0%; }
+      to { background-position: 100% 8%; }
     }
     .page {
       max-width: 1180px;
@@ -5592,16 +5598,15 @@ fn cingulum_theme_css() -> &'static str {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: rgba(255, 253, 248, 0.7);
-      border: 1px solid rgba(197, 183, 171, 0.7);
+      background: linear-gradient(120deg, rgba(2, 24, 43, 0.95) 0%, rgba(40, 62, 40, 0.93) 65%, rgba(240, 87, 8, 0.93) 100%);
+      border: 1px solid rgba(2, 24, 43, 0.35);
       border-radius: 16px;
       padding: 0.95rem 1rem;
-      backdrop-filter: blur(3px);
-      box-shadow: 0 8px 24px rgba(2, 24, 43, 0.08);
+      box-shadow: 0 10px 28px rgba(2, 24, 43, 0.2);
       margin-bottom: 0.95rem;
     }
     .brand {
-      color: var(--cg-forest);
+      color: #f8f6f2;
       font-size: 0.88rem;
       letter-spacing: 0.04em;
       text-transform: uppercase;
@@ -5609,8 +5614,42 @@ fn cingulum_theme_css() -> &'static str {
       margin: 0;
     }
     .brand-sub {
-      color: #334a61;
+      color: #f3eee7;
       font-size: 0.84rem;
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.18);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 999px;
+      padding: 0.32rem 0.62rem;
+      backdrop-filter: blur(3px);
+    }
+    .surface-glow {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: #173149;
+      background: rgba(255, 250, 243, 0.94);
+      border: 1px solid rgba(197, 183, 171, 0.9);
+      border-radius: 999px;
+      width: fit-content;
+      padding: 0.35rem 0.72rem;
+      margin: -0.25rem 0 0.9rem;
+      box-shadow: 0 8px 18px rgba(2, 24, 43, 0.12);
+    }
+    .pulse-dot {
+      width: 0.56rem;
+      height: 0.56rem;
+      border-radius: 50%;
+      background: var(--cg-orange);
+      box-shadow: 0 0 0 rgba(240, 87, 8, 0.45);
+      animation: pulse 1.7s infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(240, 87, 8, 0.45); }
+      70% { box-shadow: 0 0 0 9px rgba(240, 87, 8, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(240, 87, 8, 0); }
     }
     .card {
       background: linear-gradient(180deg, rgba(255, 253, 248, 0.98) 0%, rgba(255, 250, 243, 0.96) 100%);
@@ -5749,8 +5788,9 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
   <main class="page">
     <div class="brand-wrap">
       <div class="brand">Cingulum Foundation Inc.</div>
-      <div class="brand-sub">Virivu Research Cloud</div>
+      <div class="brand-sub">Virivu Research Cloud · UI Refresh v3</div>
     </div>
+    <div class="surface-glow"><span class="pulse-dot"></span>Tenant-isolated workspace mode is active</div>
     {}
   </main>
   <script>
