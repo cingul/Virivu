@@ -1990,7 +1990,17 @@ async fn render_app_dashboard(
 <h1>Virivu Research Web App</h1>
 <p class="muted">Unified operations workspace: institutions, trial setup, patient workflows, legal agreements, and analytics.</p>
 {}
-<section class="card">
+<div class="tab-shell">
+<nav class="tab-bar" data-tab-group="app-tabs">
+  <button type="button" class="tab-button is-active" data-tab-id="overview">Overview</button>
+  <button type="button" class="tab-button" data-tab-id="projects">Projects</button>
+  <button type="button" class="tab-button" data-tab-id="sites">Sites</button>
+  <button type="button" class="tab-button" data-tab-id="patients">Patients</button>
+  <button type="button" class="tab-button" data-tab-id="providers">Providers</button>
+  <button type="button" class="tab-button" data-tab-id="analytics">Analytics</button>
+  <button type="button" class="tab-button" data-tab-id="legal">Legal</button>
+</nav>
+<section class="card tab-panel is-active" data-tab-group="app-tabs" data-tab-panel="overview">
   <h2>Workspace Context</h2>
   <p><strong>Admin:</strong> {}</p>
   <p><strong>Organization:</strong> {}</p>
@@ -1999,7 +2009,7 @@ async fn render_app_dashboard(
   <p><a href="/ui/dua?admin_email={}">Open dedicated DUA console</a></p>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="projects">
   <h2>1) Organizations</h2>
   <form method="post" action="/ui/app/create-organization">
     <label>Admin email (platform admin)</label>
@@ -2012,7 +2022,7 @@ async fn render_app_dashboard(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="projects">
   <h2>2) Project Setup</h2>
   <form method="post" action="/ui/app/create-project">
     <label>Admin email</label>
@@ -2029,7 +2039,7 @@ async fn render_app_dashboard(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="sites">
   <h2>3) Site Setup</h2>
   <form method="post" action="/ui/app/create-site">
     <label>Admin email</label>
@@ -2046,7 +2056,7 @@ async fn render_app_dashboard(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="patients">
   <h2>4) Patient Workflow</h2>
   <form method="post" action="/ui/app/create-patient" style="margin-bottom:1rem;">
     <label>Admin email</label>
@@ -2094,7 +2104,7 @@ async fn render_app_dashboard(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="providers">
   <h2>5) Providers + Encounters</h2>
   <form method="post" action="/ui/app/create-provider" style="margin-bottom:1rem;">
     <label>Admin email</label>
@@ -2137,16 +2147,17 @@ async fn render_app_dashboard(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="analytics">
   <h2>6) Analytics Summary</h2>
   {}
   {}
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="legal">
   <h2>7) Legal / DUA</h2>
   <ul>{}</ul>
 </section>
+</div>
 
 <datalist id="app-organization-options">{}</datalist>
 <datalist id="app-project-options">{}</datalist>
@@ -3099,8 +3110,21 @@ async fn render_study_workbench(
 <h1>Study Lifecycle + CRF Workbench</h1>
 <p class="muted">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
 {}
+<div class="tab-shell">
+<nav class="tab-bar" data-tab-group="study-tabs">
+  <button type="button" class="tab-button is-active" data-tab-id="overview">Overview</button>
+  <button type="button" class="tab-button" data-tab-id="setup">Study Setup</button>
+  <button type="button" class="tab-button" data-tab-id="lifecycle">Lifecycle</button>
+  <button type="button" class="tab-button" data-tab-id="crf-templates">CRF Templates</button>
+  <button type="button" class="tab-button" data-tab-id="crf-fields">CRF Fields</button>
+  <button type="button" class="tab-button" data-tab-id="visits">Visits</button>
+  <button type="button" class="tab-button" data-tab-id="submissions">Submissions</button>
+  <button type="button" class="tab-button" data-tab-id="queries">Queries</button>
+  <button type="button" class="tab-button" data-tab-id="startup">Startup</button>
+  <button type="button" class="tab-button" data-tab-id="close">Close</button>
+</nav>
 
-<section class="card">
+<section class="card tab-panel is-active" data-tab-group="study-tabs" data-tab-panel="overview">
   <h2>Workspace</h2>
   <p><strong>Admin:</strong> {}</p>
   <p><strong>Organization:</strong> {}</p>
@@ -3108,7 +3132,7 @@ async fn render_study_workbench(
   <p><a href="/ui/app">Back to unified app dashboard</a></p>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="setup">
   <h2>1) Create Study (clinicaltrials.gov-style metadata + internal ops)</h2>
   <form method="post" action="/ui/studies/create">
     <label>Admin email</label>
@@ -3133,7 +3157,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="lifecycle">
   <h2>2) Lifecycle Transition</h2>
   {}
   {}
@@ -3155,7 +3179,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="crf-templates">
   <h2>3) CRF Template Design</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -3178,7 +3202,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="crf-fields">
   <h2>4) CRF Field Builder</h2>
   <p><strong>Selected template:</strong> {}</p>
   <form method="post" action="{}">
@@ -3211,7 +3235,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="visits">
   <h2>5) Visit Schedule Engine</h2>
   <form method="post" action="{}" style="margin-bottom:1rem;">
     <label>Admin email</label>
@@ -3246,7 +3270,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="submissions">
   <h2>6) CRF Submission Workflow</h2>
   <form method="post" action="{}" style="margin-bottom:1rem;">
     <label>Admin email</label>
@@ -3276,7 +3300,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="queries">
   <h2>7) Monitor Query Management</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -3293,7 +3317,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="startup">
   <h2>8) Study Startup Checklist</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -3311,7 +3335,7 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>
 
-<section class="card">
+<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="close">
   <h2>9) Study Close Checklist</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -3328,6 +3352,7 @@ async fn render_study_workbench(
   </form>
   <ul>{}</ul>
 </section>
+</div>
 
 <datalist id="study-patient-options">{}</datalist>
 <datalist id="study-template-options">{}</datalist>
@@ -5315,63 +5340,107 @@ fn cingulum_theme_css() -> &'static str {
       --cg-forest: #283E28;
       --cg-navy: #02182B;
       --cg-orange: #F05708;
+      --cg-paper: #FFFDF8;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: Inter, Arial, sans-serif;
       color: var(--cg-navy);
-      background: linear-gradient(180deg, #f7f5ef 0%, var(--cg-cream) 100%);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(240, 87, 8, 0.12) 0%, transparent 35%),
+        radial-gradient(circle at 90% 12%, rgba(2, 24, 43, 0.12) 0%, transparent 32%),
+        linear-gradient(180deg, #f7f5ef 0%, var(--cg-cream) 100%);
     }
     .page {
-      max-width: 1024px;
-      margin: 1.8rem auto;
-      padding: 0 1rem 2rem;
+      max-width: 1180px;
+      margin: 1.5rem auto;
+      padding: 0 1rem 2.2rem;
+    }
+    .brand-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(255, 253, 248, 0.7);
+      border: 1px solid rgba(197, 183, 171, 0.7);
+      border-radius: 16px;
+      padding: 0.95rem 1rem;
+      backdrop-filter: blur(3px);
+      box-shadow: 0 8px 24px rgba(2, 24, 43, 0.08);
+      margin-bottom: 0.95rem;
     }
     .brand {
       color: var(--cg-forest);
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       letter-spacing: 0.04em;
       text-transform: uppercase;
       font-weight: 700;
-      margin-bottom: 0.4rem;
+      margin: 0;
+    }
+    .brand-sub {
+      color: #334a61;
+      font-size: 0.84rem;
     }
     .card {
-      background: #fffdfa;
-      border: 1px solid var(--cg-sand);
-      border-radius: 14px;
-      box-shadow: 0 10px 24px rgba(2, 24, 43, 0.08);
-      padding: 1rem 1.1rem;
-      margin-bottom: 1rem;
+      background: linear-gradient(180deg, rgba(255, 253, 248, 0.98) 0%, rgba(255, 250, 243, 0.96) 100%);
+      border: 1px solid rgba(197, 183, 171, 0.9);
+      border-radius: 16px;
+      box-shadow: 0 14px 28px rgba(2, 24, 43, 0.09);
+      padding: 1rem 1.1rem 1.15rem;
+      margin-bottom: 1.05rem;
     }
-    h1, h2, h3 { margin-top: 0; color: var(--cg-navy); }
+    h1, h2, h3 { margin-top: 0; color: var(--cg-navy); letter-spacing: 0.01em; }
+    h1 { font-size: 1.95rem; margin-bottom: 0.5rem; }
+    h2 { font-size: 1.16rem; margin-bottom: 0.75rem; }
+    h3 { font-size: 0.98rem; margin-bottom: 0.6rem; }
     p, li, label, small { color: #10263d; }
     a { color: var(--cg-forest); font-weight: 600; }
     a:hover { color: var(--cg-orange); }
+    ul { padding-left: 1.1rem; margin: 0.5rem 0 0; }
+    li { margin-bottom: 0.28rem; }
+    label {
+      font-size: 0.84rem;
+      font-weight: 700;
+      margin-bottom: 0.28rem;
+      margin-top: 0.55rem;
+      display: block;
+    }
     input, textarea, select {
       width: 100%;
-      border: 1px solid var(--cg-sand);
-      border-radius: 10px;
-      padding: 0.62rem;
-      background: #fff;
+      border: 1px solid rgba(197, 183, 171, 0.95);
+      border-radius: 11px;
+      padding: 0.64rem;
+      background: #fffefc;
       color: var(--cg-navy);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
     }
     input:focus, textarea:focus, select:focus {
-      outline: 2px solid rgba(240, 87, 8, 0.25);
+      outline: 2px solid rgba(240, 87, 8, 0.3);
       border-color: var(--cg-orange);
     }
-    textarea { min-height: 170px; }
+    textarea { min-height: 140px; }
     button {
-      background: var(--cg-orange);
+      background: linear-gradient(135deg, #f36e1d 0%, var(--cg-orange) 100%);
       color: #fff;
       border: none;
-      border-radius: 10px;
-      padding: 0.68rem 1rem;
+      border-radius: 11px;
+      padding: 0.64rem 0.95rem;
       cursor: pointer;
       font-weight: 700;
+      margin-top: 0.62rem;
+      box-shadow: 0 10px 18px rgba(240, 87, 8, 0.25);
     }
-    button:hover { filter: brightness(0.95); }
+    button:hover { filter: brightness(0.97); transform: translateY(-1px); }
     .muted { color: #41566d; }
+    .notice {
+      background: #fff3ea;
+      border: 1px solid #f4c6ad;
+      border-left: 4px solid var(--cg-orange);
+      border-radius: 10px;
+      padding: 0.72rem 0.82rem;
+      font-weight: 600;
+      margin-bottom: 0.95rem;
+    }
     .status-chip {
       display: inline-block;
       padding: 0.18rem 0.6rem;
@@ -5380,6 +5449,44 @@ fn cingulum_theme_css() -> &'static str {
       color: var(--cg-forest);
       font-weight: 700;
       font-size: 0.84rem;
+    }
+    .tab-shell { margin-top: 0.9rem; }
+    .tab-bar {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.8rem;
+      position: sticky;
+      top: 0.6rem;
+      z-index: 3;
+      background: rgba(247, 245, 239, 0.92);
+      border: 1px solid rgba(197, 183, 171, 0.95);
+      border-radius: 13px;
+      padding: 0.45rem;
+      backdrop-filter: blur(5px);
+    }
+    .tab-button {
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: transparent;
+      color: #30475f;
+      font-weight: 700;
+      font-size: 0.82rem;
+      padding: 0.5rem 0.8rem;
+      margin: 0;
+      box-shadow: none;
+    }
+    .tab-button.is-active {
+      background: var(--cg-navy);
+      color: #fff;
+      border-color: rgba(2, 24, 43, 0.4);
+      box-shadow: 0 7px 16px rgba(2, 24, 43, 0.22);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.is-active { display: block; }
+    @media (max-width: 740px) {
+      .brand-wrap { flex-direction: column; align-items: flex-start; gap: 0.35rem; }
+      .tab-bar { position: static; }
     }
     "#
 }
@@ -5396,9 +5503,40 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
 </head>
 <body>
   <main class="page">
-    <div class="brand">Cingulum Foundation Inc.</div>
+    <div class="brand-wrap">
+      <div class="brand">Cingulum Foundation Inc.</div>
+      <div class="brand-sub">Virivu Research Cloud</div>
+    </div>
     {}
   </main>
+  <script>
+    (() => {{
+      const bars = document.querySelectorAll('.tab-bar[data-tab-group]');
+      bars.forEach((bar) => {{
+        const group = bar.getAttribute('data-tab-group');
+        const buttons = Array.from(bar.querySelectorAll('.tab-button[data-tab-id]'));
+        const panels = Array.from(document.querySelectorAll(`.tab-panel[data-tab-group="${{group}}"]`));
+        if (buttons.length === 0 || panels.length === 0) return;
+        const activate = (tabId) => {{
+          buttons.forEach((btn) => {{
+            const active = btn.getAttribute('data-tab-id') === tabId;
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+          }});
+          panels.forEach((panel) => {{
+            const active = panel.getAttribute('data-tab-panel') === tabId;
+            panel.classList.toggle('is-active', active);
+          }});
+        }};
+        let initial = buttons.find((b) => b.classList.contains('is-active'))?.getAttribute('data-tab-id');
+        if (!initial) initial = buttons[0].getAttribute('data-tab-id');
+        activate(initial);
+        buttons.forEach((btn) => {{
+          btn.addEventListener('click', () => activate(btn.getAttribute('data-tab-id')));
+        }});
+      }});
+    }})();
+  </script>
 </body>
 </html>"#,
         html_escape(title),
