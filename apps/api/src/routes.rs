@@ -44,7 +44,7 @@ pub fn router(ctx: AppContext) -> Router {
     let public_router = Router::new()
         .route("/health", get(health))
         .route("/favicon.ico", get(favicon))
-        .route("/ui", get(redirect_ui_home))
+        .route("/ui", get(render_ui_home))
         .route("/ui/foundation", get(render_foundation_command_center))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
@@ -1647,8 +1647,50 @@ struct StudyChecklistItemForm {
     notes: String,
 }
 
-async fn redirect_ui_home() -> Redirect {
-    Redirect::to("/ui/foundation")
+#[derive(Debug, Default, Deserialize)]
+struct UiHomeQuery {
+    admin_email: Option<String>,
+    notice: Option<String>,
+}
+
+async fn render_ui_home(Query(query): Query<UiHomeQuery>) -> Html<String> {
+    let admin_email = query
+        .admin_email
+        .unwrap_or_else(|| "arcot@cingulum.org".to_string());
+    let notice_html = query
+        .notice
+        .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
+        .unwrap_or_default();
+
+    let body = format!(
+        r#"
+<main class="home-shell">
+  <section class="home-card logo-card">
+    <div class="cx-logo-wrap">
+      <div class="cx-logo">CX</div>
+    </div>
+    <h1>Cingulum Foundation Inc.</h1>
+    <p class="muted">Virivu Research Cloud</p>
+    <p class="home-copy">Accelerating research operations across hospitals, sponsors, and partner institutions through secure digital workflows.</p>
+  </section>
+
+  <section class="home-card login-card">
+    <h2>Login to Command Center</h2>
+    <p class="muted">Use your workspace admin email to open the foundation command center.</p>
+    {}
+    <form method="get" action="/ui/foundation">
+      <label>Admin email</label>
+      <input type="email" name="admin_email" value="{}" placeholder="name@cingulum.org" required />
+      <button type="submit">Enter Command Center</button>
+    </form>
+  </section>
+</main>
+"#,
+        notice_html,
+        html_escape(admin_email.trim())
+    );
+
+    Html(render_home_page("Virivu Research Cloud", body))
 }
 
 async fn render_foundation_command_center(
@@ -6077,6 +6119,114 @@ fn cingulum_theme_css() -> &'static str {
       .tab-bar { position: static; }
     }
     "#
+}
+
+fn cingulum_home_css() -> &'static str {
+    r#"
+    body {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 1.2rem;
+    }
+    .home-shell {
+      width: min(900px, 100%);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      animation: home-rise 360ms ease;
+    }
+    .home-card {
+      background: linear-gradient(180deg, rgba(255, 253, 248, 0.97) 0%, rgba(255, 248, 238, 0.95) 100%);
+      border: 1px solid rgba(197, 183, 171, 0.9);
+      border-radius: 18px;
+      padding: 1.35rem;
+      box-shadow: 0 20px 38px rgba(2, 24, 43, 0.14);
+      transition: transform 180ms ease, box-shadow 220ms ease;
+      animation: card-fade 420ms ease both;
+    }
+    .home-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 24px 44px rgba(2, 24, 43, 0.18);
+    }
+    .logo-card { animation-delay: 40ms; }
+    .login-card { animation-delay: 110ms; }
+    .cx-logo-wrap {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 0.9rem;
+    }
+    .cx-logo {
+      width: 110px;
+      height: 110px;
+      border-radius: 26px;
+      display: grid;
+      place-items: center;
+      font-size: 2.1rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      color: #fff;
+      background: linear-gradient(130deg, #02182B 0%, #283E28 55%, #F05708 100%);
+      box-shadow: 0 18px 36px rgba(2, 24, 43, 0.28);
+      animation: logo-breathe 2.6s ease-in-out infinite;
+    }
+    .home-copy {
+      margin-top: 0.85rem;
+      line-height: 1.48;
+      font-size: 0.96rem;
+    }
+    .login-card h2 {
+      margin-bottom: 0.45rem;
+      font-size: 1.32rem;
+    }
+    .login-card form {
+      margin-top: 0.55rem;
+    }
+    .login-card button {
+      width: 100%;
+      margin-top: 0.9rem;
+      padding-top: 0.75rem;
+      padding-bottom: 0.75rem;
+    }
+    @keyframes home-rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes card-fade {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes logo-breathe {
+      0%, 100% { transform: translateY(0); box-shadow: 0 18px 36px rgba(2, 24, 43, 0.28); }
+      50% { transform: translateY(-2px); box-shadow: 0 22px 44px rgba(2, 24, 43, 0.33); }
+    }
+    @media (max-width: 820px) {
+      .home-shell {
+        grid-template-columns: 1fr;
+      }
+    }
+    "#
+}
+
+fn render_home_page(title: &str, body_content: String) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{}</title>
+  <style>{}{}</style>
+</head>
+<body>
+  {}
+</body>
+</html>"#,
+        html_escape(title),
+        cingulum_theme_css(),
+        cingulum_home_css(),
+        body_content
+    )
 }
 
 fn render_cingulum_page(title: &str, body_content: String) -> String {
