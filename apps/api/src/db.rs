@@ -9,8 +9,8 @@ use crate::models::{
     DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite, MediaUploadTicket,
     Organization, OrganizationSummaryRow, OutboundEmail, Patient, PatientStudyVisit, Project,
     ProjectProgressRow, Provider, Site, StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission,
-    StudyCrfTemplate, StudyDataQuery, StudyPhaseEvent, StudyReadiness, StudyVisitTemplate, User,
-    UserMembership,
+    StudyCrfTemplate, StudyDataQuery, StudyOperationalSummary, StudyPhaseEvent, StudyReadiness,
+    StudyStartupChecklistItem, StudyVisitTemplate, User, UserMembership,
 };
 
 #[derive(Clone)]
@@ -236,6 +236,35 @@ impl Db {
         let project_id: Uuid = row.get("id");
         for (item_code, item_label) in [
             (
+                "irb_approval_documented",
+                "IRB / ethics approval documented for study launch",
+            ),
+            (
+                "site_activation_complete",
+                "At least one site is activated with investigator assignment",
+            ),
+            (
+                "crf_publish_complete",
+                "Core CRF templates are published and validated",
+            ),
+            (
+                "team_training_complete",
+                "Study team training and SOP acknowledgement completed",
+            ),
+        ] {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO study_startup_checklist_items (project_id, item_code, item_label)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (project_id, item_code) DO NOTHING
+                    "#,
+                    &[&project_id, &item_code, &item_label],
+                )
+                .await?;
+        }
+        for (item_code, item_label) in [
+            (
                 "data_cleaning_complete",
                 "Data cleaning completed and final CRF review done",
             ),
@@ -344,6 +373,24 @@ impl Db {
             return Err(anyhow!(
                 "cannot initiate study without at least one site and one published CRF template"
             ));
+        }
+        if target_phase == "initiated" {
+            let row = client
+                .query_one(
+                    r#"
+                    SELECT COUNT(*)::BIGINT AS startup_items_pending
+                    FROM study_startup_checklist_items
+                    WHERE project_id = $1 AND completed = FALSE
+                    "#,
+                    &[&project_id],
+                )
+                .await?;
+            let startup_items_pending: i64 = row.get("startup_items_pending");
+            if startup_items_pending > 0 {
+                return Err(anyhow!(
+                    "cannot initiate study until startup checklist is fully completed"
+                ));
+            }
         }
         if target_phase == "active" && readiness.total_patients < 1 {
             return Err(anyhow!(
@@ -1294,6 +1341,177 @@ impl Db {
             )
             .await?;
         Ok(row_to_study_close_checklist_item(&row))
+    }
+
+    pub async fn list_study_startup_checklist_items(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyStartupChecklistItem>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes,
+                    created_at
+                FROM study_startup_checklist_items
+                WHERE project_id = $1
+                ORDER BY created_at ASC
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(row_to_study_startup_checklist_item)
+            .collect())
+    }
+
+    pub async fn set_study_startup_checklist_item(
+        &self,
+        project_id: Uuid,
+        item_code: &str,
+        item_label: &str,
+        completed: bool,
+        completed_by_user_id: Option<Uuid>,
+        notes: &str,
+    ) -> anyhow::Result<StudyStartupChecklistItem> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO study_startup_checklist_items (
+                    project_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes
+                )
+                VALUES (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5,
+                    CASE WHEN $4 THEN NOW() ELSE NULL END,
+                    $6
+                )
+                ON CONFLICT (project_id, item_code)
+                DO UPDATE SET
+                    item_label = EXCLUDED.item_label,
+                    completed = EXCLUDED.completed,
+                    completed_by_user_id = EXCLUDED.completed_by_user_id,
+                    completed_at = CASE
+                        WHEN EXCLUDED.completed THEN NOW()
+                        ELSE NULL
+                    END,
+                    notes = EXCLUDED.notes
+                RETURNING
+                    id,
+                    project_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes,
+                    created_at
+                "#,
+                &[
+                    &project_id,
+                    &item_code,
+                    &item_label,
+                    &completed,
+                    &completed_by_user_id,
+                    &notes,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_startup_checklist_item(&row))
+    }
+
+    pub async fn study_operational_summary(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<StudyOperationalSummary> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                SELECT
+                    p.lifecycle_phase,
+                    p.planned_enrollment,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM patients pt
+                        WHERE pt.project_id = p.id
+                    ) AS enrolled_patients,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM patient_study_visits pv
+                        WHERE pv.project_id = p.id
+                    ) AS total_visits_scheduled,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM patient_study_visits pv
+                        WHERE pv.project_id = p.id AND pv.status = 'completed'
+                    ) AS completed_visits,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM study_crf_submissions s
+                        WHERE s.project_id = p.id
+                    ) AS total_submissions,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM study_crf_submissions s
+                        WHERE s.project_id = p.id AND s.status = 'locked'
+                    ) AS locked_submissions,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM study_data_queries q
+                        WHERE q.project_id = p.id AND q.status <> 'closed'
+                    ) AS open_data_queries,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM study_startup_checklist_items c
+                        WHERE c.project_id = p.id AND c.completed = FALSE
+                    ) AS startup_items_pending,
+                    (
+                        SELECT COUNT(*)::BIGINT
+                        FROM study_close_checklist_items c
+                        WHERE c.project_id = p.id AND c.completed = FALSE
+                    ) AS close_items_pending
+                FROM projects p
+                WHERE p.id = $1
+                "#,
+                &[&project_id],
+            )
+            .await?;
+
+        let planned_enrollment: i32 = row.get("planned_enrollment");
+        let enrolled_patients: i64 = row.get("enrolled_patients");
+        Ok(StudyOperationalSummary {
+            lifecycle_phase: row.get("lifecycle_phase"),
+            planned_enrollment,
+            enrolled_patients,
+            enrollment_gap: (planned_enrollment as i64 - enrolled_patients).max(0),
+            total_visits_scheduled: row.get("total_visits_scheduled"),
+            completed_visits: row.get("completed_visits"),
+            total_submissions: row.get("total_submissions"),
+            locked_submissions: row.get("locked_submissions"),
+            open_data_queries: row.get("open_data_queries"),
+            startup_items_pending: row.get("startup_items_pending"),
+            close_items_pending: row.get("close_items_pending"),
+        })
     }
 
     pub async fn create_site(
@@ -3003,6 +3221,20 @@ fn row_to_study_data_query(row: &Row) -> StudyDataQuery {
 
 fn row_to_study_close_checklist_item(row: &Row) -> StudyCloseChecklistItem {
     StudyCloseChecklistItem {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        item_code: row.get("item_code"),
+        item_label: row.get("item_label"),
+        completed: row.get("completed"),
+        completed_by_user_id: row.get("completed_by_user_id"),
+        completed_at: row.get("completed_at"),
+        notes: row.get("notes"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_study_startup_checklist_item(row: &Row) -> StudyStartupChecklistItem {
+    StudyStartupChecklistItem {
         id: row.get("id"),
         project_id: row.get("project_id"),
         item_code: row.get("item_code"),

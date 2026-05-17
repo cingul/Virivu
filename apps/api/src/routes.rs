@@ -100,6 +100,10 @@ pub fn router(ctx: AppContext) -> Router {
             post(submit_set_study_close_checklist_item),
         )
         .route(
+            "/ui/studies/{project_id}/startup-checklist",
+            post(submit_set_study_startup_checklist_item),
+        )
+        .route(
             "/ui/app/create-organization",
             post(submit_app_create_organization),
         )
@@ -213,6 +217,14 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/v1/studies/{project_id}/close-checklist",
             get(list_study_close_checklist_items).post(set_study_close_checklist_item),
+        )
+        .route(
+            "/v1/studies/{project_id}/startup-checklist",
+            get(list_study_startup_checklist_items).post(set_study_startup_checklist_item),
+        )
+        .route(
+            "/v1/studies/{project_id}/operational-summary",
+            get(get_study_operational_summary),
         )
         .route("/v1/patients", post(create_patient))
         .route("/v1/providers", post(create_provider))
@@ -1116,6 +1128,91 @@ async fn set_study_close_checklist_item(
 }
 
 #[derive(Debug, Deserialize)]
+struct SetStudyStartupChecklistItemRequest {
+    item_code: String,
+    item_label: String,
+    completed: bool,
+    notes: Option<String>,
+}
+
+async fn list_study_startup_checklist_items(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let items = ctx
+        .db
+        .list_study_startup_checklist_items(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(items))
+}
+
+async fn set_study_startup_checklist_item(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<SetStudyStartupChecklistItemRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    if payload.item_code.trim().is_empty() || payload.item_label.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "item_code and item_label are required".to_string(),
+        ));
+    }
+    let item = ctx
+        .db
+        .set_study_startup_checklist_item(
+            project_id,
+            payload.item_code.trim(),
+            payload.item_label.trim(),
+            payload.completed,
+            if payload.completed {
+                Some(user.user_id)
+            } else {
+                None
+            },
+            payload.notes.as_deref().unwrap_or("").trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(item))
+}
+
+async fn get_study_operational_summary(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let summary = ctx
+        .db
+        .study_operational_summary(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(summary))
+}
+
+#[derive(Debug, Deserialize)]
 struct CreatePatientRequest {
     site_id: Uuid,
     external_subject_id: Option<String>,
@@ -1827,6 +1924,67 @@ async fn render_app_dashboard(
             .join("")
     };
 
+    let organization_options_html = organizations
+        .iter()
+        .map(|org| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                org.id,
+                html_escape(&org.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let project_options_html = projects
+        .iter()
+        .map(|project| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                project.id,
+                html_escape(&project.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let site_options_html = sites
+        .iter()
+        .map(|site| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                site.id,
+                html_escape(&site.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let patient_options_html_app = patients
+        .iter()
+        .map(|patient| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                patient.id,
+                html_escape(
+                    &patient
+                        .hex_code
+                        .clone()
+                        .unwrap_or_else(|| patient.id.to_string())
+                )
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let provider_options_html_app = providers
+        .iter()
+        .map(|provider| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                provider.id,
+                html_escape(&provider.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
     let body = format!(
         r#"
 <h1>Virivu Research Web App</h1>
@@ -1860,7 +2018,7 @@ async fn render_app_dashboard(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Organization ID</label>
-    <input name="organization_id" value="{}" required />
+    <input name="organization_id" list="app-organization-options" value="{}" required />
     <label>Project name</label>
     <input name="project_name" placeholder="Stroke Registry 2026" required />
     <label>Therapeutic area</label>
@@ -1877,7 +2035,7 @@ async fn render_app_dashboard(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Project ID</label>
-    <input name="project_id" value="{}" required />
+    <input name="project_id" list="app-project-options" value="{}" required />
     <label>Site name</label>
     <input name="site_name" placeholder="North Campus Site A" required />
     <label>Principal investigator</label>
@@ -1894,7 +2052,7 @@ async fn render_app_dashboard(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Site ID</label>
-    <input name="site_id" placeholder="site-uuid" required />
+    <input name="site_id" list="app-site-options" placeholder="site-uuid" required />
     <label>External subject label (optional)</label>
     <input name="external_subject_id" placeholder="SUBJ-001" />
     <label>Patient email (optional)</label>
@@ -1908,9 +2066,9 @@ async fn render_app_dashboard(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Organization ID</label>
-    <input name="organization_id" value="{}" required />
+    <input name="organization_id" list="app-organization-options" value="{}" required />
     <label>Project ID</label>
-    <input name="project_id" value="{}" required />
+    <input name="project_id" list="app-project-options" value="{}" required />
     <label>Patient email</label>
     <input type="email" name="patient_email" placeholder="patient@example.org" required />
     <label>Form type</label>
@@ -1922,11 +2080,11 @@ async fn render_app_dashboard(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Organization ID</label>
-    <input name="organization_id" value="{}" required />
+    <input name="organization_id" list="app-organization-options" value="{}" required />
     <label>Project ID</label>
-    <input name="project_id" value="{}" required />
+    <input name="project_id" list="app-project-options" value="{}" required />
     <label>Patient ID</label>
-    <input name="patient_id" placeholder="subject-001" required />
+    <input name="patient_id" list="app-patient-options" placeholder="subject-001" required />
     <label>MIME type</label>
     <input name="mime_type" placeholder="video/mp4" required />
     <button type="submit">Generate Media Upload Link</button>
@@ -1942,7 +2100,7 @@ async fn render_app_dashboard(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Organization ID</label>
-    <input name="organization_id" value="{}" required />
+    <input name="organization_id" list="app-organization-options" value="{}" required />
     <label>Provider name</label>
     <input name="provider_name" placeholder="Dr. Jane Doe" required />
     <label>Provider title</label>
@@ -1956,7 +2114,7 @@ async fn render_app_dashboard(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Patient ID</label>
-    <input name="patient_id" value="{}" placeholder="patient-uuid" required />
+    <input name="patient_id" list="app-patient-options" value="{}" placeholder="patient-uuid" required />
     <label>Encounter type</label>
     <select name="encounter_type" required>
       <option value="outpatient">outpatient (000-2FF)</option>
@@ -1967,7 +2125,7 @@ async fn render_app_dashboard(
       <option value="misc">misc (F00-FFF)</option>
     </select>
     <label>Provider ID (optional)</label>
-    <input name="provider_id" placeholder="provider-uuid" />
+    <input name="provider_id" list="app-provider-options" placeholder="provider-uuid" />
     <label>Notes (optional)</label>
     <input name="notes" placeholder="Encounter notes" />
     <button type="submit">Create Encounter + Range-Aware Hex</button>
@@ -1989,6 +2147,12 @@ async fn render_app_dashboard(
   <h2>7) Legal / DUA</h2>
   <ul>{}</ul>
 </section>
+
+<datalist id="app-organization-options">{}</datalist>
+<datalist id="app-project-options">{}</datalist>
+<datalist id="app-site-options">{}</datalist>
+<datalist id="app-patient-options">{}</datalist>
+<datalist id="app-provider-options">{}</datalist>
 "#,
         notice_html,
         html_escape(admin_email.trim()),
@@ -2031,7 +2195,12 @@ async fn render_app_dashboard(
         encounters_html,
         org_summary_html,
         project_summary_html,
-        dua_html
+        dua_html,
+        organization_options_html,
+        project_options_html,
+        site_options_html,
+        patient_options_html_app,
+        provider_options_html_app
     );
 
     Ok(Html(render_cingulum_page("Virivu Research Web App", body)))
@@ -2413,6 +2582,16 @@ async fn render_study_workbench(
     } else {
         None
     };
+    let operational_summary = if let Some(project_id) = selected_project_id {
+        Some(
+            ctx.db
+                .study_operational_summary(project_id)
+                .await
+                .map_err(ApiError::internal)?,
+        )
+    } else {
+        None
+    };
     let phase_events = if let Some(project_id) = selected_project_id {
         ctx.db
             .list_study_phase_events(project_id)
@@ -2498,6 +2677,14 @@ async fn render_study_workbench(
     } else {
         Vec::new()
     };
+    let startup_checklist_items = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_startup_checklist_items(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
 
     let notice_html = query
         .notice
@@ -2540,6 +2727,23 @@ async fn render_study_workbench(
         )
     } else {
         "<p class=\"muted\">Select a study to view readiness.</p>".to_string()
+    };
+    let operational_summary_html = if let Some(summary) = operational_summary {
+        format!(
+            "<p><strong>Enrollment:</strong> {}/{} (gap {}) · <strong>Visits:</strong> {} scheduled / {} completed · <strong>Submissions:</strong> {} total / {} locked · <strong>Open Queries:</strong> {} · <strong>Startup Pending:</strong> {} · <strong>Close Pending:</strong> {}</p>",
+            summary.enrolled_patients,
+            summary.planned_enrollment,
+            summary.enrollment_gap,
+            summary.total_visits_scheduled,
+            summary.completed_visits,
+            summary.total_submissions,
+            summary.locked_submissions,
+            summary.open_data_queries,
+            summary.startup_items_pending,
+            summary.close_items_pending
+        )
+    } else {
+        "<p class=\"muted\">Select a study to view operations summary.</p>".to_string()
     };
 
     let phase_events_html = if phase_events.is_empty() {
@@ -2763,6 +2967,88 @@ async fn render_study_workbench(
             .collect::<Vec<_>>()
             .join("")
     };
+    let startup_checklist_html = if startup_checklist_items.is_empty() {
+        "<li>No startup checklist items yet.</li>".to_string()
+    } else {
+        startup_checklist_items
+            .iter()
+            .map(|item| {
+                format!(
+                    "<li><strong>{}</strong> <small>code={} completed={} notes={}</small></li>",
+                    html_escape(&item.item_label),
+                    html_escape(&item.item_code),
+                    item.completed,
+                    html_escape(&item.notes)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let patient_options_html = patients
+        .iter()
+        .map(|patient| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                patient.id,
+                html_escape(
+                    &patient
+                        .hex_code
+                        .clone()
+                        .unwrap_or_else(|| patient.id.to_string())
+                )
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let template_options_html = templates
+        .iter()
+        .map(|template| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                template.id,
+                html_escape(&template.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let visit_template_options_html = visit_templates
+        .iter()
+        .map(|visit| {
+            format!(
+                r#"<option value="{}">{} ({})</option>"#,
+                visit.id,
+                html_escape(&visit.visit_name),
+                html_escape(&visit.visit_code)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let visit_options_html = patient_visits
+        .iter()
+        .map(|visit| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                visit.id,
+                html_escape(&format!(
+                    "{} / {}",
+                    visit.patient_id, visit.visit_template_id
+                ))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let submission_options_html = submissions
+        .iter()
+        .map(|submission| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                submission.id,
+                html_escape(&format!("{} ({})", submission.id, submission.status))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
 
     let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
     let selected_project_value = selected_project_id
@@ -2800,6 +3086,9 @@ async fn render_study_workbench(
         .unwrap_or_else(|| "#".to_string());
     let create_query_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/query"))
+        .unwrap_or_else(|| "#".to_string());
+    let startup_checklist_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/startup-checklist"))
         .unwrap_or_else(|| "#".to_string());
     let checklist_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/close-checklist"))
@@ -2846,6 +3135,7 @@ async fn render_study_workbench(
 
 <section class="card">
   <h2>2) Lifecycle Transition</h2>
+  {}
   {}
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -2945,9 +3235,9 @@ async fn render_study_workbench(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Patient ID</label>
-    <input name="patient_id" placeholder="patient-uuid" required />
+    <input name="patient_id" list="study-patient-options" placeholder="patient-uuid" required />
     <label>Visit template ID</label>
-    <input name="visit_template_id" placeholder="visit-template-uuid" required />
+    <input name="visit_template_id" list="study-visit-template-options" placeholder="visit-template-uuid" required />
     <label>Scheduled date (YYYY-MM-DD)</label>
     <input name="scheduled_for" placeholder="2026-06-01" />
     <button type="submit">Schedule Patient Visit</button>
@@ -2962,11 +3252,11 @@ async fn render_study_workbench(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Template ID</label>
-    <input name="template_id" value="{}" required />
+    <input name="template_id" list="study-template-options" value="{}" required />
     <label>Patient ID</label>
-    <input name="patient_id" placeholder="patient-uuid" required />
+    <input name="patient_id" list="study-patient-options" placeholder="patient-uuid" required />
     <label>Patient visit ID (optional)</label>
-    <input name="patient_visit_id" placeholder="patient-visit-uuid" />
+    <input name="patient_visit_id" list="study-visit-options" placeholder="patient-visit-uuid" />
     <label>Answers JSON</label>
     <textarea name="answers_json">{{}}</textarea>
     <button type="submit">Create CRF Submission (Draft)</button>
@@ -2992,7 +3282,7 @@ async fn render_study_workbench(
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Submission ID</label>
-    <input name="submission_id" value="{}" placeholder="submission-uuid" required />
+    <input name="submission_id" list="study-submission-options" value="{}" placeholder="submission-uuid" required />
     <label>Field key</label>
     <input name="field_key" placeholder="systolic_bp" required />
     <label>Query text</label>
@@ -3004,7 +3294,25 @@ async fn render_study_workbench(
 </section>
 
 <section class="card">
-  <h2>8) Study Close Checklist</h2>
+  <h2>8) Study Startup Checklist</h2>
+  <form method="post" action="{}">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Item code</label>
+    <input name="item_code" placeholder="irb_approval_documented" required />
+    <label>Item label</label>
+    <input name="item_label" placeholder="IRB / ethics approval documented" required />
+    <label>Completed</label>
+    <input type="checkbox" name="completed" value="true" />
+    <label>Notes</label>
+    <input name="notes" placeholder="Startup note" />
+    <button type="submit">Upsert Startup Item</button>
+  </form>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>9) Study Close Checklist</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
@@ -3020,6 +3328,12 @@ async fn render_study_workbench(
   </form>
   <ul>{}</ul>
 </section>
+
+<datalist id="study-patient-options">{}</datalist>
+<datalist id="study-template-options">{}</datalist>
+<datalist id="study-visit-template-options">{}</datalist>
+<datalist id="study-visit-options">{}</datalist>
+<datalist id="study-submission-options">{}</datalist>
 "#,
         notice_html,
         html_escape(admin_email.trim()),
@@ -3037,6 +3351,7 @@ async fn render_study_workbench(
         selected_org_value,
         study_rows_html,
         readiness_html,
+        operational_summary_html,
         phase_action,
         html_escape(admin_email.trim()),
         phase_events_html,
@@ -3075,9 +3390,17 @@ async fn render_study_workbench(
         html_escape(admin_email.trim()),
         selected_submission_value,
         data_queries_html,
+        startup_checklist_action,
+        html_escape(admin_email.trim()),
+        startup_checklist_html,
         checklist_action,
         html_escape(admin_email.trim()),
-        checklist_html
+        checklist_html,
+        patient_options_html,
+        template_options_html,
+        visit_template_options_html,
+        visit_options_html,
+        submission_options_html
     );
     Ok(Html(render_cingulum_page("Study Workbench", body)))
 }
@@ -3679,6 +4002,57 @@ async fn submit_close_study_data_query(
         project.id,
         query.submission_id,
         query_escape("Data query closed")
+    )))
+}
+
+async fn submit_set_study_startup_checklist_item(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyChecklistItemForm>,
+) -> Result<Redirect, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let completed = form.completed.is_some();
+    let completed_by_user_id = if completed {
+        ctx.db
+            .get_user_by_email(form.admin_email.trim())
+            .await
+            .map_err(ApiError::internal)?
+            .map(|u| u.id)
+    } else {
+        None
+    };
+    ctx.db
+        .set_study_startup_checklist_item(
+            project_id,
+            form.item_code.trim(),
+            form.item_label.trim(),
+            completed,
+            completed_by_user_id,
+            form.notes.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        query_escape("Startup checklist item updated")
     )))
 }
 

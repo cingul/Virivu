@@ -22,6 +22,8 @@ It is designed to reduce operational friction in clinical and translational rese
 - Study lifecycle + CRF workbench at `/ui/studies` for pre-study setup, phase transitions, and structured case report form design
 - Phase-gated study activation logic (requires site + published CRF before initiation, and enrolled patient before active phase)
 - Operational study execution modules: visit templates/scheduling, CRF submission workflow (draft/submitted/locked), monitor query management, and close-checklist gating before closure
+- Startup checklist gating before study initiation and operational summary signals (enrollment gap, open queries, pending startup/close items)
+- UI datalist selectors in `/ui/app` and `/ui/studies` to reduce UUID copy/paste friction during daily operations
 
 ## Core Stack (v1 scaffold)
 

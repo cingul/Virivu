@@ -192,6 +192,34 @@ pub struct StudyCloseChecklistItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyStartupChecklistItem {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub item_code: String,
+    pub item_label: String,
+    pub completed: bool,
+    pub completed_by_user_id: Option<Uuid>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyOperationalSummary {
+    pub lifecycle_phase: String,
+    pub planned_enrollment: i32,
+    pub enrolled_patients: i64,
+    pub enrollment_gap: i64,
+    pub total_visits_scheduled: i64,
+    pub completed_visits: i64,
+    pub total_submissions: i64,
+    pub locked_submissions: i64,
+    pub open_data_queries: i64,
+    pub startup_items_pending: i64,
+    pub close_items_pending: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormInvite {
     pub id: Uuid,
     pub organization_id: Uuid,
