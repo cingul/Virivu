@@ -545,31 +545,13 @@ async fn render_dua_admin_page(
         .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
         .unwrap_or_default();
 
-    Ok(Html(format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Virivu DUA Console</title>
-  <style>
-    body {{ font-family: Inter, Arial, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; color: #102a43; }}
-    h1 {{ margin-bottom: 0.5rem; }}
-    .card {{ border: 1px solid #d9e2ec; border-radius: 12px; padding: 1rem; margin-bottom: 1rem; background: #fff; }}
-    label {{ display:block; font-weight:600; margin-top: 0.75rem; }}
-    input, textarea {{ width: 100%; padding: 0.6rem; border: 1px solid #bcccdc; border-radius: 8px; }}
-    textarea {{ min-height: 180px; }}
-    button {{ margin-top: 1rem; background: #0b7285; color: white; border: none; border-radius: 8px; padding: 0.7rem 1rem; cursor: pointer; }}
-    .muted {{ color: #486581; font-size: 0.95rem; }}
-    .notice {{ padding: 0.75rem; border-radius: 8px; background: #d9f0ff; color: #102a43; }}
-  </style>
-</head>
-<body>
+    let body = format!(
+        r#"
   <h1>Electronic Data Use Agreements</h1>
   <p class="muted">Create and manage DUA records between hospitals and Cingulum Foundation Inc.</p>
   {}
-  <div class="card">
-    <h2 style="margin-top:0;">Step 1: Create or choose organization</h2>
+  <section class="card">
+    <h2>Step 1: Create or choose organization</h2>
     <form method="post" action="/ui/dua/create-organization">
       <label>Admin email (platform admin required to create org)</label>
       <input name="admin_email" value="{}" required />
@@ -579,19 +561,21 @@ async fn render_dua_admin_page(
 
       <button type="submit">Create Organization</button>
     </form>
-    <h3>Organizations available for this admin</h3>
+    <h3 style="margin-top:1rem;">Organizations available for this admin</h3>
     <ul>{}</ul>
-  </div>
-  <div class="card">
-    <h2 style="margin-top:0;">Return to existing agreement workspace</h2>
+  </section>
+
+  <section class="card">
+    <h2>Return to existing agreement workspace</h2>
     <form method="post" action="/ui/dua/open-agreement">
       <label>Agreement ID (UUID)</label>
       <input name="agreement_id" placeholder="agreement-uuid" required />
       <button type="submit">Open Agreement Workspace</button>
     </form>
-  </div>
-  <div class="card">
-    <h2 style="margin-top:0;">Step 2: Draft DUA</h2>
+  </section>
+
+  <section class="card">
+    <h2>Step 2: Draft DUA</h2>
     <form method="post" action="/ui/dua/draft">
       <label>Admin email (must be org manager or platform admin)</label>
       <input name="admin_email" value="{}" required />
@@ -625,9 +609,8 @@ async fn render_dua_admin_page(
 
       <button type="submit">Create DUA + Queue Hospital Signing Link</button>
     </form>
-  </div>
-</body>
-</html>"#,
+  </section>
+"#,
         notice_html,
         html_escape(&admin_email),
         managed_orgs_html,
@@ -635,7 +618,9 @@ async fn render_dua_admin_page(
         html_escape(&selected_organization_id),
         organization_options,
         html_escape(default_dua_text())
-    )))
+    );
+
+    Ok(Html(render_cingulum_page("Virivu DUA Console", body)))
 }
 
 async fn submit_create_organization_from_ui(
@@ -669,22 +654,21 @@ async fn submit_create_organization_from_ui(
         .await
         .map_err(ApiError::internal)?;
 
-    Ok(Html(format!(
-        r#"<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8" /><title>Organization Created</title></head>
-<body style="font-family: Inter, Arial, sans-serif; max-width: 900px; margin: 2rem auto;">
+    let body = format!(
+        r#"
+<section class="card">
   <h1>Organization Created</h1>
   <p><strong>Name:</strong> {}</p>
   <p><strong>Organization ID:</strong> {}</p>
   <p><a href="/ui/dua?admin_email={}&organization_id={}&notice=Organization+created+successfully">Continue to DUA drafting</a></p>
-</body>
-</html>"#,
+</section>
+"#,
         html_escape(&organization.name),
         organization.id,
         form.admin_email.trim(),
         organization.id
-    )))
+    );
+    Ok(Html(render_cingulum_page("Organization Created", body)))
 }
 
 async fn open_dua_agreement_workspace(
@@ -754,25 +738,24 @@ async fn render_create_dua_from_form(
         agreement.hospital_signing_token
     );
 
-    Ok(Html(format!(
-        r#"<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8" /><title>DUA Created</title></head>
-<body style="font-family: Inter, Arial, sans-serif; max-width: 900px; margin: 2rem auto;">
+    let body = format!(
+        r#"
+<section class="card">
   <h1>DUA Created</h1>
   <p><strong>Agreement ID:</strong> {}</p>
-  <p><strong>Status:</strong> {}</p>
+  <p><strong>Status:</strong> <span class="status-chip">{}</span></p>
   <p><strong>Hospital signing URL:</strong> <a href="{}">{}</a></p>
   <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
   <p><a href="/ui/dua">Create another agreement</a></p>
-</body>
-</html>"#,
+</section>
+"#,
         agreement.id,
         html_escape(&agreement.status),
         html_escape(&signing_url),
         html_escape(&signing_url),
         agreement.id
-    )))
+    );
+    Ok(Html(render_cingulum_page("DUA Created", body)))
 }
 
 async fn render_dua_hospital_sign_page(
@@ -786,41 +769,37 @@ async fn render_dua_hospital_sign_page(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("signing token is invalid or expired".to_string()))?;
 
-    Ok(Html(format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Hospital DUA Signature</title>
-</head>
-<body style="font-family: Inter, Arial, sans-serif; max-width: 900px; margin: 2rem auto;">
+    let body = format!(
+        r#"
+<section class="card">
   <h1>Sign Data Use Agreement</h1>
   <p><strong>Hospital:</strong> {}</p>
   <p><strong>Counterparty:</strong> {}</p>
   <p><strong>Agreement Version:</strong> {}</p>
   <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
   <form method="post" action="/ui/dua/sign/{}">
-    <label>Signer name</label><br/>
-    <input name="signer_name" required style="width:100%;padding:.5rem;" /><br/><br/>
-    <label>Signer email</label><br/>
-    <input type="email" name="signer_email" required style="width:100%;padding:.5rem;" /><br/><br/>
-    <label>Signer title</label><br/>
-    <input name="signer_title" required style="width:100%;padding:.5rem;" /><br/><br/>
-    <label>Signer organization</label><br/>
-    <input name="signer_organization" value="{}" required style="width:100%;padding:.5rem;" /><br/><br/>
-    <label>Electronic signature text</label><br/>
-    <input name="signature_text" placeholder="/s/ Your Name" required style="width:100%;padding:.5rem;" /><br/><br/>
-    <button type="submit" style="padding:.7rem 1rem;background:#0b7285;color:white;border:0;border-radius:8px;">Submit Signature</button>
+    <label>Signer name</label>
+    <input name="signer_name" required />
+    <label>Signer email</label>
+    <input type="email" name="signer_email" required />
+    <label>Signer title</label>
+    <input name="signer_title" required />
+    <label>Signer organization</label>
+    <input name="signer_organization" value="{}" required />
+    <label>Electronic signature text</label>
+    <input name="signature_text" placeholder="/s/ Your Name" required />
+    <button type="submit">Submit Signature</button>
   </form>
-</body>
-</html>"#,
+</section>
+"#,
         html_escape(&agreement.hospital_name),
         html_escape(&agreement.counterparty_name),
         html_escape(&agreement.agreement_version),
         agreement.id,
         agreement.hospital_signing_token,
         html_escape(&agreement.hospital_name),
-    )))
+    );
+    Ok(Html(render_cingulum_page("Hospital DUA Signature", body)))
 }
 
 async fn submit_dua_hospital_sign_form(
@@ -850,20 +829,21 @@ async fn submit_dua_hospital_sign_form(
             }
         })?;
 
-    Ok(Html(format!(
-        r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Signature Submitted</title></head>
-<body style="font-family: Inter, Arial, sans-serif; max-width: 820px; margin: 2rem auto;">
+    let body = format!(
+        r#"
+<section class="card">
   <h1>Signature received</h1>
   <p>Thank you. Your hospital signature has been recorded for agreement <strong>{}</strong>.</p>
-  <p>Current status: <strong>{}</strong></p>
+  <p>Current status: <span class="status-chip">{}</span></p>
   <p><a href="/ui/dua/{}">Open agreement workspace</a></p>
   <p><a href="/ui/dua">Back to DUA home</a></p>
-</body></html>"#,
+</section>
+"#,
         agreement.id,
         html_escape(&agreement.status),
         agreement.id
-    )))
+    );
+    Ok(Html(render_cingulum_page("Signature Submitted", body)))
 }
 
 async fn render_dua_agreement_page(
@@ -920,43 +900,49 @@ async fn render_dua_agreement_page(
         agreement.hospital_signing_token
     );
 
-    Ok(Html(format!(
-        r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>DUA Workspace</title></head>
-<body style="font-family: Inter, Arial, sans-serif; max-width: 980px; margin: 2rem auto;">
+    let body = format!(
+        r#"
+<section class="card">
   <h1>DUA Workspace</h1>
   <p><strong>Agreement ID:</strong> {}</p>
   <p><strong>Hospital:</strong> {}</p>
-  <p><strong>Status:</strong> {}</p>
+  <p><strong>Status:</strong> <span class="status-chip">{}</span></p>
   <p><strong>Hospital signing link:</strong> <a href="{}">{}</a></p>
+</section>
 
+<section class="card">
   <h2>Actions</h2>
   <form method="post" action="/ui/dua/{}/send-hospital-link" style="margin-bottom:1rem;">
-    <label>Admin email for send action</label><br/>
-    <input name="admin_email" placeholder="arcot@cingulum.org" required style="width:100%;padding:.5rem;max-width:480px;" />
-    <button type="submit" style="margin-left:.5rem;padding:.6rem 1rem;">Queue Hospital Signing Email</button>
+    <label>Admin email for send action</label>
+    <input name="admin_email" placeholder="arcot@cingulum.org" required style="max-width:480px;" />
+    <button type="submit">Queue Hospital Signing Email</button>
   </form>
 
   <form method="post" action="/ui/dua/{}/sign-cingulum" style="margin-bottom:1rem;">
     <input type="hidden" name="admin_email" value="arcot@cingulum.org" />
-    <label>Cingulum signer name</label><br/><input name="signer_name" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
-    <label>Cingulum signer email</label><br/><input name="signer_email" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
-    <label>Cingulum signer title</label><br/><input name="signer_title" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
-    <label>Signature text</label><br/><input name="signature_text" placeholder="/s/ Name" required style="width:100%;padding:.5rem;max-width:480px;" /><br/>
-    <button type="submit" style="margin-top:.5rem;padding:.6rem 1rem;">Apply Cingulum Signature</button>
+    <label>Cingulum signer name</label><input name="signer_name" required style="max-width:480px;" />
+    <label>Cingulum signer email</label><input name="signer_email" required style="max-width:480px;" />
+    <label>Cingulum signer title</label><input name="signer_title" required style="max-width:480px;" />
+    <label>Signature text</label><input name="signature_text" placeholder="/s/ Name" required style="max-width:480px;" />
+    <button type="submit">Apply Cingulum Signature</button>
   </form>
 
   <p><a href="/ui/dua/{}/export.pdf?admin_email=arcot@cingulum.org">Download PDF (requires admin_email query)</a></p>
+</section>
 
+<section class="card">
   <h2>Signatures</h2>
   <ul>{}</ul>
 
   <h2>Email Queue</h2>
   <ul>{}</ul>
+</section>
 
+<section class="card">
   <h2>Agreement Text</h2>
-  <pre style="white-space: pre-wrap; border:1px solid #d9e2ec; padding:1rem; border-radius:8px;">{}</pre>
-</body></html>"#,
+  <pre style="white-space: pre-wrap; border:1px solid #C5B7AB; padding:1rem; border-radius:10px; background:#fff;">{}</pre>
+</section>
+"#,
         agreement.id,
         html_escape(&agreement.hospital_name),
         html_escape(&agreement.status),
@@ -976,7 +962,8 @@ async fn render_dua_agreement_page(
             email_html
         },
         html_escape(&agreement.agreement_text)
-    )))
+    );
+    Ok(Html(render_cingulum_page("DUA Workspace", body)))
 }
 
 async fn submit_dua_send_hospital_link_form(
@@ -1010,10 +997,17 @@ async fn submit_dua_send_hospital_link_form(
         .queue_hospital_signing_email(agreement_id, requested_by, &ctx.config.app_base_url)
         .await
         .map_err(ApiError::internal)?;
-    Ok(Html(format!(
-        "<html><body style=\"font-family: Arial; max-width: 720px; margin: 2rem auto;\"><h1>Email queued</h1><p>Hospital signing email has been queued for agreement {}</p><p><a href=\"/ui/dua/{}\">Back to agreement</a></p></body></html>",
+    let body = format!(
+        r#"
+<section class="card">
+  <h1>Email queued</h1>
+  <p>Hospital signing email has been queued for agreement <strong>{}</strong>.</p>
+  <p><a href="/ui/dua/{}">Back to agreement</a></p>
+</section>
+"#,
         agreement_id, agreement_id
-    )))
+    );
+    Ok(Html(render_cingulum_page("Email queued", body)))
 }
 
 async fn submit_dua_cingulum_sign_form(
@@ -1058,9 +1052,18 @@ async fn submit_dua_cingulum_sign_form(
         .await
         .map_err(ApiError::internal)?;
 
-    Ok(Html(format!(
-        "<html><body style=\"font-family: Arial; max-width: 720px; margin: 2rem auto;\"><h1>Cingulum signature recorded</h1><p><a href=\"/ui/dua/{}\">Back to agreement</a></p></body></html>",
+    let body = format!(
+        r#"
+<section class="card">
+  <h1>Cingulum signature recorded</h1>
+  <p><a href="/ui/dua/{}">Back to agreement</a></p>
+</section>
+"#,
         agreement_id
+    );
+    Ok(Html(render_cingulum_page(
+        "Cingulum signature recorded",
+        body,
     )))
 }
 
@@ -1586,6 +1589,106 @@ fn build_data_use_agreement_pdf(
         .as_bytes(),
     );
     pdf
+}
+
+fn cingulum_theme_css() -> &'static str {
+    r#"
+    :root {
+      --cg-cream: #E7E5DA;
+      --cg-sand: #C5B7AB;
+      --cg-forest: #283E28;
+      --cg-navy: #02182B;
+      --cg-orange: #F05708;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, Arial, sans-serif;
+      color: var(--cg-navy);
+      background: linear-gradient(180deg, #f7f5ef 0%, var(--cg-cream) 100%);
+    }
+    .page {
+      max-width: 1024px;
+      margin: 1.8rem auto;
+      padding: 0 1rem 2rem;
+    }
+    .brand {
+      color: var(--cg-forest);
+      font-size: 0.9rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 700;
+      margin-bottom: 0.4rem;
+    }
+    .card {
+      background: #fffdfa;
+      border: 1px solid var(--cg-sand);
+      border-radius: 14px;
+      box-shadow: 0 10px 24px rgba(2, 24, 43, 0.08);
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+    }
+    h1, h2, h3 { margin-top: 0; color: var(--cg-navy); }
+    p, li, label, small { color: #10263d; }
+    a { color: var(--cg-forest); font-weight: 600; }
+    a:hover { color: var(--cg-orange); }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--cg-sand);
+      border-radius: 10px;
+      padding: 0.62rem;
+      background: #fff;
+      color: var(--cg-navy);
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: 2px solid rgba(240, 87, 8, 0.25);
+      border-color: var(--cg-orange);
+    }
+    textarea { min-height: 170px; }
+    button {
+      background: var(--cg-orange);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 0.68rem 1rem;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button:hover { filter: brightness(0.95); }
+    .muted { color: #41566d; }
+    .status-chip {
+      display: inline-block;
+      padding: 0.18rem 0.6rem;
+      border-radius: 999px;
+      background: #efe6de;
+      color: var(--cg-forest);
+      font-weight: 700;
+      font-size: 0.84rem;
+    }
+    "#
+}
+
+fn render_cingulum_page(title: &str, body_content: String) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{}</title>
+  <style>{}</style>
+</head>
+<body>
+  <main class="page">
+    <div class="brand">Cingulum Foundation Inc.</div>
+    {}
+  </main>
+</body>
+</html>"#,
+        html_escape(title),
+        cingulum_theme_css(),
+        body_content
+    )
 }
 
 fn wrap_text(input: &str, max_chars: usize) -> Vec<String> {
