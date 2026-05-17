@@ -26,6 +26,8 @@ export DATABASE_URL=postgres://postgres:postgres@localhost:5432/virivu
 cargo run
 ```
 
+`./scripts/apply_migrations.sh` is idempotent and can be safely re-run; it tracks applied files in `schema_migrations`.
+
 ## Example Requests
 
 Create organization:

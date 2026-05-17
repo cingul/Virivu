@@ -6,9 +6,31 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   exit 1
 fi
 
+psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -c "
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  name TEXT PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"
+
 for file in migrations/*.sql; do
-  echo "Applying $file"
+  migration_name="$(basename "$file")"
+  already_applied="$(
+    psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -At \
+      -v migration_name="$migration_name" \
+      -c "SELECT 1 FROM schema_migrations WHERE name = :'migration_name' LIMIT 1;"
+  )"
+
+  if [[ "$already_applied" == "1" ]]; then
+    echo "Skipping $migration_name (already applied)"
+    continue
+  fi
+
+  echo "Applying $migration_name"
   psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -f "$file"
+  psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 \
+    -v migration_name="$migration_name" \
+    -c "INSERT INTO schema_migrations(name) VALUES (:'migration_name');"
 done
 
 echo "Migrations applied successfully."
