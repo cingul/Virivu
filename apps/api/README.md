@@ -121,6 +121,8 @@ Open DUA admin UI:
 xdg-open http://localhost:8080/ui/dua
 ```
 
+The DUA UI now includes an in-browser **Step 1** to create organizations, so you no longer need terminal commands just to get an organization UUID.
+
 ## Notes
 
 - `ALLOW_DEV_AUTH_BYPASS=true` allows local development auth via `x-dev-user-email`.

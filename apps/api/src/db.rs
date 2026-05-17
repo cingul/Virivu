@@ -343,6 +343,99 @@ impl Db {
         }))
     }
 
+    pub async fn email_has_platform_admin_role(&self, email: &str) -> anyhow::Result<bool> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM user_memberships um
+                    JOIN users u ON u.id = um.user_id
+                    WHERE u.email = $1
+                      AND um.status = 'active'
+                      AND um.organization_id IS NULL
+                      AND um.project_id IS NULL
+                      AND um.role = 'platform_admin'
+                ) AS has_access
+                "#,
+                &[&email],
+            )
+            .await?;
+        Ok(row.get("has_access"))
+    }
+
+    pub async fn list_organizations_for_email(
+        &self,
+        email: &str,
+    ) -> anyhow::Result<Vec<Organization>> {
+        let client = self.pool.get().await?;
+        if self.email_has_platform_admin_role(email).await? {
+            let rows = client
+                .query(
+                    r#"
+                    SELECT id, name, created_at
+                    FROM organizations
+                    ORDER BY created_at DESC
+                    "#,
+                    &[],
+                )
+                .await?;
+            return Ok(rows.iter().map(row_to_organization).collect());
+        }
+
+        let rows = client
+            .query(
+                r#"
+                SELECT DISTINCT o.id, o.name, o.created_at
+                FROM organizations o
+                JOIN user_memberships um ON um.organization_id = o.id
+                JOIN users u ON u.id = um.user_id
+                WHERE u.email = $1
+                  AND um.status = 'active'
+                  AND um.role IN ('org_admin')
+                ORDER BY o.created_at DESC
+                "#,
+                &[&email],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_organization).collect())
+    }
+
+    pub async fn ensure_org_admin_membership(
+        &self,
+        email: &str,
+        organization_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        let user = match self.get_user_by_email(email).await? {
+            Some(user) => user,
+            None => {
+                let dev_subject = format!("dev-{}", email);
+                self.upsert_user(email, &dev_subject, email).await?
+            }
+        };
+
+        client
+            .execute(
+                r#"
+                INSERT INTO user_memberships (user_id, organization_id, role, status)
+                SELECT $1, $2, 'org_admin', 'active'
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM user_memberships
+                    WHERE user_id = $1
+                      AND organization_id = $2
+                      AND role = 'org_admin'
+                      AND status = 'active'
+                )
+                "#,
+                &[&user.id, &organization_id],
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn email_has_org_manager_role(
         &self,
         email: &str,
@@ -957,6 +1050,14 @@ fn row_to_outbound_email(row: &Row) -> OutboundEmail {
         body: row.get("body"),
         status: row.get("status"),
         requested_by_user_id: row.get("requested_by_user_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_organization(row: &Row) -> Organization {
+    Organization {
+        id: row.get("id"),
+        name: row.get("name"),
         created_at: row.get("created_at"),
     }
 }

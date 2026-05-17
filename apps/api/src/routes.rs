@@ -48,6 +48,10 @@ pub fn router(ctx: AppContext) -> Router {
             post(google_token_introspect),
         )
         .route("/ui/dua", get(render_dua_admin_page))
+        .route(
+            "/ui/dua/create-organization",
+            post(submit_create_organization_from_ui),
+        )
         .route("/ui/dua/draft", post(render_create_dua_from_form))
         .route(
             "/ui/dua/sign/{signing_token}",
@@ -471,8 +475,71 @@ struct DuaExportQuery {
     admin_email: String,
 }
 
-async fn render_dua_admin_page() -> Html<String> {
-    Html(format!(
+#[derive(Debug, Default, Deserialize)]
+struct DuaAdminPageQuery {
+    admin_email: Option<String>,
+    organization_id: Option<String>,
+    notice: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DuaCreateOrganizationForm {
+    admin_email: String,
+    organization_name: String,
+}
+
+async fn render_dua_admin_page(
+    State(ctx): State<AppContext>,
+    Query(query): Query<DuaAdminPageQuery>,
+) -> Result<Html<String>, ApiError> {
+    let admin_email = query
+        .admin_email
+        .unwrap_or_else(|| "arcot@cingulum.org".to_string());
+    let organizations = ctx
+        .db
+        .list_organizations_for_email(admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+
+    let selected_organization_id = query
+        .organization_id
+        .or_else(|| organizations.first().map(|o| o.id.to_string()))
+        .unwrap_or_default();
+
+    let organization_options = organizations
+        .iter()
+        .map(|org| {
+            format!(
+                r#"<option value="{}">{}</option>"#,
+                org.id,
+                html_escape(&format!("{} ({})", org.name, org.id))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let managed_orgs_html = if organizations.is_empty() {
+        "<li>No organizations found for this admin email yet.</li>".to_string()
+    } else {
+        organizations
+            .iter()
+            .map(|org| {
+                format!(
+                    "<li><strong>{}</strong> — {}</li>",
+                    html_escape(&org.name),
+                    org.id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let notice_html = query
+        .notice
+        .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
+        .unwrap_or_default();
+
+    Ok(Html(format!(
         r#"<!doctype html>
 <html lang="en">
 <head>
@@ -488,18 +555,38 @@ async fn render_dua_admin_page() -> Html<String> {
     textarea {{ min-height: 180px; }}
     button {{ margin-top: 1rem; background: #0b7285; color: white; border: none; border-radius: 8px; padding: 0.7rem 1rem; cursor: pointer; }}
     .muted {{ color: #486581; font-size: 0.95rem; }}
+    .notice {{ padding: 0.75rem; border-radius: 8px; background: #d9f0ff; color: #102a43; }}
   </style>
 </head>
 <body>
   <h1>Electronic Data Use Agreements</h1>
   <p class="muted">Create and manage DUA records between hospitals and Cingulum Foundation Inc.</p>
+  {}
   <div class="card">
+    <h2 style="margin-top:0;">Step 1: Create or choose organization</h2>
+    <form method="post" action="/ui/dua/create-organization">
+      <label>Admin email (platform admin required to create org)</label>
+      <input name="admin_email" value="{}" required />
+
+      <label>New organization legal name</label>
+      <input name="organization_name" placeholder="Cingulum Foundation Inc." required />
+
+      <button type="submit">Create Organization</button>
+    </form>
+    <h3>Organizations available for this admin</h3>
+    <ul>{}</ul>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0;">Step 2: Draft DUA</h2>
     <form method="post" action="/ui/dua/draft">
       <label>Admin email (must be org manager or platform admin)</label>
-      <input name="admin_email" placeholder="arcot@cingulum.org" required />
+      <input name="admin_email" value="{}" required />
 
       <label>Organization ID (UUID)</label>
-      <input name="organization_id" placeholder="organization-uuid" required />
+      <input name="organization_id" list="organization-options" value="{}" placeholder="organization-uuid" required />
+      <datalist id="organization-options">
+        {}
+      </datalist>
 
       <label>Hospital legal name</label>
       <input name="hospital_name" placeholder="Hospital Name" required />
@@ -527,8 +614,63 @@ async fn render_dua_admin_page() -> Html<String> {
   </div>
 </body>
 </html>"#,
+        notice_html,
+        html_escape(&admin_email),
+        managed_orgs_html,
+        html_escape(&admin_email),
+        html_escape(&selected_organization_id),
+        organization_options,
         html_escape(default_dua_text())
-    ))
+    )))
+}
+
+async fn submit_create_organization_from_ui(
+    State(ctx): State<AppContext>,
+    Form(form): Form<DuaCreateOrganizationForm>,
+) -> Result<Html<String>, ApiError> {
+    if form.organization_name.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "organization_name is required".to_string(),
+        ));
+    }
+
+    let is_platform_admin = ctx
+        .db
+        .email_has_platform_admin_role(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    if !is_platform_admin {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email is not a platform_admin".to_string(),
+        )));
+    }
+
+    let organization = ctx
+        .db
+        .create_organization(form.organization_name.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    ctx.db
+        .ensure_org_admin_membership(form.admin_email.trim(), organization.id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>Organization Created</title></head>
+<body style="font-family: Inter, Arial, sans-serif; max-width: 900px; margin: 2rem auto;">
+  <h1>Organization Created</h1>
+  <p><strong>Name:</strong> {}</p>
+  <p><strong>Organization ID:</strong> {}</p>
+  <p><a href="/ui/dua?admin_email={}&organization_id={}&notice=Organization+created+successfully">Continue to DUA drafting</a></p>
+</body>
+</html>"#,
+        html_escape(&organization.name),
+        organization.id,
+        form.admin_email.trim(),
+        organization.id
+    )))
 }
 
 async fn render_create_dua_from_form(

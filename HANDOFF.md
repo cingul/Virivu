@@ -32,6 +32,7 @@ This file is the continuity bridge for new chat sessions and new machines.
   - AI transcript-to-note placeholder endpoint
   - Electronic Data Use Agreement (DUA) endpoints and e-signature flow
   - DUA admin web UI (`/ui/dua`) and hospital token-signing page
+  - In-browser organization creation/selection flow in DUA UI
   - DUA PDF export endpoint
   - Outbound email queue for hospital signing-link delivery
 - Postgres persistence integrated (via `deadpool-postgres` + `tokio-postgres`)
