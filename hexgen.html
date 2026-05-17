@@ -1,0 +1,425 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Workflow Hex Code Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        #output {
+            font-family: 'Courier New', monospace;
+            background-color: #1f2937;
+            color: #e5e7eb;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        .success { color: #10b981; }
+        .error { color: #ef4444; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col">
+    <header class="bg-blue-600 text-white p-6 shadow-lg">
+        <div class="max-w-7xl mx-auto flex items-center justify-between">
+            <h1 class="text-3xl font-bold">Research Workflow Hex Code Generator</h1>
+            <div class="text-lg">No Login Required • Local Storage Only</div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-6 flex-1">
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <p class="text-gray-700 text-lg">
+                Generate unique hexadecimal codes for organizations, studies, sites, patients, and encounters.<br>
+                All data is stored locally in your browser. Use <strong>Download JSON/CSV</strong> to save, and <strong>Upload</strong> to restore.
+            </p>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <button onclick="displayData()" class="bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center">
+                Display All Data
+            </button>
+            <button onclick="downloadCSV()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center">
+                Download CSV (Excel)
+            </button>
+            <button onclick="downloadJSON()" class="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center">
+                Download JSON
+            </button>
+            <button onclick="clearData()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center">
+                Clear All Data
+            </button>
+        </div>
+
+        <div class="flex gap-4 mb-8">
+            <label class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-6 rounded-lg cursor-pointer">
+                Upload CSV
+                <input type="file" id="csvFile" accept=".csv" class="hidden">
+            </label>
+            <label class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-lg cursor-pointer">
+                Upload JSON
+                <input type="file" id="jsonFile" accept=".json" class="hidden">
+            </label>
+        </div>
+
+        <!-- Generation Panels -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-xl font-bold mb-4 text-indigo-700">Create New Organization</h2>
+                <button onclick="createNewOrg()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded">Generate Org</button>
+                <p id="orgResult" class="mt-2 text-sm"></p>
+            </div>
+
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-xl font-bold mb-4 text-indigo-700">Create New Study</h2>
+                <input type="text" id="studyOrg" placeholder="Org Code (e.g. A1B)" class="border w-full px-3 py-2 mb-3 rounded">
+                <button onclick="createNewStudy()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded">Generate Study</button>
+                <p id="studyResult" class="mt-2 text-sm"></p>
+            </div>
+
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-xl font-bold mb-4 text-indigo-700">Create New Site</h2>
+                <input type="text" id="siteStudy" placeholder="Study Code (e.g. A1B2C4)" class="border w-full px-3 py-2 mb-3 rounded">
+                <button onclick="createNewSite()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded">Generate Site</button>
+                <p id="siteResult" class="mt-2 text-sm"></p>
+            </div>
+
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-xl font-bold mb-4 text-indigo-700">Generate Patients</h2>
+                <input type="text" id="patientsSite" placeholder="Site Code" class="border w-full px-3 py-2 mb-2 rounded">
+                <input type="number" id="numPatients" value="10" min="1" max="500" class="border w-full px-3 py-2 mb-3 rounded">
+                <button onclick="generatePatients()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded">Generate Patients</button>
+                <p id="patientsResult" class="mt-2 text-sm"></p>
+            </div>
+
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-xl font-bold mb-4 text-indigo-700">Add Single Patient</h2>
+                <input type="text" id="addPatientSite" placeholder="Site Code" class="border w-full px-3 py-2 mb-3 rounded">
+                <button onclick="addSinglePatient()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded">Add One Patient</button>
+                <p id="addPatientResult" class="mt-2 text-sm"></p>
+            </div>
+
+            <div class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-xl font-bold mb-4 text-indigo-700">Generate Encounter</h2>
+                <input type="text" id="patientCode" placeholder="Patient Code" class="border w-full px-3 py-2 mb-2 rounded">
+                <select id="encounterType" class="border w-full px-3 py-2 mb-3 rounded">
+                    <option>Outpatient</option><option>Inpatient</option><option>Labs</option>
+                    <option>Imaging</option><option>Procedures</option><option>Misc1</option>
+                    <option>Misc2</option><option>Misc3</option><option>Misc4</option><option>Misc5</option>
+                </select>
+                <button onclick="generateEncounter()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded">Generate Encounter</button>
+                <p id="encounterResult" class="mt-2 text-sm"></p>
+            </div>
+        </div>
+
+        <div id="output" class="bg-gray-900 text-green-400 p-6 rounded-lg shadow-lg"></div>
+    </main>
+
+    <footer class="bg-gray-800 text-white text-center p-6 mt-auto">
+        <p>© 2025 Research Hex Code Generator • No login • Local browser storage only</p>
+    </footer>
+
+    <script>
+        let data = { orgs: {} };
+        let usedCodes = new Set();
+
+        const encounterRanges = {
+            "Outpatient": { start: 1, end: 999 },
+            "Inpatient": { start: 1000, end: 1999 },
+            "Labs": { start: 2000, end: 2999 },
+            "Imaging": { start: 3000, end: 3999 },
+            "Procedures": { start: 4000, end: 4999 },
+            "Misc1": { start: 5000, end: 5999 },
+            "Misc2": { start: 6000, end: 6999 },
+            "Misc3": { start: 7000, end: 7999 },
+            "Misc4": { start: 8000, end: 8999 },
+            "Misc5": { start: 9000, end: 9999 }
+        };
+
+        function randHex() { return '0123456789ABCDEF'[Math.floor(Math.random() * 16)]; }
+        function generateHexWithLetter(len = 3) {
+            let code, hasLetter;
+            do {
+                code = ''; hasLetter = false;
+                for (let i = 0; i < len; i++) {
+                    const digit = randHex();
+                    code += digit;
+                    if ('A' <= digit && digit <= 'F') hasLetter = true;
+                }
+            } while (!hasLetter);
+            return code;
+        }
+        function hasAtLeastTwoLetters(code) {
+            return (code.match(/[A-F]/g) || []).length >= 2;
+        }
+
+        function createNewOrg() {
+            let orgCode = generateHexWithLetter(3);
+            while (usedCodes.has(orgCode)) orgCode = generateHexWithLetter(3);
+            data.orgs[orgCode] = { studies: {} };
+            usedCodes.add(orgCode);
+            msg(`New Org: ${orgCode}`, 'orgResult', 'success');
+        }
+
+        function createNewStudy() {
+            const orgCode = document.getElementById('studyOrg').value.toUpperCase();
+            if (!/^[0-9A-F]{3}$/.test(orgCode) || !/[A-F]/.test(orgCode)) return msg('Invalid Org code', 'studyResult', 'error');
+            if (!data.orgs[orgCode]) return msg('Org not found', 'studyResult', 'error');
+
+            let suffix, studyCode;
+            do {
+                suffix = generateHexWithLetter(3);
+                studyCode = orgCode + suffix;
+            } while (usedCodes.has(studyCode) || !hasAtLeastTwoLetters(studyCode));
+
+            data.orgs[orgCode].studies[studyCode] = { sites: {} };
+            usedCodes.add(studyCode);
+            msg(`New Study: ${studyCode}`, 'studyResult', 'success');
+        }
+
+        function createNewSite() {
+            const studyCode = document.getElementById('siteStudy').value.toUpperCase();
+            if (!/^[0-9A-F]{6}$/.test(studyCode) || !hasAtLeastTwoLetters(studyCode)) return msg('Invalid Study code', 'siteResult', 'error');
+            const orgCode = studyCode.slice(0,3);
+            if (!data.orgs[orgCode]?.studies[studyCode]) return msg('Study not found', 'siteResult', 'error');
+
+            let suffix, siteCode;
+            do {
+                suffix = generateHexWithLetter(3);
+                siteCode = studyCode + suffix;
+            } while (usedCodes.has(siteCode) || !hasAtLeastTwoLetters(siteCode));
+
+            data.orgs[orgCode].studies[studyCode].sites[siteCode] = { patients: {} };
+            usedCodes.add(siteCode);
+            msg(`New Site: ${siteCode}`, 'siteResult', 'success');
+        }
+
+        function generatePatients() {
+            const siteCode = document.getElementById('patientsSite').value.toUpperCase();
+            if (!/^[0-9A-F]{9}$/.test(siteCode)) return msg('Invalid Site code', 'patientsResult', 'error');
+            const studyCode = siteCode.slice(0,6), orgCode = siteCode.slice(0,3);
+            const site = data.orgs[orgCode]?.studies[studyCode]?.sites[siteCode];
+            if (!site) return msg('Site not found', 'patientsResult', 'error');
+
+            const num = parseInt(document.getElementById('numPatients').value) || 10;
+            let added = 0;
+            while (added < num) {
+                const suffix = generateHexWithLetter(4);
+                const patientCode = siteCode + suffix;
+                if (!site.patients[patientCode]) {
+                    site.patients[patientCode] = { encounters: {} };
+                    msg(`Patient: ${patientCode}`, 'patientsResult', 'success');
+                    added++;
+                }
+            }
+        }
+
+        function addSinglePatient() {
+            const siteCode = document.getElementById('addPatientSite').value.toUpperCase();
+            if (!/^[0-9A-F]{9}$/.test(siteCode)) return msg('Invalid Site code', 'addPatientResult', 'error');
+            const studyCode = siteCode.slice(0,6), orgCode = siteCode.slice(0,3);
+            const site = data.orgs[orgCode]?.studies[studyCode]?.sites[siteCode];
+            if (!site) return msg('Site not found', 'addPatientResult', 'error');
+
+            let suffix, patientCode;
+            do {
+                suffix = generateHexWithLetter(4);
+                patientCode = siteCode + suffix;
+            } while (site.patients[patientCode]);
+
+            site.patients[patientCode] = { encounters: {} };
+            msg(`Patient: ${patientCode}`, 'addPatientResult', 'success');
+        }
+
+        function generateEncounter() {
+            const patientCode = document.getElementById('patientCode').value.toUpperCase();
+            if (!/^[0-9A-F]{13}$/.test(patientCode)) return msg('Invalid Patient code', 'encounterResult', 'error');
+            const siteCode = patientCode.slice(0,9), studyCode = siteCode.slice(0,6), orgCode = siteCode.slice(0,3);
+            const patient = data.orgs[orgCode]?.studies[studyCode]?.sites[siteCode]?.patients[patientCode];
+            if (!patient) return msg('Patient not found', 'encounterResult', 'error');
+
+            const type = document.getElementById('encounterType').value;
+            const range = encounterRanges[type];
+            const list = patient.encounters[type] || [];
+            const next = range.start + list.length;
+            if (next > range.end) return msg(`No more ${type} codes`, 'encounterResult', 'error');
+
+            const suffix = next.toString(16).toUpperCase().padStart(3,'0');
+            const encCode = patientCode + suffix;
+            list.push(encCode);
+            patient.encounters[type] = list;
+            msg(`${type} Encounter: ${encCode}`, 'encounterResult', 'success');
+        }
+
+        function displayData() {
+            let out = '# All Generated Codes\n\n';
+            for (const org in data.orgs) {
+                out += `## Org: ${org}\n`;
+                for (const study in data.orgs[org].studies) {
+                    out += `### Study: ${study}\n`;
+                    for (const site in data.orgs[org].studies[study].sites) {
+                        out += `#### Site: ${site}\n`;
+                        for (const pat in data.orgs[org].studies[study].sites[site].patients) {
+                            out += `- Patient: ${pat}\n`;
+                            const encs = data.orgs[org].studies[study].sites[site].patients[pat].encounters;
+                            for (const t in encs) encs[t].forEach(c => out += `  - ${t}: ${c}\n`);
+                        }
+                    }
+                }
+            }
+            document.getElementById('output').textContent = out || 'No data yet. Start generating!';
+        }
+
+        function msg(text, id, type) {
+            appendOutput(text + '\n');
+            if (id) {
+                const el = document.getElementById(id);
+                el.textContent = text;
+                el.className = type;
+                setTimeout(() => el.textContent = '', 4000);
+            }
+        }
+
+        function appendOutput(text) {
+            const out = document.getElementById('output');
+            out.textContent += text + '\n';
+            out.scrollTop = out.scrollHeight;
+        }
+
+        function downloadCSV() {
+            let csv = 'Org,Study,Site,Patient,EncounterType,EncounterCode\n';
+            for (const org in data.orgs) {
+                for (const study in data.orgs[org].studies) {
+                    for (const site in data.orgs[org].studies[study].sites) {
+                        for (const pat in data.orgs[org].studies[study].sites[site].patients) {
+                            const encs = data.orgs[org].studies[study].sites[site].patients[pat].encounters;
+                            for (const type in encs) {
+                                encs[type].forEach(code => {
+                                    csv += `${org},${study},${site},${pat},${type},${code}\n`;
+                                });
+                            }
+                            // Also add patient rows with no encounter
+                            if (Object.keys(encs).length === 0) csv += `${org},${study},${site},${pat},,\n`;
+                        }
+                    }
+                }
+            }
+            downloadFile(csv, 'research_codes.csv', 'text/csv');
+        }
+
+        function downloadJSON() {
+            downloadFile(JSON.stringify(data, null, 2), 'research_data.json', 'application/json');
+        }
+
+        function downloadFile(content, filename, type) {
+            const blob = new Blob([content], { type });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename; a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function clearData() {
+            if (confirm('Delete all data?')) {
+                data = { orgs: {} };
+                usedCodes.clear();
+                document.getElementById('output').textContent = 'All data cleared.';
+            }
+        }
+
+        // File uploads
+        document.getElementById('csvFile').addEventListener('change', e => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                const lines = ev.target.result.split('\n').slice(1);
+                data = { orgs: {} }; usedCodes.clear();
+                lines.forEach(line => {
+                    if (!line.trim()) return;
+                    const [org, study, site, pat, type, code] = line.split(',');
+                    if (!org || !study || !site || !pat) return;
+                    if (!data.orgs[org]) data.orgs[org] = { studies: {} };
+                    if (!data.orgs[org].studies[study]) data.orgs[org].studies[study] = { sites: {} };
+                    if (!data.orgs[org].studies[study].sites[site]) data.orgs[org].studies[study].sites[site] = { patients: {} };
+                    if (!data.orgs[org].studies[study].sites[site].patients[pat]) data.orgs[org].studies[study].sites[site].patients[pat] = { encounters: {} };
+                    if (type && code) {
+                        if (!data.orgs[org].studies[study].sites[site].patients[pat].encounters[type]) 
+                            data.orgs[org].studies[study].sites[site].patients[pat].encounters[type] = [];
+                        data.orgs[org].studies[study].sites[site].patients[pat].encounters[type].push(code);
+                    }
+                    usedCodes.add(org); usedCodes.add(study); usedCodes.add(site);
+                });
+                appendOutput('CSV imported successfully!\n');
+            };
+            reader.readAsText(file);
+        });
+
+        document.getElementById('jsonFile').addEventListener('change', e => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                try {
+                    data = JSON.parse(ev.target.result);
+                    usedCodes.clear();
+                    for (const org in data.orgs) {
+                        usedCodes.add(org);
+                        for (const study in data.orgs[org].studies) {
+                            usedCodes.add(study);
+                            for (const site in data.orgs[org].studies[study].sites) usedCodes.add(site);
+                        }
+                    }
+                    appendOutput('JSON imported successfully!\n');
+                } catch (err) {
+                    appendOutput('Invalid JSON file\n');
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // Start fresh
+        document.getElementById('output').textContent = 'Ready. Start by creating an Organization.\n';
+    </script>
+</body>
+</html>
