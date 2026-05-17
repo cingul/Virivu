@@ -63,6 +63,10 @@ pub fn router(ctx: AppContext) -> Router {
             post(submit_add_study_crf_field),
         )
         .route(
+            "/ui/studies/fields/{field_id}/update",
+            post(submit_update_study_crf_field),
+        )
+        .route(
             "/ui/studies/templates/{template_id}/publish",
             post(submit_publish_study_crf_template),
         )
@@ -3559,13 +3563,45 @@ async fn render_study_workbench(
         fields
             .iter()
             .map(|field| {
+                let field_type_options_html = render_crf_field_type_options(&field.field_type);
                 format!(
-                    "<li><strong>{}</strong> ({}) <small>key={} required={} options={}</small></li>",
+                    r#"<li>
+  <strong>{}</strong> ({}) <small>key={} · required={} · order={} · options={}</small>
+  <details style="margin-top:0.35rem;">
+    <summary><strong>Edit field</strong></summary>
+    <form method="post" action="/ui/studies/fields/{}/update" style="margin-top:0.55rem;">
+      <label>Admin email</label>
+      <input name="admin_email" value="{}" required />
+      <label>Field key</label>
+      <input name="field_key" value="{}" required />
+      <label>Field label</label>
+      <input name="field_label" value="{}" required />
+      <label>Field type</label>
+      <select name="field_type" required>{}</select>
+      <label>Required</label>
+      <input type="checkbox" name="required" value="true" {} />
+      <label>Options JSON (for select fields)</label>
+      <input name="options_json" value="{}" />
+      <label>Display order</label>
+      <input name="display_order" value="{}" />
+      <button type="submit">Save Field Changes</button>
+    </form>
+  </details>
+</li>"#,
                     html_escape(&field.field_label),
                     html_escape(&field.field_type),
                     html_escape(&field.field_key),
                     field.required,
-                    html_escape(&field.options_json)
+                    field.display_order,
+                    html_escape(&field.options_json),
+                    field.id,
+                    html_escape(admin_email.trim()),
+                    html_escape(&field.field_key),
+                    html_escape(&field.field_label),
+                    field_type_options_html,
+                    if field.required { "checked" } else { "" },
+                    html_escape(&field.options_json),
+                    field.display_order
                 )
             })
             .collect::<Vec<_>>()
@@ -4113,6 +4149,7 @@ async fn render_study_workbench(
 <section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="crf-fields">
   <h2>4) CRF Field Builder</h2>
   <p><strong>Selected template:</strong> {}</p>
+  <p class="muted">Add new fields below. To edit an existing field, use the <strong>Edit field</strong> option in the list.</p>
   <form method="post" action="{}">
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
@@ -4619,7 +4656,10 @@ async fn submit_add_study_crf_field(
             project.organization_id,
             project.id,
             template_id,
-            query_escape(&format!("Could not add CRF field: {}", err))
+            query_escape(&map_crf_field_error_to_notice(
+                "Could not add CRF field",
+                &err.to_string(),
+            ))
         )));
     }
     Ok(Redirect::to(&format!(
@@ -4629,6 +4669,76 @@ async fn submit_add_study_crf_field(
         project.id,
         template_id,
         query_escape("CRF field added")
+    )))
+}
+
+async fn submit_update_study_crf_field(
+    State(ctx): State<AppContext>,
+    Path(field_id): Path<Uuid>,
+    Form(form): Form<StudyCrfFieldForm>,
+) -> Result<Redirect, ApiError> {
+    let existing_field = ctx
+        .db
+        .get_study_crf_field(field_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("CRF field not found".to_string()))?;
+    let template = ctx
+        .db
+        .get_study_crf_template(existing_field.template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let options_json = normalize_options_json_input(form.options_json.trim());
+    let display_order = form.display_order.trim().parse::<i32>().unwrap_or(0).max(0);
+    if let Err(err) = ctx
+        .db
+        .update_study_crf_field(
+            field_id,
+            form.field_key.trim(),
+            form.field_label.trim(),
+            form.field_type.trim(),
+            form.required.is_some(),
+            &options_json,
+            display_order,
+        )
+        .await
+    {
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            query_escape(form.admin_email.trim()),
+            project.organization_id,
+            project.id,
+            template.id,
+            query_escape(&map_crf_field_error_to_notice(
+                "Could not update CRF field",
+                &err.to_string(),
+            ))
+        )));
+    }
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        template.id,
+        query_escape("CRF field updated")
     )))
 }
 
@@ -6342,6 +6452,49 @@ fn normalize_options_json_input(input: &str) -> String {
         .map(str::to_string)
         .collect::<Vec<_>>();
     serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn render_crf_field_type_options(selected_type: &str) -> String {
+    [
+        "text",
+        "textarea",
+        "number",
+        "date",
+        "datetime",
+        "boolean",
+        "single_select",
+        "multi_select",
+    ]
+    .iter()
+    .map(|field_type| {
+        let selected = if field_type.eq_ignore_ascii_case(selected_type) {
+            " selected"
+        } else {
+            ""
+        };
+        format!(
+            r#"<option value="{}"{}>{}</option>"#,
+            field_type, selected, field_type
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("")
+}
+
+fn map_crf_field_error_to_notice(prefix: &str, error_text: &str) -> String {
+    let normalized = error_text.trim().to_ascii_lowercase();
+    if normalized.contains("duplicate key value violates unique constraint")
+        && normalized.contains("study_crf_fields_template_id_field_key_key")
+    {
+        return format!("{prefix}: field key already exists in this template.");
+    }
+    if normalized.contains("invalid field_type") {
+        return format!("{prefix}: invalid field type.");
+    }
+    if normalized.contains("invalid input syntax for type json") {
+        return format!("{prefix}: options JSON is invalid.");
+    }
+    format!("{prefix}: {error_text}")
 }
 
 fn query_escape(input: &str) -> String {

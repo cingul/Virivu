@@ -739,6 +739,84 @@ impl Db {
         Ok(row_to_study_crf_field(&row))
     }
 
+    pub async fn get_study_crf_field(
+        &self,
+        field_id: Uuid,
+    ) -> anyhow::Result<Option<StudyCrfField>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    template_id,
+                    field_key,
+                    field_label,
+                    field_type,
+                    required,
+                    options_json::TEXT AS options_json,
+                    display_order,
+                    created_at
+                FROM study_crf_fields
+                WHERE id = $1
+                "#,
+                &[&field_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_study_crf_field))
+    }
+
+    pub async fn update_study_crf_field(
+        &self,
+        field_id: Uuid,
+        field_key: &str,
+        field_label: &str,
+        field_type: &str,
+        required: bool,
+        options_json: &str,
+        display_order: i32,
+    ) -> anyhow::Result<StudyCrfField> {
+        if normalize_crf_field_type(field_type).is_none() {
+            return Err(anyhow!("invalid field_type"));
+        }
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                UPDATE study_crf_fields
+                SET
+                    field_key = $2,
+                    field_label = $3,
+                    field_type = $4,
+                    required = $5,
+                    options_json = $6::TEXT::JSONB,
+                    display_order = $7
+                WHERE id = $1
+                RETURNING
+                    id,
+                    template_id,
+                    field_key,
+                    field_label,
+                    field_type,
+                    required,
+                    options_json::TEXT AS options_json,
+                    display_order,
+                    created_at
+                "#,
+                &[
+                    &field_id,
+                    &field_key,
+                    &field_label,
+                    &field_type,
+                    &required,
+                    &options_json,
+                    &display_order,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_crf_field(&row))
+    }
+
     pub async fn list_study_crf_fields(
         &self,
         template_id: Uuid,
