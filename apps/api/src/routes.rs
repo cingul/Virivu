@@ -43,6 +43,7 @@ pub struct AppContext {
 pub fn router(ctx: AppContext) -> Router {
     let public_router = Router::new()
         .route("/health", get(health))
+        .route("/favicon.ico", get(favicon))
         .route("/ui", get(redirect_ui_home))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
@@ -289,6 +290,10 @@ async fn health(State(ctx): State<AppContext>) -> Json<HealthResponse> {
         service: ctx.config.app_name,
         timestamp_utc: Utc::now().to_rfc3339(),
     })
+}
+
+async fn favicon() -> impl IntoResponse {
+    StatusCode::NO_CONTENT
 }
 
 async fn require_auth(State(ctx): State<AppContext>, mut request: Request, next: Next) -> Response {
