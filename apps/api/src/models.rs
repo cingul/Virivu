@@ -120,6 +120,78 @@ pub struct StudyCrfField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyVisitTemplate {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub visit_code: String,
+    pub visit_name: String,
+    pub target_day: i32,
+    pub window_before_days: i32,
+    pub window_after_days: i32,
+    pub required: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientStudyVisit {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub patient_id: Uuid,
+    pub visit_template_id: Uuid,
+    pub scheduled_for: Option<NaiveDate>,
+    pub status: String,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub locked: bool,
+    pub locked_at: Option<DateTime<Utc>>,
+    pub locked_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCrfSubmission {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub template_id: Uuid,
+    pub patient_id: Uuid,
+    pub patient_visit_id: Option<Uuid>,
+    pub answers_json: String,
+    pub status: String,
+    pub entered_by_user_id: Option<Uuid>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub locked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyDataQuery {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub submission_id: Uuid,
+    pub field_key: String,
+    pub query_text: String,
+    pub status: String,
+    pub response_text: String,
+    pub raised_by_user_id: Option<Uuid>,
+    pub resolved_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCloseChecklistItem {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub item_code: String,
+    pub item_label: String,
+    pub completed: bool,
+    pub completed_by_user_id: Option<Uuid>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormInvite {
     pub id: Uuid,
     pub organization_id: Uuid,

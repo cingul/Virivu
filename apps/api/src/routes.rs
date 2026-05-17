@@ -64,6 +64,42 @@ pub fn router(ctx: AppContext) -> Router {
             post(submit_publish_study_crf_template),
         )
         .route(
+            "/ui/studies/{project_id}/visit-template",
+            post(submit_create_study_visit_template),
+        )
+        .route(
+            "/ui/studies/{project_id}/schedule-visit",
+            post(submit_schedule_patient_visit),
+        )
+        .route(
+            "/ui/studies/{project_id}/crf-submission",
+            post(submit_create_study_crf_submission),
+        )
+        .route(
+            "/ui/studies/submissions/{submission_id}/submit",
+            post(submit_mark_study_crf_submission_submitted),
+        )
+        .route(
+            "/ui/studies/submissions/{submission_id}/lock",
+            post(submit_lock_study_crf_submission),
+        )
+        .route(
+            "/ui/studies/{project_id}/query",
+            post(submit_create_study_data_query),
+        )
+        .route(
+            "/ui/studies/queries/{query_id}/respond",
+            post(submit_respond_study_data_query),
+        )
+        .route(
+            "/ui/studies/queries/{query_id}/close",
+            post(submit_close_study_data_query),
+        )
+        .route(
+            "/ui/studies/{project_id}/close-checklist",
+            post(submit_set_study_close_checklist_item),
+        )
+        .route(
             "/ui/app/create-organization",
             post(submit_app_create_organization),
         )
@@ -141,6 +177,42 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/v1/studies/crf-templates/{template_id}/publish",
             post(publish_study_crf_template),
+        )
+        .route(
+            "/v1/studies/{project_id}/visit-templates",
+            get(list_study_visit_templates).post(create_study_visit_template),
+        )
+        .route(
+            "/v1/studies/{project_id}/patient-visits",
+            get(list_patient_study_visits).post(schedule_patient_study_visit),
+        )
+        .route(
+            "/v1/studies/{project_id}/crf-submissions",
+            get(list_study_crf_submissions).post(create_study_crf_submission),
+        )
+        .route(
+            "/v1/studies/crf-submissions/{submission_id}/submit",
+            post(mark_study_crf_submission_submitted),
+        )
+        .route(
+            "/v1/studies/crf-submissions/{submission_id}/lock",
+            post(lock_study_crf_submission),
+        )
+        .route(
+            "/v1/studies/{project_id}/data-queries",
+            get(list_study_data_queries).post(create_study_data_query),
+        )
+        .route(
+            "/v1/studies/data-queries/{query_id}/respond",
+            post(respond_study_data_query),
+        )
+        .route(
+            "/v1/studies/data-queries/{query_id}/close",
+            post(close_study_data_query),
+        )
+        .route(
+            "/v1/studies/{project_id}/close-checklist",
+            get(list_study_close_checklist_items).post(set_study_close_checklist_item),
         )
         .route("/v1/patients", post(create_patient))
         .route("/v1/providers", post(create_provider))
@@ -626,6 +698,424 @@ async fn publish_study_crf_template(
 }
 
 #[derive(Debug, Deserialize)]
+struct CreateStudyVisitTemplateRequest {
+    visit_code: String,
+    visit_name: String,
+    target_day: Option<i32>,
+    window_before_days: Option<i32>,
+    window_after_days: Option<i32>,
+    required: Option<bool>,
+}
+
+async fn create_study_visit_template(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateStudyVisitTemplateRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    if payload.visit_code.trim().is_empty() || payload.visit_name.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "visit_code and visit_name are required".to_string(),
+        ));
+    }
+    let visit = ctx
+        .db
+        .create_study_visit_template(
+            project_id,
+            payload.visit_code.trim(),
+            payload.visit_name.trim(),
+            payload.target_day.unwrap_or(0),
+            payload.window_before_days.unwrap_or(0).max(0),
+            payload.window_after_days.unwrap_or(0).max(0),
+            payload.required.unwrap_or(true),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(visit)))
+}
+
+async fn list_study_visit_templates(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let templates = ctx
+        .db
+        .list_study_visit_templates(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(templates))
+}
+
+#[derive(Debug, Deserialize)]
+struct SchedulePatientStudyVisitRequest {
+    patient_id: Uuid,
+    visit_template_id: Uuid,
+    scheduled_for: Option<chrono::NaiveDate>,
+}
+
+async fn schedule_patient_study_visit(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<SchedulePatientStudyVisitRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    let visit = ctx
+        .db
+        .schedule_patient_study_visit(
+            project_id,
+            payload.patient_id,
+            payload.visit_template_id,
+            payload.scheduled_for,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(visit)))
+}
+
+async fn list_patient_study_visits(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let visits = ctx
+        .db
+        .list_patient_study_visits(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(visits))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateStudyCrfSubmissionRequest {
+    template_id: Uuid,
+    patient_id: Uuid,
+    patient_visit_id: Option<Uuid>,
+    answers_json: Option<String>,
+}
+
+async fn create_study_crf_submission(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateStudyCrfSubmissionRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    let submission = ctx
+        .db
+        .create_study_crf_submission(
+            project_id,
+            payload.template_id,
+            payload.patient_id,
+            payload.patient_visit_id,
+            payload.answers_json.as_deref().unwrap_or("{}").trim(),
+            Some(user.user_id),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(submission)))
+}
+
+async fn list_study_crf_submissions(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let submissions = ctx
+        .db
+        .list_study_crf_submissions(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(submissions))
+}
+
+async fn mark_study_crf_submission_submitted(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(submission_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let submission = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(submission.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    let updated = ctx
+        .db
+        .submit_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(updated))
+}
+
+async fn lock_study_crf_submission(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(submission_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let submission = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(submission.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    let updated = ctx
+        .db
+        .lock_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(updated))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateStudyDataQueryRequest {
+    submission_id: Uuid,
+    field_key: String,
+    query_text: String,
+}
+
+async fn create_study_data_query(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<CreateStudyDataQueryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    if payload.field_key.trim().is_empty() || payload.query_text.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "field_key and query_text are required".to_string(),
+        ));
+    }
+    let submission = ctx
+        .db
+        .get_study_crf_submission(payload.submission_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+    if submission.project_id != project_id {
+        return Err(ApiError::Validation(
+            "submission does not belong to project".to_string(),
+        ));
+    }
+    let query = ctx
+        .db
+        .create_study_data_query(
+            project_id,
+            payload.submission_id,
+            payload.field_key.trim(),
+            payload.query_text.trim(),
+            Some(user.user_id),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::CREATED, Json(query)))
+}
+
+async fn list_study_data_queries(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let queries = ctx
+        .db
+        .list_study_data_queries(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(queries))
+}
+
+#[derive(Debug, Deserialize)]
+struct RespondStudyDataQueryRequest {
+    response_text: String,
+}
+
+async fn respond_study_data_query(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(query_id): Path<Uuid>,
+    Json(payload): Json<RespondStudyDataQueryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = ctx
+        .db
+        .get_study_data_query(query_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data query not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(query.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    let updated = ctx
+        .db
+        .respond_study_data_query(query_id, payload.response_text.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(updated))
+}
+
+async fn close_study_data_query(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(query_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = ctx
+        .db
+        .get_study_data_query(query_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data query not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(query.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    let updated = ctx
+        .db
+        .close_study_data_query(query_id, Some(user.user_id))
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(updated))
+}
+
+#[derive(Debug, Deserialize)]
+struct SetStudyCloseChecklistItemRequest {
+    item_code: String,
+    item_label: String,
+    completed: bool,
+    notes: Option<String>,
+}
+
+async fn list_study_close_checklist_items(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
+    let items = ctx
+        .db
+        .list_study_close_checklist_items(project_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(items))
+}
+
+async fn set_study_close_checklist_item(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(project_id): Path<Uuid>,
+    Json(payload): Json<SetStudyCloseChecklistItemRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    if payload.item_code.trim().is_empty() || payload.item_label.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "item_code and item_label are required".to_string(),
+        ));
+    }
+    let item = ctx
+        .db
+        .set_study_close_checklist_item(
+            project_id,
+            payload.item_code.trim(),
+            payload.item_label.trim(),
+            payload.completed,
+            if payload.completed {
+                Some(user.user_id)
+            } else {
+                None
+            },
+            payload.notes.as_deref().unwrap_or("").trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(item))
+}
+
+#[derive(Debug, Deserialize)]
 struct CreatePatientRequest {
     site_id: Uuid,
     external_subject_id: Option<String>,
@@ -936,6 +1426,7 @@ struct StudyWorkbenchQuery {
     organization_id: Option<String>,
     project_id: Option<String>,
     template_id: Option<String>,
+    submission_id: Option<String>,
     notice: Option<String>,
 }
 
@@ -980,6 +1471,67 @@ struct StudyCrfFieldForm {
 #[derive(Debug, Deserialize)]
 struct StudyCrfPublishForm {
     admin_email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyVisitTemplateForm {
+    admin_email: String,
+    visit_code: String,
+    visit_name: String,
+    target_day: String,
+    window_before_days: String,
+    window_after_days: String,
+    required: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyScheduleVisitForm {
+    admin_email: String,
+    patient_id: String,
+    visit_template_id: String,
+    scheduled_for: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCreateSubmissionForm {
+    admin_email: String,
+    template_id: String,
+    patient_id: String,
+    patient_visit_id: String,
+    answers_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudySubmissionActionForm {
+    admin_email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCreateQueryForm {
+    admin_email: String,
+    submission_id: String,
+    field_key: String,
+    query_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyRespondQueryForm {
+    admin_email: String,
+    response_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCloseQueryForm {
+    admin_email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyChecklistItemForm {
+    admin_email: String,
+    item_code: String,
+    item_label: String,
+    completed: Option<String>,
+    notes: String,
 }
 
 async fn redirect_ui_home() -> Redirect {
@@ -1892,6 +2444,61 @@ async fn render_study_workbench(
         Vec::new()
     };
 
+    let visit_templates = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_visit_templates(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let patient_visits = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_patient_study_visits(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let patients = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_patients_by_project(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let submissions = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_crf_submissions(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let selected_submission_id = query
+        .submission_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .filter(|sid| submissions.iter().any(|s| s.id == *sid))
+        .or_else(|| submissions.first().map(|s| s.id));
+    let data_queries = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_data_queries(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    let checklist_items = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_close_checklist_items(project_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+
     let notice_html = query
         .notice
         .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
@@ -2012,11 +2619,159 @@ async fn render_study_workbench(
             .join("")
     };
 
+    let visit_templates_html = if visit_templates.is_empty() {
+        "<li>No visit templates yet.</li>".to_string()
+    } else {
+        visit_templates
+            .iter()
+            .map(|visit| {
+                format!(
+                    "<li><strong>{}</strong> ({}) <small>day {} | window -{} / +{} | required={}</small></li>",
+                    html_escape(&visit.visit_name),
+                    html_escape(&visit.visit_code),
+                    visit.target_day,
+                    visit.window_before_days,
+                    visit.window_after_days,
+                    visit.required
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let patient_visits_html = if patient_visits.is_empty() {
+        "<li>No scheduled patient visits yet.</li>".to_string()
+    } else {
+        patient_visits
+            .iter()
+            .take(20)
+            .map(|visit| {
+                format!(
+                    "<li><strong>{}</strong> <small>patient={} template={} date={}</small></li>",
+                    html_escape(&visit.status),
+                    visit.patient_id,
+                    visit.visit_template_id,
+                    visit
+                        .scheduled_for
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "unscheduled".to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let patients_html = if patients.is_empty() {
+        "<li>No patients enrolled yet.</li>".to_string()
+    } else {
+        patients
+            .iter()
+            .map(|patient| {
+                format!(
+                    "<li>{} <small>(id: {})</small></li>",
+                    html_escape(patient.hex_code.as_deref().unwrap_or("pending")),
+                    patient.id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let submissions_html = if submissions.is_empty() {
+        "<li>No CRF submissions yet.</li>".to_string()
+    } else {
+        submissions
+            .iter()
+            .take(20)
+            .map(|submission| {
+                let selected_org = selected_org_id
+                    .map(|org_id| format!("&organization_id={org_id}"))
+                    .unwrap_or_default();
+                let selected_project = selected_project_id
+                    .map(|project_id| format!("&project_id={project_id}"))
+                    .unwrap_or_default();
+                format!(
+                    r#"<li><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(template={} patient={} status={})</small></li>"#,
+                    admin_email_q,
+                    selected_org,
+                    selected_project,
+                    submission.id,
+                    submission.id,
+                    submission.template_id,
+                    submission.patient_id,
+                    html_escape(&submission.status)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let data_queries_html = if data_queries.is_empty() {
+        "<li>No monitor queries yet.</li>".to_string()
+    } else {
+        data_queries
+            .iter()
+            .take(30)
+            .map(|q| {
+                let response_form = if q.status == "closed" {
+                    "<small>closed</small>".to_string()
+                } else {
+                    format!(
+                        r#"<form method="post" action="/ui/studies/queries/{}/respond" style="margin:0.4rem 0;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <input name="response_text" placeholder="Response / correction note" />
+  <button type="submit">Respond</button>
+</form>
+<form method="post" action="/ui/studies/queries/{}/close" style="margin:0;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <button type="submit">Close query</button>
+</form>"#,
+                        q.id,
+                        html_escape(admin_email.trim()),
+                        q.id,
+                        html_escape(admin_email.trim())
+                    )
+                };
+                format!(
+                    "<li><strong>{}</strong> <small>submission={} field={} status={} </small><div>{}</div>{}</li>",
+                    html_escape(&q.query_text),
+                    q.submission_id,
+                    html_escape(&q.field_key),
+                    html_escape(&q.status),
+                    html_escape(&q.response_text),
+                    response_form
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let checklist_html = if checklist_items.is_empty() {
+        "<li>No close checklist items yet.</li>".to_string()
+    } else {
+        checklist_items
+            .iter()
+            .map(|item| {
+                format!(
+                    "<li><strong>{}</strong> <small>code={} completed={} notes={}</small></li>",
+                    html_escape(&item.item_label),
+                    html_escape(&item.item_code),
+                    item.completed,
+                    html_escape(&item.notes)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
     let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
     let selected_project_value = selected_project_id
         .map(|id| id.to_string())
         .unwrap_or_default();
     let selected_template_value = selected_template_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let selected_submission_value = selected_submission_id
         .map(|id| id.to_string())
         .unwrap_or_default();
     let phase_action = selected_project_id
@@ -2027,6 +2782,27 @@ async fn render_study_workbench(
         .unwrap_or_else(|| "#".to_string());
     let crf_field_action = selected_template_id
         .map(|id| format!("/ui/studies/templates/{id}/field"))
+        .unwrap_or_else(|| "#".to_string());
+    let visit_template_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/visit-template"))
+        .unwrap_or_else(|| "#".to_string());
+    let schedule_visit_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/schedule-visit"))
+        .unwrap_or_else(|| "#".to_string());
+    let create_submission_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/crf-submission"))
+        .unwrap_or_else(|| "#".to_string());
+    let submit_submission_action = selected_submission_id
+        .map(|id| format!("/ui/studies/submissions/{id}/submit"))
+        .unwrap_or_else(|| "#".to_string());
+    let lock_submission_action = selected_submission_id
+        .map(|id| format!("/ui/studies/submissions/{id}/lock"))
+        .unwrap_or_else(|| "#".to_string());
+    let create_query_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/query"))
+        .unwrap_or_else(|| "#".to_string());
+    let checklist_action = selected_project_id
+        .map(|id| format!("/ui/studies/{id}/close-checklist"))
         .unwrap_or_else(|| "#".to_string());
 
     let body = format!(
@@ -2144,6 +2920,106 @@ async fn render_study_workbench(
   <h3 style="margin-top:1rem;">Fields</h3>
   <ul>{}</ul>
 </section>
+
+<section class="card">
+  <h2>5) Visit Schedule Engine</h2>
+  <form method="post" action="{}" style="margin-bottom:1rem;">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Visit code</label>
+    <input name="visit_code" placeholder="SCREENING" required />
+    <label>Visit name</label>
+    <input name="visit_name" placeholder="Screening Visit" required />
+    <label>Target day</label>
+    <input name="target_day" value="0" />
+    <label>Window before (days)</label>
+    <input name="window_before_days" value="0" />
+    <label>Window after (days)</label>
+    <input name="window_after_days" value="7" />
+    <label>Required</label>
+    <input type="checkbox" name="required" value="true" checked />
+    <button type="submit">Create Visit Template</button>
+  </form>
+  <ul>{}</ul>
+  <form method="post" action="{}">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Patient ID</label>
+    <input name="patient_id" placeholder="patient-uuid" required />
+    <label>Visit template ID</label>
+    <input name="visit_template_id" placeholder="visit-template-uuid" required />
+    <label>Scheduled date (YYYY-MM-DD)</label>
+    <input name="scheduled_for" placeholder="2026-06-01" />
+    <button type="submit">Schedule Patient Visit</button>
+  </form>
+  <h3 style="margin-top:1rem;">Scheduled visits</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>6) CRF Submission Workflow</h2>
+  <form method="post" action="{}" style="margin-bottom:1rem;">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Template ID</label>
+    <input name="template_id" value="{}" required />
+    <label>Patient ID</label>
+    <input name="patient_id" placeholder="patient-uuid" required />
+    <label>Patient visit ID (optional)</label>
+    <input name="patient_visit_id" placeholder="patient-visit-uuid" />
+    <label>Answers JSON</label>
+    <textarea name="answers_json">{{}}</textarea>
+    <button type="submit">Create CRF Submission (Draft)</button>
+  </form>
+  <p><strong>Selected submission:</strong> {}</p>
+  <form method="post" action="{}" style="display:inline-block; margin-right:0.5rem;">
+    <input type="hidden" name="admin_email" value="{}" />
+    <button type="submit">Mark Submitted</button>
+  </form>
+  <form method="post" action="{}" style="display:inline-block;">
+    <input type="hidden" name="admin_email" value="{}" />
+    <button type="submit">Lock Submission</button>
+  </form>
+  <h3 style="margin-top:1rem;">Patients</h3>
+  <ul>{}</ul>
+  <h3 style="margin-top:1rem;">Submissions</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>7) Monitor Query Management</h2>
+  <form method="post" action="{}">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Submission ID</label>
+    <input name="submission_id" value="{}" placeholder="submission-uuid" required />
+    <label>Field key</label>
+    <input name="field_key" placeholder="systolic_bp" required />
+    <label>Query text</label>
+    <input name="query_text" placeholder="Please verify value source document." required />
+    <button type="submit">Create Data Query</button>
+  </form>
+  <h3 style="margin-top:1rem;">Queries</h3>
+  <ul>{}</ul>
+</section>
+
+<section class="card">
+  <h2>8) Study Close Checklist</h2>
+  <form method="post" action="{}">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Item code</label>
+    <input name="item_code" placeholder="database_lock_complete" required />
+    <label>Item label</label>
+    <input name="item_label" placeholder="Database lock completed and signed off" required />
+    <label>Completed</label>
+    <input type="checkbox" name="completed" value="true" />
+    <label>Notes</label>
+    <input name="notes" placeholder="Closure note" />
+    <button type="submit">Upsert Checklist Item</button>
+  </form>
+  <ul>{}</ul>
+</section>
 "#,
         notice_html,
         html_escape(admin_email.trim()),
@@ -2170,11 +3046,38 @@ async fn render_study_workbench(
         if selected_template_value.is_empty() {
             "<span class=\"muted\">none selected</span>".to_string()
         } else {
-            selected_template_value
+            selected_template_value.clone()
         },
         crf_field_action,
         html_escape(admin_email.trim()),
-        fields_html
+        fields_html,
+        visit_template_action,
+        html_escape(admin_email.trim()),
+        visit_templates_html,
+        schedule_visit_action,
+        html_escape(admin_email.trim()),
+        patient_visits_html,
+        create_submission_action,
+        html_escape(admin_email.trim()),
+        selected_template_value,
+        if selected_submission_value.is_empty() {
+            "<span class=\"muted\">none selected</span>".to_string()
+        } else {
+            selected_submission_value.clone()
+        },
+        submit_submission_action,
+        html_escape(admin_email.trim()),
+        lock_submission_action,
+        html_escape(admin_email.trim()),
+        patients_html,
+        submissions_html,
+        create_query_action,
+        html_escape(admin_email.trim()),
+        selected_submission_value,
+        data_queries_html,
+        checklist_action,
+        html_escape(admin_email.trim()),
+        checklist_html
     );
     Ok(Html(render_cingulum_page("Study Workbench", body)))
 }
@@ -2407,6 +3310,426 @@ async fn submit_publish_study_crf_template(
         project.id,
         template_id,
         query_escape("CRF template published")
+    )))
+}
+
+async fn submit_create_study_visit_template(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyVisitTemplateForm>,
+) -> Result<Redirect, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let target_day = form.target_day.trim().parse::<i32>().unwrap_or(0);
+    let window_before_days = form
+        .window_before_days
+        .trim()
+        .parse::<i32>()
+        .unwrap_or(0)
+        .max(0);
+    let window_after_days = form
+        .window_after_days
+        .trim()
+        .parse::<i32>()
+        .unwrap_or(0)
+        .max(0);
+    ctx.db
+        .create_study_visit_template(
+            project_id,
+            form.visit_code.trim(),
+            form.visit_name.trim(),
+            target_day,
+            window_before_days,
+            window_after_days,
+            form.required.is_some(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        query_escape("Visit template created")
+    )))
+}
+
+async fn submit_schedule_patient_visit(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyScheduleVisitForm>,
+) -> Result<Redirect, ApiError> {
+    let patient_id = parse_uuid_field(&form.patient_id, "patient_id")?;
+    let visit_template_id = parse_uuid_field(&form.visit_template_id, "visit_template_id")?;
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let scheduled_for = parse_optional_date(&form.scheduled_for)?;
+    ctx.db
+        .schedule_patient_study_visit(project_id, patient_id, visit_template_id, scheduled_for)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        query_escape("Patient visit scheduled")
+    )))
+}
+
+async fn submit_create_study_crf_submission(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyCreateSubmissionForm>,
+) -> Result<Redirect, ApiError> {
+    let template_id = parse_uuid_field(&form.template_id, "template_id")?;
+    let patient_id = parse_uuid_field(&form.patient_id, "patient_id")?;
+    let patient_visit_id = if form.patient_visit_id.trim().is_empty() {
+        None
+    } else {
+        Some(parse_uuid_field(
+            &form.patient_visit_id,
+            "patient_visit_id",
+        )?)
+    };
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let entered_by_user_id = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+    let submission = ctx
+        .db
+        .create_study_crf_submission(
+            project_id,
+            template_id,
+            patient_id,
+            patient_visit_id,
+            form.answers_json.trim(),
+            entered_by_user_id,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        submission.id,
+        query_escape("CRF submission created")
+    )))
+}
+
+async fn submit_mark_study_crf_submission_submitted(
+    State(ctx): State<AppContext>,
+    Path(submission_id): Path<Uuid>,
+    Form(form): Form<StudySubmissionActionForm>,
+) -> Result<Redirect, ApiError> {
+    let submission = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(submission.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    ctx.db
+        .submit_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        submission_id,
+        query_escape("Submission marked submitted")
+    )))
+}
+
+async fn submit_lock_study_crf_submission(
+    State(ctx): State<AppContext>,
+    Path(submission_id): Path<Uuid>,
+    Form(form): Form<StudySubmissionActionForm>,
+) -> Result<Redirect, ApiError> {
+    let submission = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(submission.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    ctx.db
+        .lock_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        submission_id,
+        query_escape("Submission locked")
+    )))
+}
+
+async fn submit_create_study_data_query(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyCreateQueryForm>,
+) -> Result<Redirect, ApiError> {
+    let submission_id = parse_uuid_field(&form.submission_id, "submission_id")?;
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let raised_by_user_id = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+    ctx.db
+        .create_study_data_query(
+            project_id,
+            submission_id,
+            form.field_key.trim(),
+            form.query_text.trim(),
+            raised_by_user_id,
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        submission_id,
+        query_escape("Data query created")
+    )))
+}
+
+async fn submit_respond_study_data_query(
+    State(ctx): State<AppContext>,
+    Path(query_id): Path<Uuid>,
+    Form(form): Form<StudyRespondQueryForm>,
+) -> Result<Redirect, ApiError> {
+    let query = ctx
+        .db
+        .get_study_data_query(query_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data query not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(query.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    ctx.db
+        .respond_study_data_query(query_id, form.response_text.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        query.submission_id,
+        query_escape("Data query response saved")
+    )))
+}
+
+async fn submit_close_study_data_query(
+    State(ctx): State<AppContext>,
+    Path(query_id): Path<Uuid>,
+    Form(form): Form<StudyCloseQueryForm>,
+) -> Result<Redirect, ApiError> {
+    let query = ctx
+        .db
+        .get_study_data_query(query_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("data query not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(query.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let resolver = ctx
+        .db
+        .get_user_by_email(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?
+        .map(|u| u.id);
+    ctx.db
+        .close_study_data_query(query_id, resolver)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        query.submission_id,
+        query_escape("Data query closed")
+    )))
+}
+
+async fn submit_set_study_close_checklist_item(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<StudyChecklistItemForm>,
+) -> Result<Redirect, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let completed = form.completed.is_some();
+    let completed_by_user_id = if completed {
+        ctx.db
+            .get_user_by_email(form.admin_email.trim())
+            .await
+            .map_err(ApiError::internal)?
+            .map(|u| u.id)
+    } else {
+        None
+    };
+    ctx.db
+        .set_study_close_checklist_item(
+            project_id,
+            form.item_code.trim(),
+            form.item_label.trim(),
+            completed,
+            completed_by_user_id,
+            form.notes.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project_id,
+        query_escape("Checklist item updated")
     )))
 }
 

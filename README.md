@@ -21,6 +21,7 @@ It is designed to reduce operational friction in clinical and translational rese
 - Unified web app dashboard at `/ui/app` that ties operations, patient workflows, analytics, and legal flows together
 - Study lifecycle + CRF workbench at `/ui/studies` for pre-study setup, phase transitions, and structured case report form design
 - Phase-gated study activation logic (requires site + published CRF before initiation, and enrolled patient before active phase)
+- Operational study execution modules: visit templates/scheduling, CRF submission workflow (draft/submitted/locked), monitor query management, and close-checklist gating before closure
 
 ## Core Stack (v1 scaffold)
 

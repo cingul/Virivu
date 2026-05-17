@@ -7,8 +7,9 @@ use uuid::Uuid;
 
 use crate::models::{
     DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite, MediaUploadTicket,
-    Organization, OrganizationSummaryRow, OutboundEmail, Patient, Project, ProjectProgressRow,
-    Provider, Site, StudyCrfField, StudyCrfTemplate, StudyPhaseEvent, StudyReadiness, User,
+    Organization, OrganizationSummaryRow, OutboundEmail, Patient, PatientStudyVisit, Project,
+    ProjectProgressRow, Provider, Site, StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission,
+    StudyCrfTemplate, StudyDataQuery, StudyPhaseEvent, StudyReadiness, StudyVisitTemplate, User,
     UserMembership,
 };
 
@@ -232,6 +233,36 @@ impl Db {
                 ],
             )
             .await?;
+        let project_id: Uuid = row.get("id");
+        for (item_code, item_label) in [
+            (
+                "data_cleaning_complete",
+                "Data cleaning completed and final CRF review done",
+            ),
+            (
+                "pending_queries_resolved",
+                "All monitor/data-management queries are resolved",
+            ),
+            (
+                "final_monitoring_complete",
+                "Final monitoring review completed and documented",
+            ),
+            (
+                "regulatory_package_archived",
+                "Regulatory and compliance package archived",
+            ),
+        ] {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO study_close_checklist_items (project_id, item_code, item_label)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (project_id, item_code) DO NOTHING
+                    "#,
+                    &[&project_id, &item_code, &item_label],
+                )
+                .await?;
+        }
         Ok(row_to_project(&row))
     }
 
@@ -318,6 +349,39 @@ impl Db {
             return Err(anyhow!(
                 "cannot set study active without at least one enrolled patient"
             ));
+        }
+        if target_phase == "closed" {
+            let row = client
+                .query_one(
+                    r#"
+                    SELECT
+                        (
+                            SELECT COUNT(*)::BIGINT
+                            FROM study_data_queries q
+                            WHERE q.project_id = $1 AND q.status <> 'closed'
+                        ) AS open_queries,
+                        (
+                            SELECT COUNT(*)::BIGINT
+                            FROM study_close_checklist_items c
+                            WHERE c.project_id = $1
+                              AND c.completed = FALSE
+                        ) AS incomplete_checklist_items
+                    "#,
+                    &[&project_id],
+                )
+                .await?;
+            let open_queries: i64 = row.get("open_queries");
+            let incomplete_checklist_items: i64 = row.get("incomplete_checklist_items");
+            if open_queries > 0 {
+                return Err(anyhow!(
+                    "cannot close study while data queries remain open/responded"
+                ));
+            }
+            if incomplete_checklist_items > 0 {
+                return Err(anyhow!(
+                    "cannot close study until all close checklist items are completed"
+                ));
+            }
         }
 
         client
@@ -593,6 +657,643 @@ impl Db {
             )
             .await?;
         Ok(rows.iter().map(row_to_study_crf_field).collect())
+    }
+
+    pub async fn create_study_visit_template(
+        &self,
+        project_id: Uuid,
+        visit_code: &str,
+        visit_name: &str,
+        target_day: i32,
+        window_before_days: i32,
+        window_after_days: i32,
+        required: bool,
+    ) -> anyhow::Result<StudyVisitTemplate> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO study_visit_templates (
+                    project_id,
+                    visit_code,
+                    visit_name,
+                    target_day,
+                    window_before_days,
+                    window_after_days,
+                    required
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING
+                    id,
+                    project_id,
+                    visit_code,
+                    visit_name,
+                    target_day,
+                    window_before_days,
+                    window_after_days,
+                    required,
+                    created_at
+                "#,
+                &[
+                    &project_id,
+                    &visit_code,
+                    &visit_name,
+                    &target_day,
+                    &window_before_days,
+                    &window_after_days,
+                    &required,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_visit_template(&row))
+    }
+
+    pub async fn list_study_visit_templates(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyVisitTemplate>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    visit_code,
+                    visit_name,
+                    target_day,
+                    window_before_days,
+                    window_after_days,
+                    required,
+                    created_at
+                FROM study_visit_templates
+                WHERE project_id = $1
+                ORDER BY target_day ASC, created_at ASC
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_study_visit_template).collect())
+    }
+
+    pub async fn schedule_patient_study_visit(
+        &self,
+        project_id: Uuid,
+        patient_id: Uuid,
+        visit_template_id: Uuid,
+        scheduled_for: Option<NaiveDate>,
+    ) -> anyhow::Result<PatientStudyVisit> {
+        let client = self.pool.get().await?;
+        let relation = client
+            .query_one(
+                r#"
+                SELECT
+                    (SELECT p.project_id FROM patients p WHERE p.id = $1) AS patient_project_id,
+                    (SELECT vt.project_id FROM study_visit_templates vt WHERE vt.id = $2) AS template_project_id
+                "#,
+                &[&patient_id, &visit_template_id],
+            )
+            .await?;
+        let patient_project_id: Option<Uuid> = relation.get("patient_project_id");
+        let template_project_id: Option<Uuid> = relation.get("template_project_id");
+        if patient_project_id != Some(project_id) || template_project_id != Some(project_id) {
+            return Err(anyhow!(
+                "patient or visit template does not belong to provided project"
+            ));
+        }
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO patient_study_visits (
+                    project_id,
+                    patient_id,
+                    visit_template_id,
+                    scheduled_for
+                )
+                VALUES ($1, $2, $3, $4)
+                RETURNING
+                    id,
+                    project_id,
+                    patient_id,
+                    visit_template_id,
+                    scheduled_for,
+                    status,
+                    completed_at,
+                    locked,
+                    locked_at,
+                    locked_by_user_id,
+                    created_at
+                "#,
+                &[&project_id, &patient_id, &visit_template_id, &scheduled_for],
+            )
+            .await?;
+        Ok(row_to_patient_study_visit(&row))
+    }
+
+    pub async fn list_patient_study_visits(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<PatientStudyVisit>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    patient_id,
+                    visit_template_id,
+                    scheduled_for,
+                    status,
+                    completed_at,
+                    locked,
+                    locked_at,
+                    locked_by_user_id,
+                    created_at
+                FROM patient_study_visits
+                WHERE project_id = $1
+                ORDER BY created_at DESC
+                LIMIT 200
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_patient_study_visit).collect())
+    }
+
+    pub async fn create_study_crf_submission(
+        &self,
+        project_id: Uuid,
+        template_id: Uuid,
+        patient_id: Uuid,
+        patient_visit_id: Option<Uuid>,
+        answers_json: &str,
+        entered_by_user_id: Option<Uuid>,
+    ) -> anyhow::Result<StudyCrfSubmission> {
+        let client = self.pool.get().await?;
+        let relation = client
+            .query_one(
+                r#"
+                SELECT
+                    (SELECT t.project_id FROM study_crf_templates t WHERE t.id = $1) AS template_project_id,
+                    (SELECT p.project_id FROM patients p WHERE p.id = $2) AS patient_project_id
+                "#,
+                &[&template_id, &patient_id],
+            )
+            .await?;
+        let template_project_id: Option<Uuid> = relation.get("template_project_id");
+        let patient_project_id: Option<Uuid> = relation.get("patient_project_id");
+        if template_project_id != Some(project_id) || patient_project_id != Some(project_id) {
+            return Err(anyhow!(
+                "template or patient does not belong to provided project"
+            ));
+        }
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO study_crf_submissions (
+                    project_id,
+                    template_id,
+                    patient_id,
+                    patient_visit_id,
+                    answers_json,
+                    entered_by_user_id
+                )
+                VALUES ($1, $2, $3, $4, $5::JSONB, $6)
+                RETURNING
+                    id,
+                    project_id,
+                    template_id,
+                    patient_id,
+                    patient_visit_id,
+                    answers_json::TEXT AS answers_json,
+                    status,
+                    entered_by_user_id,
+                    submitted_at,
+                    locked_at,
+                    created_at,
+                    updated_at
+                "#,
+                &[
+                    &project_id,
+                    &template_id,
+                    &patient_id,
+                    &patient_visit_id,
+                    &answers_json,
+                    &entered_by_user_id,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_crf_submission(&row))
+    }
+
+    pub async fn list_study_crf_submissions(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyCrfSubmission>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    template_id,
+                    patient_id,
+                    patient_visit_id,
+                    answers_json::TEXT AS answers_json,
+                    status,
+                    entered_by_user_id,
+                    submitted_at,
+                    locked_at,
+                    created_at,
+                    updated_at
+                FROM study_crf_submissions
+                WHERE project_id = $1
+                ORDER BY created_at DESC
+                LIMIT 200
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_study_crf_submission).collect())
+    }
+
+    pub async fn get_study_crf_submission(
+        &self,
+        submission_id: Uuid,
+    ) -> anyhow::Result<Option<StudyCrfSubmission>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    template_id,
+                    patient_id,
+                    patient_visit_id,
+                    answers_json::TEXT AS answers_json,
+                    status,
+                    entered_by_user_id,
+                    submitted_at,
+                    locked_at,
+                    created_at,
+                    updated_at
+                FROM study_crf_submissions
+                WHERE id = $1
+                "#,
+                &[&submission_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_study_crf_submission))
+    }
+
+    pub async fn submit_study_crf_submission(
+        &self,
+        submission_id: Uuid,
+    ) -> anyhow::Result<StudyCrfSubmission> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                UPDATE study_crf_submissions
+                SET
+                    status = CASE WHEN status = 'locked' THEN status ELSE 'submitted' END,
+                    submitted_at = CASE WHEN status = 'locked' THEN submitted_at ELSE NOW() END,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING
+                    id,
+                    project_id,
+                    template_id,
+                    patient_id,
+                    patient_visit_id,
+                    answers_json::TEXT AS answers_json,
+                    status,
+                    entered_by_user_id,
+                    submitted_at,
+                    locked_at,
+                    created_at,
+                    updated_at
+                "#,
+                &[&submission_id],
+            )
+            .await?;
+        Ok(row_to_study_crf_submission(&row))
+    }
+
+    pub async fn lock_study_crf_submission(
+        &self,
+        submission_id: Uuid,
+    ) -> anyhow::Result<StudyCrfSubmission> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                SELECT COUNT(*)::BIGINT AS open_queries
+                FROM study_data_queries
+                WHERE submission_id = $1 AND status <> 'closed'
+                "#,
+                &[&submission_id],
+            )
+            .await?;
+        let open_queries: i64 = row.get("open_queries");
+        if open_queries > 0 {
+            return Err(anyhow!(
+                "cannot lock CRF submission while data queries remain open/responded"
+            ));
+        }
+        let row = client
+            .query_one(
+                r#"
+                UPDATE study_crf_submissions
+                SET status = 'locked', locked_at = NOW(), updated_at = NOW()
+                WHERE id = $1
+                RETURNING
+                    id,
+                    project_id,
+                    template_id,
+                    patient_id,
+                    patient_visit_id,
+                    answers_json::TEXT AS answers_json,
+                    status,
+                    entered_by_user_id,
+                    submitted_at,
+                    locked_at,
+                    created_at,
+                    updated_at
+                "#,
+                &[&submission_id],
+            )
+            .await?;
+        Ok(row_to_study_crf_submission(&row))
+    }
+
+    pub async fn create_study_data_query(
+        &self,
+        project_id: Uuid,
+        submission_id: Uuid,
+        field_key: &str,
+        query_text: &str,
+        raised_by_user_id: Option<Uuid>,
+    ) -> anyhow::Result<StudyDataQuery> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO study_data_queries (
+                    project_id,
+                    submission_id,
+                    field_key,
+                    query_text,
+                    raised_by_user_id
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING
+                    id,
+                    project_id,
+                    submission_id,
+                    field_key,
+                    query_text,
+                    status,
+                    response_text,
+                    raised_by_user_id,
+                    resolved_by_user_id,
+                    created_at,
+                    updated_at
+                "#,
+                &[
+                    &project_id,
+                    &submission_id,
+                    &field_key,
+                    &query_text,
+                    &raised_by_user_id,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_data_query(&row))
+    }
+
+    pub async fn list_study_data_queries(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyDataQuery>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    submission_id,
+                    field_key,
+                    query_text,
+                    status,
+                    response_text,
+                    raised_by_user_id,
+                    resolved_by_user_id,
+                    created_at,
+                    updated_at
+                FROM study_data_queries
+                WHERE project_id = $1
+                ORDER BY created_at DESC
+                LIMIT 300
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_study_data_query).collect())
+    }
+
+    pub async fn get_study_data_query(
+        &self,
+        query_id: Uuid,
+    ) -> anyhow::Result<Option<StudyDataQuery>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    submission_id,
+                    field_key,
+                    query_text,
+                    status,
+                    response_text,
+                    raised_by_user_id,
+                    resolved_by_user_id,
+                    created_at,
+                    updated_at
+                FROM study_data_queries
+                WHERE id = $1
+                "#,
+                &[&query_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_study_data_query))
+    }
+
+    pub async fn respond_study_data_query(
+        &self,
+        query_id: Uuid,
+        response_text: &str,
+    ) -> anyhow::Result<StudyDataQuery> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                UPDATE study_data_queries
+                SET
+                    status = 'responded',
+                    response_text = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING
+                    id,
+                    project_id,
+                    submission_id,
+                    field_key,
+                    query_text,
+                    status,
+                    response_text,
+                    raised_by_user_id,
+                    resolved_by_user_id,
+                    created_at,
+                    updated_at
+                "#,
+                &[&query_id, &response_text],
+            )
+            .await?;
+        Ok(row_to_study_data_query(&row))
+    }
+
+    pub async fn close_study_data_query(
+        &self,
+        query_id: Uuid,
+        resolved_by_user_id: Option<Uuid>,
+    ) -> anyhow::Result<StudyDataQuery> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                UPDATE study_data_queries
+                SET
+                    status = 'closed',
+                    resolved_by_user_id = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                RETURNING
+                    id,
+                    project_id,
+                    submission_id,
+                    field_key,
+                    query_text,
+                    status,
+                    response_text,
+                    raised_by_user_id,
+                    resolved_by_user_id,
+                    created_at,
+                    updated_at
+                "#,
+                &[&query_id, &resolved_by_user_id],
+            )
+            .await?;
+        Ok(row_to_study_data_query(&row))
+    }
+
+    pub async fn list_study_close_checklist_items(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<StudyCloseChecklistItem>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes,
+                    created_at
+                FROM study_close_checklist_items
+                WHERE project_id = $1
+                ORDER BY created_at ASC
+                "#,
+                &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_study_close_checklist_item).collect())
+    }
+
+    pub async fn set_study_close_checklist_item(
+        &self,
+        project_id: Uuid,
+        item_code: &str,
+        item_label: &str,
+        completed: bool,
+        completed_by_user_id: Option<Uuid>,
+        notes: &str,
+    ) -> anyhow::Result<StudyCloseChecklistItem> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO study_close_checklist_items (
+                    project_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes
+                )
+                VALUES (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5,
+                    CASE WHEN $4 THEN NOW() ELSE NULL END,
+                    $6
+                )
+                ON CONFLICT (project_id, item_code)
+                DO UPDATE SET
+                    item_label = EXCLUDED.item_label,
+                    completed = EXCLUDED.completed,
+                    completed_by_user_id = EXCLUDED.completed_by_user_id,
+                    completed_at = CASE
+                        WHEN EXCLUDED.completed THEN NOW()
+                        ELSE NULL
+                    END,
+                    notes = EXCLUDED.notes
+                RETURNING
+                    id,
+                    project_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes,
+                    created_at
+                "#,
+                &[
+                    &project_id,
+                    &item_code,
+                    &item_label,
+                    &completed,
+                    &completed_by_user_id,
+                    &notes,
+                ],
+            )
+            .await?;
+        Ok(row_to_study_close_checklist_item(&row))
     }
 
     pub async fn create_site(
@@ -2233,6 +2934,83 @@ fn row_to_study_crf_field(row: &Row) -> StudyCrfField {
         required: row.get("required"),
         options_json: row.get("options_json"),
         display_order: row.get("display_order"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_study_visit_template(row: &Row) -> StudyVisitTemplate {
+    StudyVisitTemplate {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        visit_code: row.get("visit_code"),
+        visit_name: row.get("visit_name"),
+        target_day: row.get("target_day"),
+        window_before_days: row.get("window_before_days"),
+        window_after_days: row.get("window_after_days"),
+        required: row.get("required"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_patient_study_visit(row: &Row) -> PatientStudyVisit {
+    PatientStudyVisit {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        patient_id: row.get("patient_id"),
+        visit_template_id: row.get("visit_template_id"),
+        scheduled_for: row.get("scheduled_for"),
+        status: row.get("status"),
+        completed_at: row.get("completed_at"),
+        locked: row.get("locked"),
+        locked_at: row.get("locked_at"),
+        locked_by_user_id: row.get("locked_by_user_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_study_crf_submission(row: &Row) -> StudyCrfSubmission {
+    StudyCrfSubmission {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        template_id: row.get("template_id"),
+        patient_id: row.get("patient_id"),
+        patient_visit_id: row.get("patient_visit_id"),
+        answers_json: row.get("answers_json"),
+        status: row.get("status"),
+        entered_by_user_id: row.get("entered_by_user_id"),
+        submitted_at: row.get("submitted_at"),
+        locked_at: row.get("locked_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn row_to_study_data_query(row: &Row) -> StudyDataQuery {
+    StudyDataQuery {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        submission_id: row.get("submission_id"),
+        field_key: row.get("field_key"),
+        query_text: row.get("query_text"),
+        status: row.get("status"),
+        response_text: row.get("response_text"),
+        raised_by_user_id: row.get("raised_by_user_id"),
+        resolved_by_user_id: row.get("resolved_by_user_id"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn row_to_study_close_checklist_item(row: &Row) -> StudyCloseChecklistItem {
+    StudyCloseChecklistItem {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        item_code: row.get("item_code"),
+        item_label: row.get("item_label"),
+        completed: row.get("completed"),
+        completed_by_user_id: row.get("completed_by_user_id"),
+        completed_at: row.get("completed_at"),
+        notes: row.get("notes"),
         created_at: row.get("created_at"),
     }
 }
