@@ -3381,35 +3381,118 @@ async fn render_study_workbench(
         "<p class=\"muted\">Select a study to view phase readiness gates.</p>".to_string()
     };
 
-    let readiness_html = if let Some(readiness) = readiness {
+    let lifecycle_kpi_cards_html = if let (Some(readiness), Some(summary)) =
+        (readiness.as_ref(), operational_summary.as_ref())
+    {
         format!(
-            "<p><strong>Phase:</strong> {} · <strong>Sites:</strong> {} · <strong>Patients:</strong> {} · <strong>Encounters:</strong> {} · <strong>CRFs Published:</strong> {} · <strong>CRFs Draft:</strong> {}</p>",
+            r#"<div class="info-grid">
+  <article class="info-card">
+    <div class="metric-label">Phase</div>
+    <div class="metric-value">{}</div>
+  </article>
+  <article class="info-card">
+    <div class="metric-label">Sites configured</div>
+    <div class="metric-value">{}</div>
+  </article>
+  <article class="info-card">
+    <div class="metric-label">Published CRFs</div>
+    <div class="metric-value">{}</div>
+  </article>
+  <article class="info-card">
+    <div class="metric-label">Enrollment</div>
+    <div class="metric-value">{}/{}</div>
+  </article>
+  <article class="info-card">
+    <div class="metric-label">Open queries</div>
+    <div class="metric-value">{}</div>
+  </article>
+  <article class="info-card">
+    <div class="metric-label">Startup pending</div>
+    <div class="metric-value">{}</div>
+  </article>
+</div>"#,
             html_escape(&readiness.lifecycle_phase),
             readiness.total_sites,
-            readiness.total_patients,
-            readiness.total_encounters,
             readiness.published_crf_templates,
-            readiness.draft_crf_templates
-        )
-    } else {
-        "<p class=\"muted\">Select a study to view readiness.</p>".to_string()
-    };
-    let operational_summary_html = if let Some(summary) = operational_summary {
-        format!(
-            "<p><strong>Enrollment:</strong> {}/{} (gap {}) · <strong>Visits:</strong> {} scheduled / {} completed · <strong>Submissions:</strong> {} total / {} locked · <strong>Open Queries:</strong> {} · <strong>Startup Pending:</strong> {} · <strong>Close Pending:</strong> {}</p>",
             summary.enrolled_patients,
             summary.planned_enrollment,
-            summary.enrollment_gap,
-            summary.total_visits_scheduled,
-            summary.completed_visits,
-            summary.total_submissions,
-            summary.locked_submissions,
             summary.open_data_queries,
-            summary.startup_items_pending,
-            summary.close_items_pending
+            summary.startup_items_pending
         )
     } else {
-        "<p class=\"muted\">Select a study to view operations summary.</p>".to_string()
+        "<p class=\"muted\">Select a study to view lifecycle status.</p>".to_string()
+    };
+    let lifecycle_action_cards_html = if selected_project_id.is_none() {
+        "<p class=\"muted\">Choose a study first. You will then see clickable next-step cards here.</p>"
+            .to_string()
+    } else {
+        let mut cards = Vec::new();
+        if let Some(readiness) = readiness.as_ref() {
+            if readiness.total_sites < 1 {
+                cards.push(format!(
+                    r#"<a class="action-card is-blocked" href="{}">
+  <div class="action-title">Configure first site</div>
+  <div class="action-desc">A study cannot be initiated until at least one site is configured.</div>
+  <div class="action-tag">Go to Operations Workspace</div>
+</a>"#,
+                    app_dashboard_url
+                ));
+            }
+            if readiness.published_crf_templates < 1 {
+                cards.push(format!(
+                    r#"<a class="action-card is-blocked" href="{}">
+  <div class="action-title">Publish a CRF template</div>
+  <div class="action-desc">At least one CRF template must be published before initiation.</div>
+  <div class="action-tag">Open CRF Templates</div>
+</a>"#,
+                    templates_tab_url
+                ));
+            }
+            if startup_pending_count > 0 {
+                cards.push(format!(
+                    r#"<a class="action-card is-blocked" href="{}">
+  <div class="action-title">Finish startup checklist</div>
+  <div class="action-desc">Complete remaining startup tasks to unlock phase initiation.</div>
+  <div class="action-tag">Open Startup Checklist</div>
+</a>"#,
+                    startup_tab_url
+                ));
+            }
+            if readiness.total_patients < 1 {
+                cards.push(format!(
+                    r#"<a class="action-card is-informative" href="{}">
+  <div class="action-title">Prepare first enrollment</div>
+  <div class="action-desc">You will need at least one enrolled patient before setting study to active.</div>
+  <div class="action-tag">Open Operations Workspace</div>
+</a>"#,
+                    app_dashboard_url
+                ));
+            }
+        }
+        if open_query_count > 0 {
+            cards.push(format!(
+                r#"<a class="action-card is-informative" href="{}">
+  <div class="action-title">Resolve open data queries</div>
+  <div class="action-desc">Close open monitor queries to keep lifecycle transitions unblocked.</div>
+  <div class="action-tag">Open Queries</div>
+</a>"#,
+                queries_tab_url
+            ));
+        }
+        if cards.is_empty() {
+            cards.push(
+                r##"<a class="action-card is-ready" href="#phase-transition-form">
+  <div class="action-title">Lifecycle gates look ready</div>
+  <div class="action-desc">Core checks are satisfied. You can apply the next phase transition below.</div>
+  <div class="action-tag">Go to Phase Transition</div>
+</a>"##
+                    .to_string(),
+            );
+        }
+        format!(
+            "<h3>What to do next</h3><div class=\"action-grid\">{}</div>",
+            cards.join("")
+        )
     };
 
     let phase_events_html = if phase_events.is_empty() {
@@ -3985,7 +4068,7 @@ async fn render_study_workbench(
   {}
   {}
   {}
-  <form method="post" action="{}">
+  <form id="phase-transition-form" method="post" action="{}">
     <input type="hidden" name="project_id" value="{}" />
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
@@ -4206,8 +4289,8 @@ async fn render_study_workbench(
         html_escape(admin_email.trim()),
         selected_org_value,
         study_rows_html,
-        readiness_html,
-        operational_summary_html,
+        lifecycle_kpi_cards_html,
+        lifecycle_action_cards_html,
         lifecycle_gate_html,
         phase_action,
         selected_project_value.clone(),
@@ -6475,6 +6558,87 @@ fn cingulum_theme_css() -> &'static str {
       transform: translateY(-1.5px);
       box-shadow: 0 18px 34px rgba(2, 24, 43, 0.12);
       border-color: rgba(240, 87, 8, 0.36);
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 0.65rem;
+      margin: 0.55rem 0 0.7rem;
+    }
+    .info-card {
+      border: 1px solid rgba(197, 183, 171, 0.88);
+      border-radius: 12px;
+      padding: 0.65rem 0.7rem;
+      background: #fffefb;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    }
+    .metric-label {
+      font-size: 0.77rem;
+      color: #445b72;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-bottom: 0.2rem;
+    }
+    .metric-value {
+      font-size: 1.03rem;
+      font-weight: 800;
+      color: var(--cg-navy);
+    }
+    .action-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 0.65rem;
+      margin: 0.45rem 0 0.8rem;
+    }
+    .action-card {
+      display: block;
+      text-decoration: none;
+      border: 1px solid rgba(197, 183, 171, 0.9);
+      border-radius: 13px;
+      padding: 0.72rem;
+      background: #fffefb;
+      color: #10263d;
+      transition: transform 140ms ease, box-shadow 160ms ease, border-color 140ms ease;
+      box-shadow: 0 9px 18px rgba(2, 24, 43, 0.08);
+    }
+    .action-card:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 13px 22px rgba(2, 24, 43, 0.12);
+      border-color: rgba(240, 87, 8, 0.42);
+    }
+    .action-card.is-blocked {
+      border-left: 4px solid #cf5b1c;
+      background: linear-gradient(180deg, #fffdf9 0%, #fff7f0 100%);
+    }
+    .action-card.is-informative {
+      border-left: 4px solid #2f5878;
+      background: linear-gradient(180deg, #fffefb 0%, #f7fbff 100%);
+    }
+    .action-card.is-ready {
+      border-left: 4px solid #356a35;
+      background: linear-gradient(180deg, #f9fff7 0%, #f3fff1 100%);
+    }
+    .action-title {
+      font-size: 0.95rem;
+      font-weight: 800;
+      margin-bottom: 0.18rem;
+      color: var(--cg-navy);
+    }
+    .action-desc {
+      font-size: 0.84rem;
+      color: #314c66;
+      line-height: 1.4;
+      margin-bottom: 0.45rem;
+    }
+    .action-tag {
+      display: inline-block;
+      font-size: 0.76rem;
+      font-weight: 700;
+      padding: 0.22rem 0.56rem;
+      border-radius: 999px;
+      background: rgba(2, 24, 43, 0.08);
+      color: #26445f;
     }
     h1, h2, h3 { margin-top: 0; color: var(--cg-navy); letter-spacing: 0.01em; }
     h1 { font-size: 1.95rem; margin-bottom: 0.5rem; }
