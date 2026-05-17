@@ -5,6 +5,8 @@ mod models;
 mod routes;
 
 use anyhow::Context;
+use diesel::{pg::PgConnection, prelude::*, sql_query};
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -15,12 +17,25 @@ use crate::{
     routes::{router, AppContext},
 };
 
+const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
+const MIGRATION_INIT_VARIANTS: &[&str] = &["2026-05-17-000001", "2026-05-17-000001_init"];
+const MIGRATION_DUA_VARIANTS: &[&str] =
+    &["2026-05-17-000003", "2026-05-17-000003_data_use_agreements"];
+
+#[derive(diesel::deserialize::QueryableByName)]
+struct ExistsRow {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    exists: bool,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     init_tracing();
 
     let config = Config::from_env();
+    run_migrations(&config.database_url)
+        .with_context(|| "failed to run startup migrations before API launch")?;
     let db = Db::connect(&config.database_url)
         .await
         .with_context(|| "failed to connect to Postgres database")?;
@@ -46,6 +61,73 @@ async fn main() -> anyhow::Result<()> {
     );
 
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn run_migrations(database_url: &str) -> anyhow::Result<()> {
+    let mut connection = PgConnection::establish(database_url)
+        .with_context(|| "failed to connect for startup migrations")?;
+    bootstrap_legacy_schema_if_needed(&mut connection)?;
+    let applied = connection
+        .run_pending_migrations(MIGRATIONS)
+        .map_err(|error| anyhow::anyhow!("failed running startup Diesel migrations: {error}"))?;
+    if applied.is_empty() {
+        info!("startup migrations: no pending migrations");
+    } else {
+        info!(
+            applied_count = applied.len(),
+            "startup migrations applied successfully"
+        );
+    }
+    Ok(())
+}
+
+fn bootstrap_legacy_schema_if_needed(connection: &mut PgConnection) -> anyhow::Result<()> {
+    sql_query(
+        "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (
+            version VARCHAR(50) PRIMARY KEY,
+            run_on TIMESTAMP NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(connection)
+    .context("failed creating Diesel migration tracking table")?;
+
+    let has_organizations =
+        sql_query("SELECT to_regclass('public.organizations') IS NOT NULL AS exists")
+            .get_result::<ExistsRow>(connection)
+            .context("failed checking organizations table existence")?
+            .exists;
+    if has_organizations {
+        for version in MIGRATION_INIT_VARIANTS {
+            sql_query(format!(
+                "INSERT INTO __diesel_schema_migrations(version, run_on)
+                 VALUES ('{}', NOW())
+                 ON CONFLICT (version) DO NOTHING",
+                version
+            ))
+            .execute(connection)
+            .context("failed baselining init migration")?;
+        }
+    }
+
+    let has_dua_tables =
+        sql_query("SELECT to_regclass('public.data_use_agreements') IS NOT NULL AS exists")
+            .get_result::<ExistsRow>(connection)
+            .context("failed checking DUA table existence")?
+            .exists;
+    if has_dua_tables {
+        for version in MIGRATION_DUA_VARIANTS {
+            sql_query(format!(
+                "INSERT INTO __diesel_schema_migrations(version, run_on)
+                 VALUES ('{}', NOW())
+                 ON CONFLICT (version) DO NOTHING",
+                version
+            ))
+            .execute(connection)
+            .context("failed baselining DUA migration")?;
+        }
+    }
+
     Ok(())
 }
 
