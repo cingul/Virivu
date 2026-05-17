@@ -1,12 +1,12 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-CREATE TABLE organizations (
+CREATE TABLE IF NOT EXISTS organizations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE projects (
+CREATE TABLE IF NOT EXISTS projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE projects (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE sites (
+CREATE TABLE IF NOT EXISTS sites (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -23,7 +23,7 @@ CREATE TABLE sites (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT NOT NULL UNIQUE,
     google_subject TEXT NOT NULL UNIQUE,
@@ -31,7 +31,7 @@ CREATE TABLE users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE user_memberships (
+CREATE TABLE IF NOT EXISTS user_memberships (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
@@ -51,7 +51,7 @@ CREATE TABLE user_memberships (
     )
 );
 
-CREATE TABLE patients (
+CREATE TABLE IF NOT EXISTS patients (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -62,7 +62,7 @@ CREATE TABLE patients (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE form_invites (
+CREATE TABLE IF NOT EXISTS form_invites (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -72,7 +72,7 @@ CREATE TABLE form_invites (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE forms (
+CREATE TABLE IF NOT EXISTS forms (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -83,7 +83,7 @@ CREATE TABLE forms (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE media_upload_tickets (
+CREATE TABLE IF NOT EXISTS media_upload_tickets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -94,7 +94,7 @@ CREATE TABLE media_upload_tickets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE form_submissions (
+CREATE TABLE IF NOT EXISTS form_submissions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     form_id UUID NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
     patient_id UUID REFERENCES patients(id) ON DELETE SET NULL,
@@ -103,7 +103,7 @@ CREATE TABLE form_submissions (
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE consents (
+CREATE TABLE IF NOT EXISTS consents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -114,7 +114,7 @@ CREATE TABLE consents (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE media_assets (
+CREATE TABLE IF NOT EXISTS media_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -127,7 +127,7 @@ CREATE TABLE media_assets (
     metadata_json JSONB NOT NULL DEFAULT '{}'::JSONB
 );
 
-CREATE TABLE milestones (
+CREATE TABLE IF NOT EXISTS milestones (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
@@ -137,7 +137,7 @@ CREATE TABLE milestones (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE subscription_accounts (
+CREATE TABLE IF NOT EXISTS subscription_accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     plan_code TEXT NOT NULL,
@@ -147,7 +147,7 @@ CREATE TABLE subscription_accounts (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE audit_events (
+CREATE TABLE IF NOT EXISTS audit_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
     project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
@@ -160,19 +160,19 @@ CREATE TABLE audit_events (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_projects_org_id ON projects(organization_id);
-CREATE INDEX idx_sites_project_id ON sites(project_id);
-CREATE INDEX idx_user_memberships_user_id ON user_memberships(user_id);
-CREATE INDEX idx_user_memberships_org_id ON user_memberships(organization_id);
-CREATE INDEX idx_user_memberships_project_id ON user_memberships(project_id);
-CREATE INDEX idx_patients_org_id ON patients(organization_id);
-CREATE INDEX idx_patients_project_id ON patients(project_id);
-CREATE INDEX idx_form_invites_org_id ON form_invites(organization_id);
-CREATE INDEX idx_form_invites_project_id ON form_invites(project_id);
-CREATE INDEX idx_forms_project_id ON forms(project_id);
-CREATE INDEX idx_form_submissions_form_id ON form_submissions(form_id);
-CREATE INDEX idx_media_upload_tickets_project_id ON media_upload_tickets(project_id);
-CREATE INDEX idx_media_assets_project_id ON media_assets(project_id);
-CREATE INDEX idx_media_assets_patient_id ON media_assets(patient_id);
-CREATE INDEX idx_milestones_project_id ON milestones(project_id);
-CREATE INDEX idx_audit_events_org_project ON audit_events(organization_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_projects_org_id ON projects(organization_id);
+CREATE INDEX IF NOT EXISTS idx_sites_project_id ON sites(project_id);
+CREATE INDEX IF NOT EXISTS idx_user_memberships_user_id ON user_memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_memberships_org_id ON user_memberships(organization_id);
+CREATE INDEX IF NOT EXISTS idx_user_memberships_project_id ON user_memberships(project_id);
+CREATE INDEX IF NOT EXISTS idx_patients_org_id ON patients(organization_id);
+CREATE INDEX IF NOT EXISTS idx_patients_project_id ON patients(project_id);
+CREATE INDEX IF NOT EXISTS idx_form_invites_org_id ON form_invites(organization_id);
+CREATE INDEX IF NOT EXISTS idx_form_invites_project_id ON form_invites(project_id);
+CREATE INDEX IF NOT EXISTS idx_forms_project_id ON forms(project_id);
+CREATE INDEX IF NOT EXISTS idx_form_submissions_form_id ON form_submissions(form_id);
+CREATE INDEX IF NOT EXISTS idx_media_upload_tickets_project_id ON media_upload_tickets(project_id);
+CREATE INDEX IF NOT EXISTS idx_media_assets_project_id ON media_assets(project_id);
+CREATE INDEX IF NOT EXISTS idx_media_assets_patient_id ON media_assets(patient_id);
+CREATE INDEX IF NOT EXISTS idx_milestones_project_id ON milestones(project_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_org_project ON audit_events(organization_id, project_id);

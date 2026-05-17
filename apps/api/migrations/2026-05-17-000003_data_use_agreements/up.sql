@@ -1,4 +1,4 @@
-CREATE TABLE data_use_agreements (
+CREATE TABLE IF NOT EXISTS data_use_agreements (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     hospital_name TEXT NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE data_use_agreements (
     CHECK (status IN ('draft', 'active', 'terminated', 'expired'))
 );
 
-CREATE TABLE data_use_agreement_signatures (
+CREATE TABLE IF NOT EXISTS data_use_agreement_signatures (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agreement_id UUID NOT NULL REFERENCES data_use_agreements(id) ON DELETE CASCADE,
     signer_role TEXT NOT NULL,
@@ -34,13 +34,13 @@ CREATE TABLE data_use_agreement_signatures (
     CHECK (signer_role IN ('hospital', 'cingulum'))
 );
 
-CREATE UNIQUE INDEX idx_dua_signature_unique_role
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dua_signature_unique_role
     ON data_use_agreement_signatures(agreement_id, signer_role);
-CREATE INDEX idx_dua_org_id ON data_use_agreements(organization_id);
-CREATE INDEX idx_dua_status ON data_use_agreements(status);
-CREATE INDEX idx_dua_signatures_agreement_id ON data_use_agreement_signatures(agreement_id);
+CREATE INDEX IF NOT EXISTS idx_dua_org_id ON data_use_agreements(organization_id);
+CREATE INDEX IF NOT EXISTS idx_dua_status ON data_use_agreements(status);
+CREATE INDEX IF NOT EXISTS idx_dua_signatures_agreement_id ON data_use_agreement_signatures(agreement_id);
 
-CREATE TABLE outbound_emails (
+CREATE TABLE IF NOT EXISTS outbound_emails (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agreement_id UUID REFERENCES data_use_agreements(id) ON DELETE CASCADE,
     recipient_email TEXT NOT NULL,
@@ -52,5 +52,5 @@ CREATE TABLE outbound_emails (
     CHECK (status IN ('queued', 'sent', 'failed'))
 );
 
-CREATE INDEX idx_outbound_emails_agreement_id ON outbound_emails(agreement_id);
-CREATE INDEX idx_outbound_emails_status ON outbound_emails(status);
+CREATE INDEX IF NOT EXISTS idx_outbound_emails_agreement_id ON outbound_emails(agreement_id);
+CREATE INDEX IF NOT EXISTS idx_outbound_emails_status ON outbound_emails(status);
