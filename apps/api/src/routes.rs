@@ -4600,7 +4600,8 @@ async fn submit_add_study_crf_field(
     }
     let options_json = normalize_options_json_input(form.options_json.trim());
     let display_order = form.display_order.trim().parse::<i32>().unwrap_or(0).max(0);
-    ctx.db
+    if let Err(err) = ctx
+        .db
         .add_study_crf_field(
             template_id,
             form.field_key.trim(),
@@ -4611,9 +4612,18 @@ async fn submit_add_study_crf_field(
             display_order,
         )
         .await
-        .map_err(ApiError::internal)?;
+    {
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            query_escape(form.admin_email.trim()),
+            project.organization_id,
+            project.id,
+            template_id,
+            query_escape(&format!("Could not add CRF field: {}", err))
+        )));
+    }
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project.id,

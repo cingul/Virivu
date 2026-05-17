@@ -713,7 +713,7 @@ impl Db {
                     options_json,
                     display_order
                 )
-                VALUES ($1, $2, $3, $4, $5, $6::JSONB, $7)
+                VALUES ($1, $2, $3, $4, $5, $6::TEXT::JSONB, $7)
                 RETURNING
                     id,
                     template_id,
@@ -967,7 +967,7 @@ impl Db {
                     answers_json,
                     entered_by_user_id
                 )
-                VALUES ($1, $2, $3, $4, $5::JSONB, $6)
+                VALUES ($1, $2, $3, $4, $5::TEXT::JSONB, $6)
                 RETURNING
                     id,
                     project_id,
