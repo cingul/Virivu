@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Form, Path, Query, Request, State},
+    extract::{Form, Multipart, Path, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{from_fn_with_state, Next},
     response::{Html, IntoResponse, Redirect, Response},
@@ -7,8 +7,12 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
+use scraper::{Html as ParsedHtml, Selector};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
+use std::{
+    collections::{HashMap, HashSet},
+    net::IpAddr,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -61,6 +65,10 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/ui/studies/templates/{template_id}/field",
             post(submit_add_study_crf_field),
+        )
+        .route(
+            "/ui/studies/templates/{template_id}/import-html-fields",
+            post(submit_import_study_crf_fields_html),
         )
         .route(
             "/ui/studies/fields/{field_id}/update",
@@ -3570,7 +3578,7 @@ async fn render_study_workbench(
                 let options_text_value = options_json_to_lines(&field.options_json);
                 format!(
                     r#"<li>
-  <strong>{}</strong> ({}) <small>key={} · required={} · order={} · options={}</small>
+  <strong>{}</strong> <small>Type: {} · {}</small>
   <details style="margin-top:0.35rem;">
     <summary><strong>Edit field</strong></summary>
     <form method="post" action="/ui/studies/fields/{}/update" data-crf-field-form style="margin-top:0.55rem;">
@@ -3601,10 +3609,7 @@ async fn render_study_workbench(
 </li>"#,
                     html_escape(&field.field_label),
                     html_escape(&field.field_type),
-                    html_escape(&field.field_key),
-                    field.required,
-                    field.display_order,
-                    html_escape(&field.options_json),
+                    if field.required { "Required" } else { "Optional" },
                     field.id,
                     html_escape(admin_email.trim()),
                     html_escape(&field.field_key),
@@ -4023,6 +4028,9 @@ async fn render_study_workbench(
     let crf_field_action = selected_template_id
         .map(|id| format!("/ui/studies/templates/{id}/field"))
         .unwrap_or_else(|| "#".to_string());
+    let import_html_fields_action = selected_template_id
+        .map(|id| format!("/ui/studies/templates/{id}/import-html-fields"))
+        .unwrap_or_else(|| "#".to_string());
     let visit_template_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/visit-template"))
         .unwrap_or_else(|| "#".to_string());
@@ -4195,6 +4203,18 @@ async fn render_study_workbench(
     <input name="display_order" value="0" />
     <button type="submit">Add Field</button>
   </form>
+  <details style="margin-top:0.75rem;">
+    <summary><strong>Import fields from HTML</strong></summary>
+    <form method="post" action="{}" enctype="multipart/form-data" style="margin-top:0.6rem;">
+      <label>Admin email</label>
+      <input name="admin_email" value="{}" required />
+      <label>Upload HTML file (.html)</label>
+      <input type="file" name="html_file" accept=".html,.htm,text/html" />
+      <label>Or paste HTML markup</label>
+      <textarea name="html_markup" placeholder="&lt;form&gt;...&lt;/form&gt;"></textarea>
+      <button type="submit">Import Fields from HTML</button>
+    </form>
+  </details>
   <h3 style="margin-top:1rem;">Fields</h3>
   <ul>{}</ul>
 </section>
@@ -4361,6 +4381,8 @@ async fn render_study_workbench(
             selected_template_value.clone()
         },
         crf_field_action,
+        html_escape(admin_email.trim()),
+        import_html_fields_action,
         html_escape(admin_email.trim()),
         fields_html,
         visit_template_action,
@@ -4692,6 +4714,161 @@ async fn submit_add_study_crf_field(
         project.id,
         template_id,
         query_escape("CRF field added")
+    )))
+}
+
+async fn submit_import_study_crf_fields_html(
+    State(ctx): State<AppContext>,
+    Path(template_id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> Result<Redirect, ApiError> {
+    let mut admin_email = String::new();
+    let mut html_markup = String::new();
+    while let Some(field) = multipart.next_field().await.map_err(ApiError::internal)? {
+        let field_name = field.name().map(str::to_string).unwrap_or_default();
+        match field_name.as_str() {
+            "admin_email" => {
+                admin_email = field.text().await.map_err(ApiError::internal)?;
+            }
+            "html_file" => {
+                let bytes = field.bytes().await.map_err(ApiError::internal)?;
+                if !bytes.is_empty() {
+                    html_markup = String::from_utf8_lossy(&bytes).to_string();
+                }
+            }
+            "html_markup" => {
+                if html_markup.trim().is_empty() {
+                    let text = field.text().await.map_err(ApiError::internal)?;
+                    if !text.trim().is_empty() {
+                        html_markup = text;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if admin_email.trim().is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
+
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+
+    if html_markup.trim().is_empty() {
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            query_escape(admin_email.trim()),
+            project.organization_id,
+            project.id,
+            template.id,
+            query_escape("Upload or paste HTML before importing fields")
+        )));
+    }
+
+    let imported_fields = parse_crf_fields_from_html(html_markup.trim());
+    if imported_fields.is_empty() {
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            query_escape(admin_email.trim()),
+            project.organization_id,
+            project.id,
+            template.id,
+            query_escape("No supported fields found in provided HTML")
+        )));
+    }
+
+    let existing_fields = ctx
+        .db
+        .list_study_crf_fields(template_id)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut existing_by_key = existing_fields
+        .into_iter()
+        .map(|field| (field.field_key.trim().to_ascii_lowercase(), field.id))
+        .collect::<HashMap<_, _>>();
+
+    let mut added_count = 0usize;
+    let mut updated_count = 0usize;
+    let mut failed_count = 0usize;
+    for (index, draft) in imported_fields.into_iter().enumerate() {
+        let display_order = index as i32;
+        let result = if let Some(field_id) = existing_by_key.get(&draft.field_key).copied() {
+            ctx.db
+                .update_study_crf_field(
+                    field_id,
+                    &draft.field_key,
+                    &draft.field_label,
+                    &draft.field_type,
+                    draft.required,
+                    &draft.options_json,
+                    display_order,
+                )
+                .await
+                .map(|_| {
+                    updated_count += 1;
+                })
+        } else {
+            ctx.db
+                .add_study_crf_field(
+                    template_id,
+                    &draft.field_key,
+                    &draft.field_label,
+                    &draft.field_type,
+                    draft.required,
+                    &draft.options_json,
+                    display_order,
+                )
+                .await
+                .map(|field| {
+                    existing_by_key.insert(draft.field_key.clone(), field.id);
+                    added_count += 1;
+                })
+        };
+        if result.is_err() {
+            failed_count += 1;
+        }
+    }
+
+    let notice = if failed_count == 0 {
+        format!(
+            "HTML import complete: {} added, {} updated",
+            added_count, updated_count
+        )
+    } else {
+        format!(
+            "HTML import finished with issues: {} added, {} updated, {} skipped",
+            added_count, updated_count, failed_count
+        )
+    };
+
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        query_escape(admin_email.trim()),
+        project.organization_id,
+        project.id,
+        template.id,
+        query_escape(&notice)
     )))
 }
 
@@ -6524,6 +6701,256 @@ fn options_json_to_lines(options_json: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+#[derive(Debug, Clone)]
+struct ImportedCrfFieldDraft {
+    field_key: String,
+    field_label: String,
+    field_type: String,
+    required: bool,
+    options_json: String,
+}
+
+fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
+    let document = ParsedHtml::parse_document(html_markup);
+    let input_selector = Selector::parse("input").expect("valid input selector");
+    let textarea_selector = Selector::parse("textarea").expect("valid textarea selector");
+    let select_selector = Selector::parse("select").expect("valid select selector");
+    let option_selector = Selector::parse("option").expect("valid option selector");
+
+    let mut fields = Vec::new();
+    let mut seen_keys = HashSet::new();
+    let mut grouped_choices: HashMap<String, (String, String, bool, Vec<String>)> = HashMap::new();
+    let mut fallback_counter = 1usize;
+
+    for input in document.select(&input_selector) {
+        let raw_key = input
+            .value()
+            .attr("name")
+            .or_else(|| input.value().attr("id"))
+            .unwrap_or("")
+            .trim();
+        let mut field_key = normalize_html_field_key(raw_key);
+        if field_key.is_empty() {
+            field_key = format!("field_{fallback_counter}");
+            fallback_counter += 1;
+        }
+
+        let input_type = input
+            .value()
+            .attr("type")
+            .unwrap_or("text")
+            .trim()
+            .to_ascii_lowercase();
+        if matches!(
+            input_type.as_str(),
+            "hidden" | "submit" | "button" | "reset" | "image" | "file"
+        ) {
+            continue;
+        }
+
+        if input_type == "radio" || input_type == "checkbox" {
+            let group = grouped_choices.entry(field_key.clone()).or_insert_with(|| {
+                (
+                    infer_html_field_label(raw_key, input.value().attr("placeholder")),
+                    if input_type == "radio" {
+                        "single_select".to_string()
+                    } else {
+                        "multi_select".to_string()
+                    },
+                    false,
+                    Vec::new(),
+                )
+            });
+            group.2 = group.2 || input.value().attr("required").is_some();
+            let choice_value = input
+                .value()
+                .attr("value")
+                .map(normalize_whitespace)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "Option".to_string());
+            if !group
+                .3
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(choice_value.as_str()))
+            {
+                group.3.push(choice_value);
+            }
+            continue;
+        }
+
+        if !seen_keys.insert(field_key.clone()) {
+            continue;
+        }
+        let field_type = match input_type.as_str() {
+            "number" | "range" => "number",
+            "date" => "date",
+            "datetime-local" => "datetime",
+            "checkbox" => "boolean",
+            _ => "text",
+        }
+        .to_string();
+
+        fields.push(ImportedCrfFieldDraft {
+            field_label: infer_html_field_label(raw_key, input.value().attr("placeholder")),
+            field_key,
+            field_type,
+            required: input.value().attr("required").is_some(),
+            options_json: "[]".to_string(),
+        });
+    }
+
+    for textarea in document.select(&textarea_selector) {
+        let raw_key = textarea
+            .value()
+            .attr("name")
+            .or_else(|| textarea.value().attr("id"))
+            .unwrap_or("")
+            .trim();
+        let mut field_key = normalize_html_field_key(raw_key);
+        if field_key.is_empty() {
+            field_key = format!("field_{fallback_counter}");
+            fallback_counter += 1;
+        }
+        if !seen_keys.insert(field_key.clone()) {
+            continue;
+        }
+        fields.push(ImportedCrfFieldDraft {
+            field_label: infer_html_field_label(raw_key, textarea.value().attr("placeholder")),
+            field_key,
+            field_type: "textarea".to_string(),
+            required: textarea.value().attr("required").is_some(),
+            options_json: "[]".to_string(),
+        });
+    }
+
+    for select in document.select(&select_selector) {
+        let raw_key = select
+            .value()
+            .attr("name")
+            .or_else(|| select.value().attr("id"))
+            .unwrap_or("")
+            .trim();
+        let mut field_key = normalize_html_field_key(raw_key);
+        if field_key.is_empty() {
+            field_key = format!("field_{fallback_counter}");
+            fallback_counter += 1;
+        }
+        if !seen_keys.insert(field_key.clone()) {
+            continue;
+        }
+        let options = select
+            .select(&option_selector)
+            .filter_map(|option| {
+                let value = option
+                    .value()
+                    .attr("value")
+                    .map(normalize_whitespace)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        let text = normalize_whitespace(&option.text().collect::<String>());
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(text)
+                        }
+                    })?;
+                Some(value)
+            })
+            .collect::<Vec<_>>();
+        let options_json = serde_json::to_string(&options).unwrap_or_else(|_| "[]".to_string());
+        fields.push(ImportedCrfFieldDraft {
+            field_label: infer_html_field_label(raw_key, None),
+            field_key,
+            field_type: if select.value().attr("multiple").is_some() {
+                "multi_select".to_string()
+            } else {
+                "single_select".to_string()
+            },
+            required: select.value().attr("required").is_some(),
+            options_json,
+        });
+    }
+
+    for (field_key, (field_label, field_type, required, options)) in grouped_choices {
+        if !seen_keys.insert(field_key.clone()) {
+            continue;
+        }
+        let normalized_options = options
+            .into_iter()
+            .filter(|option| !option.trim().is_empty())
+            .collect::<Vec<_>>();
+        let field_type = if field_type == "multi_select" && normalized_options.len() <= 1 {
+            "boolean".to_string()
+        } else {
+            field_type
+        };
+        let options_json = if field_type == "boolean" {
+            "[]".to_string()
+        } else {
+            serde_json::to_string(&normalized_options).unwrap_or_else(|_| "[]".to_string())
+        };
+        fields.push(ImportedCrfFieldDraft {
+            field_key,
+            field_label,
+            field_type,
+            required,
+            options_json,
+        });
+    }
+
+    fields
+}
+
+fn normalize_html_field_key(raw_key: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_was_separator = false;
+    for ch in raw_key.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            normalized.push('_');
+            previous_was_separator = true;
+        }
+    }
+    normalized.trim_matches('_').to_string()
+}
+
+fn infer_html_field_label(raw_key: &str, fallback_label: Option<&str>) -> String {
+    if let Some(label) = fallback_label {
+        let normalized = normalize_whitespace(label);
+        if !normalized.is_empty() {
+            return normalized;
+        }
+    }
+    let normalized_key = normalize_whitespace(&raw_key.replace(['_', '-'], " "));
+    if normalized_key.is_empty() {
+        return "Imported field".to_string();
+    }
+    normalized_key
+        .split(' ')
+        .filter(|token| !token.is_empty())
+        .map(title_case_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn title_case_token(token: &str) -> String {
+    let mut chars = token.chars();
+    if let Some(first) = chars.next() {
+        let mut result = String::new();
+        result.push(first.to_ascii_uppercase());
+        result.push_str(&chars.as_str().to_ascii_lowercase());
+        result
+    } else {
+        String::new()
+    }
+}
+
+fn normalize_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn render_crf_field_type_options(selected_type: &str) -> String {
