@@ -4204,15 +4204,15 @@ async fn render_study_workbench(
     <button type="submit">Add Field</button>
   </form>
   <details style="margin-top:0.75rem;">
-    <summary><strong>Import fields from HTML</strong></summary>
+    <summary><strong>Import fields from HTML or PDF</strong></summary>
     <form method="post" action="{}" enctype="multipart/form-data" style="margin-top:0.6rem;">
       <label>Admin email</label>
       <input name="admin_email" value="{}" required />
-      <label>Upload HTML file (.html)</label>
-      <input type="file" name="html_file" accept=".html,.htm,text/html" />
+      <label>Upload HTML/PDF file</label>
+      <input type="file" name="html_file" accept=".html,.htm,.pdf,text/html,application/pdf" />
       <label>Or paste HTML markup</label>
       <textarea name="html_markup" placeholder="&lt;form&gt;...&lt;/form&gt;"></textarea>
-      <button type="submit">Import Fields from HTML</button>
+      <button type="submit">Import Fields</button>
     </form>
   </details>
   <h3 style="margin-top:1rem;">Fields</h3>
@@ -4724,6 +4724,9 @@ async fn submit_import_study_crf_fields_html(
 ) -> Result<Redirect, ApiError> {
     let mut admin_email = String::new();
     let mut html_markup = String::new();
+    let mut uploaded_file_bytes = Vec::new();
+    let mut uploaded_file_name = String::new();
+    let mut uploaded_content_type = String::new();
     while let Some(field) = multipart.next_field().await.map_err(ApiError::internal)? {
         let field_name = field.name().map(str::to_string).unwrap_or_default();
         match field_name.as_str() {
@@ -4731,17 +4734,20 @@ async fn submit_import_study_crf_fields_html(
                 admin_email = field.text().await.map_err(ApiError::internal)?;
             }
             "html_file" => {
+                uploaded_file_name = field.file_name().unwrap_or("").to_string();
+                uploaded_content_type = field
+                    .content_type()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
                 let bytes = field.bytes().await.map_err(ApiError::internal)?;
                 if !bytes.is_empty() {
-                    html_markup = String::from_utf8_lossy(&bytes).to_string();
+                    uploaded_file_bytes = bytes.to_vec();
                 }
             }
             "html_markup" => {
-                if html_markup.trim().is_empty() {
-                    let text = field.text().await.map_err(ApiError::internal)?;
-                    if !text.trim().is_empty() {
-                        html_markup = text;
-                    }
+                let text = field.text().await.map_err(ApiError::internal)?;
+                if !text.trim().is_empty() {
+                    html_markup = text;
                 }
             }
             _ => {}
@@ -4775,18 +4781,49 @@ async fn submit_import_study_crf_fields_html(
         )));
     }
 
-    if html_markup.trim().is_empty() {
+    if html_markup.trim().is_empty() && uploaded_file_bytes.is_empty() {
         return Ok(Redirect::to(&format!(
             "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
             query_escape(admin_email.trim()),
             project.organization_id,
             project.id,
             template.id,
-            query_escape("Upload or paste HTML before importing fields")
+            query_escape("Upload an HTML/PDF file or paste HTML before importing fields")
         )));
     }
 
-    let imported_fields = parse_crf_fields_from_html(html_markup.trim());
+    let file_name_lower = uploaded_file_name.to_ascii_lowercase();
+    let content_type_lower = uploaded_content_type.to_ascii_lowercase();
+    let is_pdf_upload = file_name_lower.ends_with(".pdf") || content_type_lower.contains("pdf");
+    let (imported_fields, import_source_name, parse_notice): (
+        Vec<ImportedCrfFieldDraft>,
+        &str,
+        Option<String>,
+    ) = if !html_markup.trim().is_empty() {
+        (parse_crf_fields_from_html(html_markup.trim()), "HTML", None)
+    } else if is_pdf_upload {
+        match parse_crf_fields_from_pdf_bytes(&uploaded_file_bytes) {
+            Ok(fields) => (fields, "PDF", None),
+            Err(error_notice) => (Vec::new(), "PDF", Some(error_notice)),
+        }
+    } else {
+        let uploaded_markup = String::from_utf8_lossy(&uploaded_file_bytes).to_string();
+        (
+            parse_crf_fields_from_html(uploaded_markup.trim()),
+            "HTML",
+            None,
+        )
+    };
+    if let Some(error_notice) = parse_notice {
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            query_escape(admin_email.trim()),
+            project.organization_id,
+            project.id,
+            template.id,
+            query_escape(&error_notice)
+        )));
+    }
     if imported_fields.is_empty() {
         return Ok(Redirect::to(&format!(
             "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
@@ -4794,7 +4831,10 @@ async fn submit_import_study_crf_fields_html(
             project.organization_id,
             project.id,
             template.id,
-            query_escape("No supported fields found in provided HTML")
+            query_escape(&format!(
+                "No supported fields found in provided {}",
+                import_source_name
+            ))
         )));
     }
 
@@ -4852,13 +4892,13 @@ async fn submit_import_study_crf_fields_html(
 
     let notice = if failed_count == 0 {
         format!(
-            "HTML import complete: {} added, {} updated",
-            added_count, updated_count
+            "{} import complete: {} added, {} updated",
+            import_source_name, added_count, updated_count
         )
     } else {
         format!(
-            "HTML import finished with issues: {} added, {} updated, {} skipped",
-            added_count, updated_count, failed_count
+            "{} import finished with issues: {} added, {} updated, {} skipped",
+            import_source_name, added_count, updated_count, failed_count
         )
     };
 
@@ -6901,6 +6941,210 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
     }
 
     fields
+}
+
+fn parse_crf_fields_from_pdf_bytes(pdf_bytes: &[u8]) -> Result<Vec<ImportedCrfFieldDraft>, String> {
+    let extracted_text = pdf_extract::extract_text_from_mem(pdf_bytes).map_err(|_| {
+        "Could not read PDF text. Upload a text-based PDF, or paste equivalent HTML markup."
+            .to_string()
+    })?;
+    Ok(parse_crf_fields_from_pdf_text(&extracted_text))
+}
+
+fn parse_crf_fields_from_pdf_text(pdf_text: &str) -> Vec<ImportedCrfFieldDraft> {
+    let mut fields = Vec::new();
+    let mut seen_keys = HashSet::new();
+    let mut fallback_counter = 1usize;
+
+    for raw_line in pdf_text.lines() {
+        let normalized_line = normalize_whitespace(raw_line);
+        if normalized_line.is_empty() || !looks_like_pdf_field_line(&normalized_line) {
+            continue;
+        }
+        let cleaned_label = sanitize_pdf_field_label(&normalized_line);
+        if cleaned_label.is_empty() {
+            continue;
+        }
+        let (field_type, options_json) = infer_pdf_field_type_and_options(&cleaned_label);
+        let display_label = strip_inline_option_hints(&cleaned_label);
+        let mut field_key = normalize_html_field_key(&display_label);
+        if field_key.is_empty() {
+            field_key = format!("pdf_field_{fallback_counter}");
+            fallback_counter += 1;
+        }
+        if !seen_keys.insert(field_key.clone()) {
+            continue;
+        }
+        let lower_line = normalized_line.to_ascii_lowercase();
+        let required = lower_line.contains(" required")
+            || lower_line.ends_with("required")
+            || cleaned_label.contains('*');
+        fields.push(ImportedCrfFieldDraft {
+            field_key,
+            field_label: if display_label.is_empty() {
+                "Imported field".to_string()
+            } else {
+                display_label
+            },
+            field_type,
+            required,
+            options_json,
+        });
+    }
+
+    fields
+}
+
+fn looks_like_pdf_field_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.len() < 3 {
+        return false;
+    }
+    if trimmed.ends_with('?') || trimmed.ends_with(':') || trimmed.contains("_____") {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("select one")
+        || lower.contains("choose one")
+        || lower.contains("select all")
+        || lower.contains("yes/no")
+        || lower.contains("yes or no")
+        || lower.contains("(required)")
+}
+
+fn sanitize_pdf_field_label(line: &str) -> String {
+    let trimmed = line.trim();
+    let without_bullets = trimmed.trim_start_matches(|ch: char| {
+        matches!(
+            ch,
+            '-' | '*' | '•' | '●' | '○' | '◦' | '▪' | '□' | '☐' | '☑'
+        )
+    });
+    let without_numbering = if let Some(space_index) = without_bullets.find(' ') {
+        let first_token = &without_bullets[..space_index];
+        if first_token
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == ')')
+        {
+            &without_bullets[space_index + 1..]
+        } else {
+            without_bullets
+        }
+    } else {
+        without_bullets
+    };
+    normalize_whitespace(without_numbering)
+        .trim_end_matches(':')
+        .trim()
+        .to_string()
+}
+
+fn infer_pdf_field_type_and_options(label: &str) -> (String, String) {
+    let lower = label.to_ascii_lowercase();
+    if lower.contains("yes/no") || lower.contains("yes or no") {
+        return ("boolean".to_string(), "[]".to_string());
+    }
+    if lower.contains("date and time") || lower.contains("datetime") {
+        return ("datetime".to_string(), "[]".to_string());
+    }
+    if lower.contains("date") {
+        return ("date".to_string(), "[]".to_string());
+    }
+    let inline_options = extract_inline_choice_options(label);
+    if lower.contains("select all")
+        || lower.contains("check all")
+        || lower.contains("choose all")
+        || lower.contains("multiple")
+    {
+        return (
+            "multi_select".to_string(),
+            serde_json::to_string(&inline_options).unwrap_or_else(|_| "[]".to_string()),
+        );
+    }
+    if lower.contains("select one")
+        || lower.contains("choose one")
+        || lower.contains("pick one")
+        || lower.contains("radio")
+        || inline_options.len() > 1
+    {
+        return (
+            "single_select".to_string(),
+            serde_json::to_string(&inline_options).unwrap_or_else(|_| "[]".to_string()),
+        );
+    }
+    if lower.contains("number") || lower.contains("age") {
+        return ("number".to_string(), "[]".to_string());
+    }
+    if lower.contains("comment")
+        || lower.contains("describe")
+        || lower.contains("notes")
+        || lower.contains("explain")
+    {
+        return ("textarea".to_string(), "[]".to_string());
+    }
+    ("text".to_string(), "[]".to_string())
+}
+
+fn extract_inline_choice_options(label: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let (Some(start), Some(end)) = (label.find('('), label.rfind(')')) {
+        if end > start + 1 {
+            candidates.push(label[start + 1..end].to_string());
+        }
+    }
+    if let Some(colon_index) = label.find(':') {
+        candidates.push(label[colon_index + 1..].to_string());
+    }
+
+    for candidate in candidates {
+        let separator = if candidate.contains('|') {
+            '|'
+        } else if candidate.contains('/') {
+            '/'
+        } else if candidate.contains(';') {
+            ';'
+        } else if candidate.contains(',') {
+            ','
+        } else {
+            '\0'
+        };
+        if separator == '\0' {
+            continue;
+        }
+        let values = candidate
+            .split(separator)
+            .map(normalize_whitespace)
+            .map(|value| {
+                value
+                    .trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']'))
+                    .trim()
+                    .to_string()
+            })
+            .filter(|value| !value.is_empty() && value.len() <= 80)
+            .collect::<Vec<_>>();
+        if values.len() > 1 {
+            return values;
+        }
+    }
+    Vec::new()
+}
+
+fn strip_inline_option_hints(label: &str) -> String {
+    if let (Some(start), Some(end)) = (label.find('('), label.rfind(')')) {
+        if end > start {
+            let inside = &label[start + 1..end];
+            if inside.contains('/')
+                || inside.contains('|')
+                || inside.contains(';')
+                || inside.contains(',')
+            {
+                return normalize_whitespace(
+                    format!("{} {}", &label[..start], &label[end + 1..]).as_str(),
+                );
+            }
+        }
+    }
+    label.to_string()
 }
 
 fn normalize_html_field_key(raw_key: &str) -> String {
