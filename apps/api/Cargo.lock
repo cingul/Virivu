@@ -943,6 +943,7 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de0f69c40d6dbc68ebac4bf5aec3d9978e094e22e29fcabd045acd9cec74a9dc"
 dependencies = [
+ "chrono",
  "encoding",
  "flate2",
  "itoa",
@@ -2196,6 +2197,7 @@ dependencies = [
  "diesel_migrations",
  "dotenvy",
  "indexmap",
+ "lopdf",
  "migrations_internals",
  "migrations_macros",
  "pdf-extract",

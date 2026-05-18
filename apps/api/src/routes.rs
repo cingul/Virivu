@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
+use lopdf::{Document as LopdfDocument, Object as LopdfObject};
 use scraper::{Html as ParsedHtml, Selector};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -6944,11 +6945,467 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
 }
 
 fn parse_crf_fields_from_pdf_bytes(pdf_bytes: &[u8]) -> Result<Vec<ImportedCrfFieldDraft>, String> {
-    let extracted_text = pdf_extract::extract_text_from_mem(pdf_bytes).map_err(|_| {
-        "Could not read PDF text. Upload a text-based PDF, or paste equivalent HTML markup."
-            .to_string()
-    })?;
-    Ok(parse_crf_fields_from_pdf_text(&extracted_text))
+    let mut drafts = Vec::new();
+    let mut extracted_text_sources = Vec::new();
+
+    if let Ok(text) = pdf_extract::extract_text_from_mem(pdf_bytes) {
+        if !text.trim().is_empty() {
+            extracted_text_sources.push(text);
+        }
+    }
+
+    if let Ok(document) = LopdfDocument::load_mem(pdf_bytes) {
+        if let Ok(text) = extract_pdf_text_with_lopdf(&document) {
+            if !text.trim().is_empty() {
+                extracted_text_sources.push(text);
+            }
+        }
+        drafts.extend(extract_pdf_acroform_field_drafts(&document));
+    }
+
+    drafts.extend(extract_pdf_raw_name_hints(pdf_bytes));
+    for extracted_text in extracted_text_sources {
+        drafts.extend(parse_crf_fields_from_pdf_text(&extracted_text));
+    }
+    let merged = merge_imported_pdf_field_drafts(drafts);
+    if merged.is_empty() {
+        return Err(
+            "Could not detect fields from this PDF. Try a fillable PDF, use OCR first, or import HTML."
+                .to_string(),
+        );
+    }
+    Ok(merged)
+}
+
+fn extract_pdf_text_with_lopdf(document: &LopdfDocument) -> Result<String, String> {
+    let page_numbers = document.get_pages().keys().copied().collect::<Vec<_>>();
+    if page_numbers.is_empty() {
+        return Err("No pages found in PDF".to_string());
+    }
+    document
+        .extract_text(&page_numbers)
+        .map_err(|_| "Could not extract text with lopdf parser".to_string())
+}
+
+fn extract_pdf_acroform_field_drafts(document: &LopdfDocument) -> Vec<ImportedCrfFieldDraft> {
+    let mut drafts = Vec::new();
+    let mut seen_keys = HashSet::new();
+    let mut fallback_counter = 1usize;
+    let Ok(catalog) = document.catalog() else {
+        return drafts;
+    };
+    let Ok(acroform_object) = catalog.get(b"AcroForm") else {
+        return drafts;
+    };
+    let Some(acroform_object) = resolve_lopdf_object(document, acroform_object) else {
+        return drafts;
+    };
+    let Ok(acroform_dict) = acroform_object.as_dict() else {
+        return drafts;
+    };
+    let Ok(field_objects) = acroform_dict.get(b"Fields").and_then(LopdfObject::as_array) else {
+        return drafts;
+    };
+    for field_object in field_objects {
+        collect_acroform_field_drafts(
+            document,
+            field_object,
+            None,
+            None,
+            0,
+            None,
+            &mut drafts,
+            &mut seen_keys,
+            &mut fallback_counter,
+        );
+    }
+    drafts
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_acroform_field_drafts(
+    document: &LopdfDocument,
+    field_object: &LopdfObject,
+    parent_name: Option<String>,
+    inherited_ft: Option<String>,
+    inherited_flags: i64,
+    inherited_options: Option<Vec<String>>,
+    drafts: &mut Vec<ImportedCrfFieldDraft>,
+    seen_keys: &mut HashSet<String>,
+    fallback_counter: &mut usize,
+) {
+    let Some(resolved_object) = resolve_lopdf_object(document, field_object) else {
+        return;
+    };
+    let Ok(field_dict) = resolved_object.as_dict() else {
+        return;
+    };
+
+    let current_name = field_dict
+        .get(b"T")
+        .ok()
+        .and_then(|value| decode_lopdf_text_object(document, value));
+    let combined_name = combine_pdf_field_names(parent_name, current_name);
+    let field_type_name = field_dict
+        .get(b"FT")
+        .ok()
+        .and_then(|value| decode_lopdf_name_object(document, value))
+        .or(inherited_ft);
+    let field_flags = field_dict
+        .get(b"Ff")
+        .ok()
+        .and_then(|value| decode_lopdf_integer(document, value))
+        .unwrap_or(inherited_flags);
+    let field_options = field_dict
+        .get(b"Opt")
+        .ok()
+        .map(|value| decode_lopdf_option_values(document, value))
+        .filter(|options| !options.is_empty())
+        .or(inherited_options.clone());
+    let alternate_label = field_dict
+        .get(b"TU")
+        .ok()
+        .and_then(|value| decode_lopdf_text_object(document, value))
+        .filter(|label| !label.trim().is_empty());
+
+    let kids = field_dict
+        .get(b"Kids")
+        .ok()
+        .and_then(|value| value.as_array().ok())
+        .map(|kids| kids.clone());
+    if let Some(kids) = kids {
+        for kid in kids {
+            collect_acroform_field_drafts(
+                document,
+                &kid,
+                combined_name.clone(),
+                field_type_name.clone(),
+                field_flags,
+                field_options.clone(),
+                drafts,
+                seen_keys,
+                fallback_counter,
+            );
+        }
+    }
+
+    let Some(full_name) = combined_name else {
+        return;
+    };
+    let lower_name = full_name.to_ascii_lowercase();
+    if lower_name.ends_with(".widget")
+        || lower_name.contains("signature")
+        || lower_name.contains("btn")
+        || lower_name.len() < 2
+    {
+        return;
+    }
+    let (field_type, mut options_json) = map_pdf_form_field_type(
+        field_type_name.as_deref(),
+        field_flags,
+        field_options.as_ref(),
+    );
+    if field_type != "single_select" && field_type != "multi_select" {
+        options_json = "[]".to_string();
+    }
+    let label = alternate_label.unwrap_or_else(|| humanize_pdf_field_label(&full_name));
+    let base_key = normalize_html_field_key(&full_name);
+    let field_key = unique_pdf_field_key(base_key, seen_keys, fallback_counter);
+    let required = field_flags & 0b10 != 0;
+    drafts.push(ImportedCrfFieldDraft {
+        field_key,
+        field_label: if label.trim().is_empty() {
+            "Imported field".to_string()
+        } else {
+            label
+        },
+        field_type,
+        required,
+        options_json,
+    });
+}
+
+fn resolve_lopdf_object<'a>(
+    document: &'a LopdfDocument,
+    object: &'a LopdfObject,
+) -> Option<&'a LopdfObject> {
+    let mut current = object;
+    while let Ok(reference_id) = current.as_reference() {
+        current = document.get_object(reference_id).ok()?;
+    }
+    Some(current)
+}
+
+fn decode_lopdf_text_object(document: &LopdfDocument, object: &LopdfObject) -> Option<String> {
+    let resolved = resolve_lopdf_object(document, object)?;
+    if let Ok(bytes) = resolved.as_str() {
+        let decoded = normalize_whitespace(&LopdfDocument::decode_text(None, bytes));
+        if !decoded.is_empty() {
+            return Some(decoded);
+        }
+    }
+    if let Ok(name) = resolved.as_name_str() {
+        let decoded = normalize_whitespace(name);
+        if !decoded.is_empty() {
+            return Some(decoded);
+        }
+    }
+    None
+}
+
+fn decode_lopdf_name_object(document: &LopdfDocument, object: &LopdfObject) -> Option<String> {
+    let resolved = resolve_lopdf_object(document, object)?;
+    resolved.as_name_str().ok().map(str::to_string)
+}
+
+fn decode_lopdf_integer(document: &LopdfDocument, object: &LopdfObject) -> Option<i64> {
+    let resolved = resolve_lopdf_object(document, object)?;
+    resolved.as_i64().ok()
+}
+
+fn decode_lopdf_option_values(document: &LopdfDocument, object: &LopdfObject) -> Vec<String> {
+    let Some(resolved) = resolve_lopdf_object(document, object) else {
+        return Vec::new();
+    };
+    let Ok(option_array) = resolved.as_array() else {
+        return Vec::new();
+    };
+    let mut options = Vec::new();
+    for option_object in option_array {
+        let Some(resolved_option) = resolve_lopdf_object(document, option_object) else {
+            continue;
+        };
+        if let Ok(text) = resolved_option.as_str() {
+            let value = normalize_whitespace(&LopdfDocument::decode_text(None, text));
+            if !value.is_empty() {
+                options.push(value);
+            }
+            continue;
+        }
+        if let Ok(values) = resolved_option.as_array() {
+            if let Some(preferred) = values
+                .get(1)
+                .and_then(|value| decode_lopdf_text_object(document, value))
+                .or_else(|| {
+                    values
+                        .first()
+                        .and_then(|value| decode_lopdf_text_object(document, value))
+                })
+            {
+                options.push(preferred);
+            }
+        }
+    }
+    dedupe_case_insensitive(options)
+}
+
+fn combine_pdf_field_names(parent: Option<String>, current: Option<String>) -> Option<String> {
+    match (parent, current) {
+        (Some(parent), Some(current)) if !current.is_empty() => Some(format!("{parent}.{current}")),
+        (Some(parent), Some(_)) => Some(parent),
+        (Some(parent), None) => Some(parent),
+        (None, Some(current)) => Some(current),
+        (None, None) => None,
+    }
+}
+
+fn map_pdf_form_field_type(
+    field_type_name: Option<&str>,
+    field_flags: i64,
+    options: Option<&Vec<String>>,
+) -> (String, String) {
+    let options_json =
+        serde_json::to_string(options.unwrap_or(&Vec::new())).unwrap_or_else(|_| "[]".to_string());
+    let Some(field_type_name) = field_type_name else {
+        if options.map_or(0, |values| values.len()) > 1 {
+            return ("single_select".to_string(), options_json);
+        }
+        return ("text".to_string(), "[]".to_string());
+    };
+    match field_type_name {
+        "Btn" => {
+            let radio = field_flags & 0x8000 != 0;
+            let push_button = field_flags & 0x10000 != 0;
+            if push_button {
+                ("text".to_string(), "[]".to_string())
+            } else if radio {
+                ("single_select".to_string(), options_json)
+            } else {
+                ("boolean".to_string(), "[]".to_string())
+            }
+        }
+        "Ch" => {
+            let multi_select = field_flags & 0x200000 != 0;
+            if multi_select {
+                ("multi_select".to_string(), options_json)
+            } else {
+                ("single_select".to_string(), options_json)
+            }
+        }
+        "Tx" => {
+            let multiline = field_flags & 0x1000 != 0;
+            if multiline {
+                ("textarea".to_string(), "[]".to_string())
+            } else {
+                ("text".to_string(), "[]".to_string())
+            }
+        }
+        "Sig" => ("text".to_string(), "[]".to_string()),
+        _ => ("text".to_string(), "[]".to_string()),
+    }
+}
+
+fn humanize_pdf_field_label(input: &str) -> String {
+    let normalized = normalize_whitespace(
+        &input
+            .replace(['.', '_', '-'], " ")
+            .replace("  ", " ")
+            .trim_matches('.')
+            .to_string(),
+    );
+    normalized
+        .split(' ')
+        .filter(|token| !token.is_empty())
+        .map(title_case_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn extract_pdf_raw_name_hints(pdf_bytes: &[u8]) -> Vec<ImportedCrfFieldDraft> {
+    let raw = String::from_utf8_lossy(pdf_bytes);
+    let mut labels = extract_parenthesized_values_after_prefix(&raw, "/TU(");
+    labels.extend(extract_parenthesized_values_after_prefix(&raw, "/T("));
+    labels = dedupe_case_insensitive(labels);
+    labels
+        .into_iter()
+        .filter(|label| looks_like_raw_pdf_label(label))
+        .take(800)
+        .map(|label| {
+            let (field_type, options_json) = infer_pdf_field_type_and_options(&label);
+            let display_label = strip_inline_option_hints(&label);
+            ImportedCrfFieldDraft {
+                field_key: normalize_html_field_key(&display_label),
+                field_label: if display_label.is_empty() {
+                    "Imported field".to_string()
+                } else {
+                    display_label
+                },
+                field_type,
+                required: false,
+                options_json,
+            }
+        })
+        .collect::<Vec<_>>()
+}
+
+fn extract_parenthesized_values_after_prefix(content: &str, prefix: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let bytes = content.as_bytes();
+    let prefix_bytes = prefix.as_bytes();
+    let mut index = 0usize;
+    while index + prefix_bytes.len() < bytes.len() {
+        if &bytes[index..index + prefix_bytes.len()] != prefix_bytes {
+            index += 1;
+            continue;
+        }
+        let mut cursor = index + prefix_bytes.len();
+        let mut value = String::new();
+        let mut escaped = false;
+        while cursor < bytes.len() {
+            let ch = bytes[cursor] as char;
+            cursor += 1;
+            if escaped {
+                value.push(ch);
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == ')' {
+                break;
+            }
+            value.push(ch);
+        }
+        let normalized = normalize_whitespace(&value);
+        if !normalized.is_empty() {
+            results.push(normalized);
+        }
+        index = cursor;
+    }
+    results
+}
+
+fn looks_like_raw_pdf_label(label: &str) -> bool {
+    let trimmed = label.trim();
+    if trimmed.len() < 3 || trimmed.len() > 120 {
+        return false;
+    }
+    if looks_like_pdf_page_noise(trimmed) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("font")
+        || lower.starts_with("type")
+        || lower.starts_with("size")
+        || lower.contains("obj")
+        || lower.contains("stream")
+        || lower.contains("xref")
+        || lower.contains("root")
+        || lower.contains("producer")
+    {
+        return false;
+    }
+    trimmed.chars().any(|ch| ch.is_ascii_alphabetic())
+}
+
+fn merge_imported_pdf_field_drafts(
+    drafts: Vec<ImportedCrfFieldDraft>,
+) -> Vec<ImportedCrfFieldDraft> {
+    let mut merged: Vec<ImportedCrfFieldDraft> = Vec::new();
+    let mut key_index: HashMap<String, usize> = HashMap::new();
+    let mut fallback_counter = 1usize;
+    for mut draft in drafts {
+        draft.field_key = normalize_html_field_key(&draft.field_key);
+        if draft.field_key.is_empty() {
+            draft.field_key = normalize_html_field_key(&draft.field_label);
+        }
+        if draft.field_key.is_empty() {
+            draft.field_key = format!("pdf_field_{fallback_counter}");
+            fallback_counter += 1;
+        }
+        let normalized_key = draft.field_key.to_ascii_lowercase();
+        if let Some(existing_index) = key_index.get(&normalized_key).copied() {
+            let existing = &mut merged[existing_index];
+            if existing.field_label == "Imported field" && draft.field_label != "Imported field" {
+                existing.field_label = draft.field_label;
+            }
+            if existing.field_type == "text" && draft.field_type != "text" {
+                existing.field_type = draft.field_type;
+            }
+            existing.required = existing.required || draft.required;
+            if existing.options_json == "[]" && draft.options_json != "[]" {
+                existing.options_json = draft.options_json;
+            }
+            continue;
+        }
+        key_index.insert(normalized_key, merged.len());
+        merged.push(draft);
+    }
+    merged
+}
+
+fn dedupe_case_insensitive(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for value in values {
+        let normalized = value.to_ascii_lowercase();
+        if seen.insert(normalized) {
+            deduped.push(value);
+        }
+    }
+    deduped
 }
 
 fn parse_crf_fields_from_pdf_text(pdf_text: &str) -> Vec<ImportedCrfFieldDraft> {
