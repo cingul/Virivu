@@ -845,6 +845,23 @@ impl Db {
         Ok(rows.iter().map(row_to_study_crf_field).collect())
     }
 
+    pub async fn delete_study_crf_fields_for_template(
+        &self,
+        template_id: Uuid,
+    ) -> anyhow::Result<u64> {
+        let client = self.pool.get().await?;
+        let deleted_count = client
+            .execute(
+                r#"
+                DELETE FROM study_crf_fields
+                WHERE template_id = $1
+                "#,
+                &[&template_id],
+            )
+            .await?;
+        Ok(deleted_count)
+    }
+
     pub async fn create_study_visit_template(
         &self,
         project_id: Uuid,

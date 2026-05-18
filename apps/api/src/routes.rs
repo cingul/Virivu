@@ -72,6 +72,10 @@ pub fn router(ctx: AppContext) -> Router {
             post(submit_import_study_crf_fields_html),
         )
         .route(
+            "/ui/studies/templates/{template_id}/bulk-delete-fields",
+            post(submit_bulk_delete_study_crf_fields),
+        )
+        .route(
             "/ui/studies/fields/{field_id}/update",
             post(submit_update_study_crf_field),
         )
@@ -1595,6 +1599,12 @@ struct StudyCrfFieldForm {
     #[serde(default)]
     options_text: String,
     display_order: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StudyCrfBulkDeleteForm {
+    admin_email: String,
+    confirmation_text: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3569,6 +3579,7 @@ async fn render_study_workbench(
             .join("")
     };
 
+    let field_count = fields.len();
     let fields_html = if fields.is_empty() {
         "<li>No fields yet for selected template.</li>".to_string()
     } else {
@@ -4032,6 +4043,9 @@ async fn render_study_workbench(
     let import_html_fields_action = selected_template_id
         .map(|id| format!("/ui/studies/templates/{id}/import-html-fields"))
         .unwrap_or_else(|| "#".to_string());
+    let bulk_delete_fields_action = selected_template_id
+        .map(|id| format!("/ui/studies/templates/{id}/bulk-delete-fields"))
+        .unwrap_or_else(|| "#".to_string());
     let visit_template_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/visit-template"))
         .unwrap_or_else(|| "#".to_string());
@@ -4216,6 +4230,19 @@ async fn render_study_workbench(
       <button type="submit">Import Fields</button>
     </form>
   </details>
+  <details style="margin-top:0.75rem;">
+    <summary><strong style="color:#8d1f1f;">Bulk delete fields</strong></summary>
+    <div class="danger-note" style="margin-top:0.6rem;">
+      <strong>Warning:</strong> This permanently deletes all <strong>{}</strong> fields in the selected template and cannot be undone.
+    </div>
+    <form method="post" action="{}" style="margin-top:0.6rem;">
+      <label>Admin email</label>
+      <input name="admin_email" value="{}" required />
+      <label>Type DELETE to confirm</label>
+      <input name="confirmation_text" placeholder="DELETE" required />
+      <button type="submit" class="danger-button">Bulk Delete All Fields</button>
+    </form>
+  </details>
   <h3 style="margin-top:1rem;">Fields</h3>
   <ul>{}</ul>
 </section>
@@ -4384,6 +4411,9 @@ async fn render_study_workbench(
         crf_field_action,
         html_escape(admin_email.trim()),
         import_html_fields_action,
+        html_escape(admin_email.trim()),
+        field_count,
+        bulk_delete_fields_action,
         html_escape(admin_email.trim()),
         fields_html,
         visit_template_action,
@@ -4715,6 +4745,61 @@ async fn submit_add_study_crf_field(
         project.id,
         template_id,
         query_escape("CRF field added")
+    )))
+}
+
+async fn submit_bulk_delete_study_crf_fields(
+    State(ctx): State<AppContext>,
+    Path(template_id): Path<Uuid>,
+    Form(form): Form<StudyCrfBulkDeleteForm>,
+) -> Result<Redirect, ApiError> {
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    if form.confirmation_text.trim() != "DELETE" {
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            query_escape(form.admin_email.trim()),
+            project.organization_id,
+            project.id,
+            template.id,
+            query_escape("Bulk delete cancelled: type DELETE exactly to confirm")
+        )));
+    }
+    let deleted_count = ctx
+        .db
+        .delete_study_crf_fields_for_template(template_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        template.id,
+        query_escape(&format!(
+            "Bulk delete complete: {} CRF fields removed",
+            deleted_count
+        ))
     )))
 }
 
@@ -8390,6 +8475,22 @@ fn cingulum_theme_css() -> &'static str {
       padding: 0.72rem 0.82rem;
       font-weight: 600;
       margin-bottom: 0.95rem;
+    }
+    .danger-note {
+      background: #fff0f0;
+      border: 1px solid #f1b6b6;
+      border-left: 4px solid #c53232;
+      color: #6a1717;
+      border-radius: 10px;
+      padding: 0.72rem 0.82rem;
+      font-weight: 700;
+    }
+    .danger-button {
+      background: linear-gradient(135deg, #c74343 0%, #a81717 100%);
+      box-shadow: 0 10px 18px rgba(156, 24, 24, 0.28);
+    }
+    .danger-button:hover {
+      filter: brightness(0.95);
     }
     .status-chip {
       display: inline-block;
