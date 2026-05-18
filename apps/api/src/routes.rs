@@ -3585,8 +3585,11 @@ async fn render_study_workbench(
       <label>Required</label>
       <input type="checkbox" name="required" value="true" {} />
       <div data-options-section>
-        <label>Choice options (one per line)</label>
-        <textarea name="options_text" placeholder="Option A&#10;Option B">{}</textarea>
+        <label>Choice options</label>
+        <div data-option-list></div>
+        <button type="button" data-add-option-button>Add option</button>
+        <input type="hidden" data-options-initial value="{}" />
+        <input type="hidden" name="options_text" value="" />
         <input type="hidden" name="options_json" value="{}" />
         <small class="muted">Used only for single-select or multi-select field types.</small>
       </div>
@@ -4180,8 +4183,11 @@ async fn render_study_workbench(
     <label>Required</label>
     <input type="checkbox" name="required" value="true" />
     <div data-options-section>
-      <label>Choice options (one per line)</label>
-      <textarea name="options_text" placeholder="Yes&#10;No&#10;Unknown"></textarea>
+      <label>Choice options</label>
+      <div data-option-list></div>
+      <button type="button" data-add-option-button>Add option</button>
+      <input type="hidden" data-options-initial value="" />
+      <input type="hidden" name="options_text" value="" />
       <input type="hidden" name="options_json" value="[]" />
       <small class="muted">Only needed for Single choice or Multiple choice fields.</small>
     </div>
@@ -6902,8 +6908,26 @@ fn cingulum_theme_css() -> &'static str {
     form[data-crf-field-form] [data-options-section] {
       margin-top: 0.35rem;
     }
-    form[data-crf-field-form] [data-options-section] textarea {
-      min-height: 88px;
+    form[data-crf-field-form] [data-option-list] {
+      margin-top: 0.2rem;
+    }
+    form[data-crf-field-form] .option-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.45rem;
+      margin-bottom: 0.42rem;
+      align-items: center;
+    }
+    form[data-crf-field-form] .option-row button,
+    form[data-crf-field-form] [data-add-option-button] {
+      margin-top: 0;
+      padding: 0.46rem 0.68rem;
+      box-shadow: none;
+      background: #edf1f5;
+      color: #1c3a55;
+      border: 1px solid rgba(47, 88, 120, 0.28);
+      font-size: 0.8rem;
+      font-weight: 700;
     }
     button {
       background: linear-gradient(135deg, #f36e1d 0%, var(--cg-orange) 100%);
@@ -7142,15 +7166,83 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
         }});
       }});
       const fieldForms = Array.from(document.querySelectorAll('form[data-crf-field-form]'));
+      const createOptionRow = (value = '') => {{
+        const row = document.createElement('div');
+        row.className = 'option-row';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Choice option';
+        input.value = value;
+        input.setAttribute('data-option-input', 'true');
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.textContent = 'Remove';
+        removeButton.setAttribute('data-remove-option-button', 'true');
+        row.appendChild(input);
+        row.appendChild(removeButton);
+        return row;
+      }};
       fieldForms.forEach((form) => {{
         const fieldTypeSelect = form.querySelector('[data-field-type-select]');
         const optionsSection = form.querySelector('[data-options-section]');
-        if (!fieldTypeSelect || !optionsSection) return;
+        const optionList = form.querySelector('[data-option-list]');
+        const addOptionButton = form.querySelector('[data-add-option-button]');
+        const optionsTextInput = form.querySelector('input[name="options_text"]');
+        const optionsInitialInput = form.querySelector('[data-options-initial]');
+        if (!fieldTypeSelect || !optionsSection || !optionList || !addOptionButton || !optionsTextInput || !optionsInitialInput) return;
+        const syncOptionsTextInput = () => {{
+          const values = Array.from(optionList.querySelectorAll('[data-option-input]'))
+            .map((input) => input.value.trim())
+            .filter((value) => value.length > 0);
+          optionsTextInput.value = values.join('\n');
+        }};
+        const ensureOptionRow = () => {{
+          if (optionList.querySelectorAll('[data-option-input]').length === 0) {{
+            optionList.appendChild(createOptionRow(''));
+          }}
+        }};
+        const seedOptionRows = () => {{
+          const seededValues = (optionsInitialInput.value || '')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+          optionList.innerHTML = '';
+          if (seededValues.length === 0) {{
+            optionList.appendChild(createOptionRow(''));
+          }} else {{
+            seededValues.forEach((value) => optionList.appendChild(createOptionRow(value)));
+          }}
+          syncOptionsTextInput();
+        }};
+        seedOptionRows();
+        optionList.addEventListener('input', (event) => {{
+          if (event.target && event.target.matches('[data-option-input]')) {{
+            syncOptionsTextInput();
+          }}
+        }});
+        optionList.addEventListener('click', (event) => {{
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) return;
+          if (!target.matches('[data-remove-option-button]')) return;
+          const row = target.closest('.option-row');
+          if (row) row.remove();
+          ensureOptionRow();
+          syncOptionsTextInput();
+        }});
+        addOptionButton.addEventListener('click', () => {{
+          optionList.appendChild(createOptionRow(''));
+          syncOptionsTextInput();
+        }});
         const syncFieldOptionsVisibility = () => {{
           const fieldType = (fieldTypeSelect.value || '').toLowerCase();
           const showOptions = fieldType === 'single_select' || fieldType === 'multi_select';
           optionsSection.style.display = showOptions ? 'block' : 'none';
+          if (showOptions) {{
+            ensureOptionRow();
+          }}
+          syncOptionsTextInput();
         }};
+        form.addEventListener('submit', () => syncOptionsTextInput());
         fieldTypeSelect.addEventListener('change', syncFieldOptionsVisibility);
         syncFieldOptionsVisibility();
       }});
