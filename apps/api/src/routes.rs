@@ -6956,25 +6956,39 @@ fn parse_crf_fields_from_pdf_text(pdf_text: &str) -> Vec<ImportedCrfFieldDraft> 
     let mut seen_keys = HashSet::new();
     let mut fallback_counter = 1usize;
 
-    for raw_line in pdf_text.lines() {
-        let normalized_line = normalize_whitespace(raw_line);
-        if normalized_line.is_empty() || !looks_like_pdf_field_line(&normalized_line) {
-            continue;
-        }
+    let normalized_lines = pdf_text
+        .lines()
+        .map(normalize_whitespace)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let merged_lines = merge_pdf_wrapped_lines(&normalized_lines);
+    let mut candidate_lines = merged_lines
+        .iter()
+        .filter(|line| looks_like_pdf_field_line(line))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    // Large documents often lose punctuation/checkbox markers during extraction.
+    // If strict matching yields very few fields, run a broader pass.
+    if candidate_lines.len() < 18 {
+        candidate_lines.extend(
+            merged_lines
+                .iter()
+                .filter(|line| looks_like_pdf_field_line_relaxed(line))
+                .cloned(),
+        );
+    }
+    candidate_lines = dedupe_preserving_order(candidate_lines);
+
+    for normalized_line in candidate_lines {
         let cleaned_label = sanitize_pdf_field_label(&normalized_line);
         if cleaned_label.is_empty() {
             continue;
         }
         let (field_type, options_json) = infer_pdf_field_type_and_options(&cleaned_label);
         let display_label = strip_inline_option_hints(&cleaned_label);
-        let mut field_key = normalize_html_field_key(&display_label);
-        if field_key.is_empty() {
-            field_key = format!("pdf_field_{fallback_counter}");
-            fallback_counter += 1;
-        }
-        if !seen_keys.insert(field_key.clone()) {
-            continue;
-        }
+        let base_key = normalize_html_field_key(&display_label);
+        let field_key = unique_pdf_field_key(base_key, &mut seen_keys, &mut fallback_counter);
         let lower_line = normalized_line.to_ascii_lowercase();
         let required = lower_line.contains(" required")
             || lower_line.ends_with("required")
@@ -7009,7 +7023,195 @@ fn looks_like_pdf_field_line(line: &str) -> bool {
         || lower.contains("select all")
         || lower.contains("yes/no")
         || lower.contains("yes or no")
+        || lower.contains("tick one")
+        || lower.contains("check all")
+        || lower.contains("enter")
         || lower.contains("(required)")
+}
+
+fn looks_like_pdf_field_line_relaxed(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.len() < 4 || trimmed.len() > 140 {
+        return false;
+    }
+    if looks_like_pdf_page_noise(trimmed) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("@")
+        || lower.starts_with("page ")
+    {
+        return false;
+    }
+    let word_count = trimmed.split_whitespace().count();
+    if word_count == 0 || word_count > 18 {
+        return false;
+    }
+    if trimmed.ends_with('.')
+        && !lower.contains("other (")
+        && !lower.contains("select")
+        && !lower.contains("choose")
+    {
+        return false;
+    }
+    if lower.contains("name")
+        || lower.contains("id")
+        || lower.contains("date")
+        || lower.contains("time")
+        || lower.contains("age")
+        || lower.contains("sex")
+        || lower.contains("gender")
+        || lower.contains("diagnosis")
+        || lower.contains("symptom")
+        || lower.contains("status")
+        || lower.contains("result")
+        || lower.contains("dose")
+        || lower.contains("medication")
+        || lower.contains("comment")
+        || lower.contains("notes")
+        || lower.contains("reason")
+        || lower.contains("history")
+        || lower.contains("visit")
+        || lower.contains("consent")
+        || lower.contains("severity")
+        || lower.contains("site")
+        || lower.contains("investigator")
+    {
+        return true;
+    }
+    (trimmed.ends_with('?') || trimmed.ends_with(':') || trimmed.contains("____"))
+        || starts_with_bullet_or_numbering(trimmed)
+}
+
+fn looks_like_pdf_page_noise(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("table of contents")
+        || lower.starts_with("confidential")
+        || lower.starts_with("copyright")
+        || lower.starts_with("appendix")
+    {
+        return true;
+    }
+    let compact = lower.replace(' ', "");
+    compact.starts_with("page") && compact[4..].chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn starts_with_bullet_or_numbering(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('-')
+        || trimmed.starts_with('*')
+        || trimmed.starts_with('•')
+        || trimmed.starts_with('○')
+        || trimmed.starts_with('□')
+        || trimmed.starts_with('☐')
+        || trimmed.starts_with('☑')
+    {
+        return true;
+    }
+    let mut chars = trimmed.chars().peekable();
+    let mut saw_digit = false;
+    while let Some(ch) = chars.peek().copied() {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            chars.next();
+            continue;
+        }
+        break;
+    }
+    if !saw_digit {
+        return false;
+    }
+    matches!(chars.peek().copied(), Some('.') | Some(')'))
+}
+
+fn merge_pdf_wrapped_lines(lines: &[String]) -> Vec<String> {
+    let mut merged = Vec::new();
+    let mut buffer = String::new();
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if buffer.is_empty() {
+            buffer = trimmed.to_string();
+            continue;
+        }
+
+        let should_join = should_join_pdf_line(&buffer, trimmed);
+        if should_join {
+            buffer.push(' ');
+            buffer.push_str(trimmed);
+        } else {
+            merged.push(buffer);
+            buffer = trimmed.to_string();
+        }
+    }
+    if !buffer.is_empty() {
+        merged.push(buffer);
+    }
+    merged
+}
+
+fn should_join_pdf_line(previous: &str, next: &str) -> bool {
+    if previous.len() + next.len() > 170 {
+        return false;
+    }
+    if previous.ends_with('?')
+        || previous.ends_with(':')
+        || previous.ends_with('.')
+        || previous.ends_with(';')
+    {
+        return false;
+    }
+    let next_lower = next.to_ascii_lowercase();
+    next.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_lowercase())
+        || next_lower.starts_with("and ")
+        || next_lower.starts_with("or ")
+        || next_lower.starts_with("with ")
+        || next_lower.starts_with("without ")
+        || next_lower.starts_with("for ")
+        || next_lower.starts_with("to ")
+}
+
+fn dedupe_preserving_order(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for value in values {
+        let key = value.to_ascii_lowercase();
+        if seen.insert(key) {
+            deduped.push(value);
+        }
+    }
+    deduped
+}
+
+fn unique_pdf_field_key(
+    base_key: String,
+    seen_keys: &mut HashSet<String>,
+    fallback_counter: &mut usize,
+) -> String {
+    let initial = if base_key.is_empty() {
+        let generated = format!("pdf_field_{}", *fallback_counter);
+        *fallback_counter += 1;
+        generated
+    } else {
+        base_key
+    };
+    if seen_keys.insert(initial.clone()) {
+        return initial;
+    }
+    let mut suffix = 2usize;
+    loop {
+        let candidate = format!("{initial}_{suffix}");
+        if seen_keys.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix += 1;
+    }
 }
 
 fn sanitize_pdf_field_label(line: &str) -> String {
