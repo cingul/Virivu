@@ -862,6 +862,29 @@ impl Db {
         Ok(deleted_count)
     }
 
+    pub async fn delete_study_crf_fields_by_ids(
+        &self,
+        template_id: Uuid,
+        field_ids: &[Uuid],
+    ) -> anyhow::Result<u64> {
+        if field_ids.is_empty() {
+            return Ok(0);
+        }
+        let client = self.pool.get().await?;
+        let ids = field_ids.to_vec();
+        let deleted_count = client
+            .execute(
+                r#"
+                DELETE FROM study_crf_fields
+                WHERE template_id = $1
+                  AND id = ANY($2)
+                "#,
+                &[&template_id, &ids],
+            )
+            .await?;
+        Ok(deleted_count)
+    }
+
     pub async fn create_study_visit_template(
         &self,
         project_id: Uuid,

@@ -20,7 +20,7 @@ use crate::{
     auth::{extract_bearer_token, verify_google_workspace_user, AuthError, AuthenticatedUser},
     config::Config,
     db::Db,
-    models::{DataUseAgreement, DataUseAgreementSignature, OutboundEmail},
+    models::{DataUseAgreement, DataUseAgreementSignature, OutboundEmail, StudyCrfField},
 };
 
 const ROLE_PLATFORM_ADMIN: &[&str] = &["platform_admin"];
@@ -74,6 +74,10 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/ui/studies/templates/{template_id}/bulk-delete-fields",
             post(submit_bulk_delete_study_crf_fields),
+        )
+        .route(
+            "/ui/studies/templates/{template_id}/bulk-delete-corrupted-fields",
+            post(submit_bulk_delete_corrupted_study_crf_fields),
         )
         .route(
             "/ui/studies/fields/{field_id}/update",
@@ -4046,6 +4050,9 @@ async fn render_study_workbench(
     let bulk_delete_fields_action = selected_template_id
         .map(|id| format!("/ui/studies/templates/{id}/bulk-delete-fields"))
         .unwrap_or_else(|| "#".to_string());
+    let bulk_delete_corrupted_fields_action = selected_template_id
+        .map(|id| format!("/ui/studies/templates/{id}/bulk-delete-corrupted-fields"))
+        .unwrap_or_else(|| "#".to_string());
     let visit_template_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/visit-template"))
         .unwrap_or_else(|| "#".to_string());
@@ -4243,6 +4250,19 @@ async fn render_study_workbench(
       <button type="submit" class="danger-button">Bulk Delete All Fields</button>
     </form>
   </details>
+  <details style="margin-top:0.75rem;">
+    <summary><strong style="color:#a33434;">Delete only corrupted imported fields</strong></summary>
+    <div class="danger-note danger-note-soft" style="margin-top:0.6rem;">
+      <strong>Warning:</strong> This removes only fields matching known corruption patterns (for example: Identity-H / Unimplemented noise). Review the remaining list after this cleanup.
+    </div>
+    <form method="post" action="{}" style="margin-top:0.6rem;">
+      <label>Admin email</label>
+      <input name="admin_email" value="{}" required />
+      <label>Type DELETE CORRUPTED to confirm</label>
+      <input name="confirmation_text" placeholder="DELETE CORRUPTED" required />
+      <button type="submit" class="danger-button danger-button-soft">Delete Corrupted Fields Only</button>
+    </form>
+  </details>
   <h3 style="margin-top:1rem;">Fields</h3>
   <ul>{}</ul>
 </section>
@@ -4414,6 +4434,8 @@ async fn render_study_workbench(
         html_escape(admin_email.trim()),
         field_count,
         bulk_delete_fields_action,
+        html_escape(admin_email.trim()),
+        bulk_delete_corrupted_fields_action,
         html_escape(admin_email.trim()),
         fields_html,
         visit_template_action,
@@ -4798,6 +4820,71 @@ async fn submit_bulk_delete_study_crf_fields(
         template.id,
         query_escape(&format!(
             "Bulk delete complete: {} CRF fields removed",
+            deleted_count
+        ))
+    )))
+}
+
+async fn submit_bulk_delete_corrupted_study_crf_fields(
+    State(ctx): State<AppContext>,
+    Path(template_id): Path<Uuid>,
+    Form(form): Form<StudyCrfBulkDeleteForm>,
+) -> Result<Redirect, ApiError> {
+    let template = ctx
+        .db
+        .get_study_crf_template(template_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("template not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(template.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    if form.confirmation_text.trim() != "DELETE CORRUPTED" {
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            query_escape(form.admin_email.trim()),
+            project.organization_id,
+            project.id,
+            template.id,
+            query_escape("Cleanup cancelled: type DELETE CORRUPTED exactly to confirm")
+        )));
+    }
+    let existing_fields = ctx
+        .db
+        .list_study_crf_fields(template_id)
+        .await
+        .map_err(ApiError::internal)?;
+    let corrupted_field_ids = existing_fields
+        .iter()
+        .filter(|field| is_corrupted_crf_field(field))
+        .map(|field| field.id)
+        .collect::<Vec<_>>();
+    let deleted_count = ctx
+        .db
+        .delete_study_crf_fields_by_ids(template_id, &corrupted_field_ids)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        template.id,
+        query_escape(&format!(
+            "Corrupted-field cleanup complete: {} removed",
             deleted_count
         ))
     )))
@@ -7492,6 +7579,49 @@ fn merge_imported_pdf_field_drafts(
     merged
 }
 
+fn is_corrupted_crf_field(field: &StudyCrfField) -> bool {
+    let label = field.field_label.trim();
+    let key = field.field_key.trim();
+    let label_lower = label.to_ascii_lowercase();
+    let key_lower = key.to_ascii_lowercase();
+    if contains_pdf_encoding_noise(label) || contains_pdf_encoding_noise(key) {
+        return true;
+    }
+    if (label_lower.contains("identity-h")
+        || label_lower.contains("identity-v")
+        || key_lower.contains("identity_h")
+        || key_lower.contains("identity_v"))
+        && (label_lower.contains("unimplemented")
+            || key_lower.contains("unimplemented")
+            || label_lower.contains("identity")
+            || key_lower.contains("identity"))
+    {
+        return true;
+    }
+    if label_lower.matches("identity-h").count() >= 2
+        || label_lower.matches("unimplemented").count() >= 2
+    {
+        return true;
+    }
+    label.len() > 220 && has_high_token_repetition(label)
+}
+
+fn has_high_token_repetition(text: &str) -> bool {
+    let tokens = text
+        .split_whitespace()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if tokens.len() < 8 {
+        return false;
+    }
+    let mut counts = HashMap::new();
+    for token in &tokens {
+        *counts.entry(token.clone()).or_insert(0usize) += 1;
+    }
+    let highest_count = counts.values().copied().max().unwrap_or(0);
+    highest_count.saturating_mul(100) / tokens.len() >= 45
+}
+
 fn dedupe_case_insensitive(values: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut deduped = Vec::new();
@@ -8485,12 +8615,22 @@ fn cingulum_theme_css() -> &'static str {
       padding: 0.72rem 0.82rem;
       font-weight: 700;
     }
+    .danger-note-soft {
+      background: #fff7f4;
+      border-color: #efc5bd;
+      border-left-color: #d8624a;
+      color: #703229;
+    }
     .danger-button {
       background: linear-gradient(135deg, #c74343 0%, #a81717 100%);
       box-shadow: 0 10px 18px rgba(156, 24, 24, 0.28);
     }
     .danger-button:hover {
       filter: brightness(0.95);
+    }
+    .danger-button-soft {
+      background: linear-gradient(135deg, #d56147 0%, #bb3f28 100%);
+      box-shadow: 0 10px 18px rgba(181, 74, 47, 0.24);
     }
     .status-chip {
       display: inline-block;
