@@ -7139,14 +7139,14 @@ fn resolve_lopdf_object<'a>(
 fn decode_lopdf_text_object(document: &LopdfDocument, object: &LopdfObject) -> Option<String> {
     let resolved = resolve_lopdf_object(document, object)?;
     if let Ok(bytes) = resolved.as_str() {
-        let decoded = normalize_whitespace(&LopdfDocument::decode_text(None, bytes));
-        if !decoded.is_empty() {
+        let decoded = decode_lopdf_bytes_best_effort(bytes);
+        if is_plausible_import_label(&decoded) {
             return Some(decoded);
         }
     }
     if let Ok(name) = resolved.as_name_str() {
         let decoded = normalize_whitespace(name);
-        if !decoded.is_empty() {
+        if is_plausible_import_label(&decoded) {
             return Some(decoded);
         }
     }
@@ -7176,8 +7176,8 @@ fn decode_lopdf_option_values(document: &LopdfDocument, object: &LopdfObject) ->
             continue;
         };
         if let Ok(text) = resolved_option.as_str() {
-            let value = normalize_whitespace(&LopdfDocument::decode_text(None, text));
-            if !value.is_empty() {
+            let value = decode_lopdf_bytes_best_effort(text);
+            if is_plausible_import_label(&value) {
                 options.push(value);
             }
             continue;
@@ -7280,10 +7280,14 @@ fn extract_pdf_raw_name_hints(pdf_bytes: &[u8]) -> Vec<ImportedCrfFieldDraft> {
         .into_iter()
         .filter(|label| looks_like_raw_pdf_label(label))
         .take(800)
-        .map(|label| {
+        .filter_map(|label| {
+            let sanitized_label = sanitize_pdf_field_label(&label);
+            if !is_plausible_import_label(&sanitized_label) {
+                return None;
+            }
             let (field_type, options_json) = infer_pdf_field_type_and_options(&label);
-            let display_label = strip_inline_option_hints(&label);
-            ImportedCrfFieldDraft {
+            let display_label = strip_inline_option_hints(&sanitized_label);
+            Some(ImportedCrfFieldDraft {
                 field_key: normalize_html_field_key(&display_label),
                 field_label: if display_label.is_empty() {
                     "Imported field".to_string()
@@ -7293,7 +7297,7 @@ fn extract_pdf_raw_name_hints(pdf_bytes: &[u8]) -> Vec<ImportedCrfFieldDraft> {
                 field_type,
                 required: false,
                 options_json,
-            }
+            })
         })
         .collect::<Vec<_>>()
 }
@@ -7342,6 +7346,9 @@ fn looks_like_raw_pdf_label(label: &str) -> bool {
     if trimmed.len() < 3 || trimmed.len() > 120 {
         return false;
     }
+    if contains_pdf_encoding_noise(trimmed) {
+        return false;
+    }
     if looks_like_pdf_page_noise(trimmed) {
         return false;
     }
@@ -7367,6 +7374,10 @@ fn merge_imported_pdf_field_drafts(
     let mut key_index: HashMap<String, usize> = HashMap::new();
     let mut fallback_counter = 1usize;
     for mut draft in drafts {
+        draft.field_label = sanitize_pdf_field_label(&draft.field_label);
+        if !is_plausible_import_label(&draft.field_label) {
+            continue;
+        }
         draft.field_key = normalize_html_field_key(&draft.field_key);
         if draft.field_key.is_empty() {
             draft.field_key = normalize_html_field_key(&draft.field_label);
@@ -7416,7 +7427,7 @@ fn parse_crf_fields_from_pdf_text(pdf_text: &str) -> Vec<ImportedCrfFieldDraft> 
     let normalized_lines = pdf_text
         .lines()
         .map(normalize_whitespace)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !contains_pdf_encoding_noise(line))
         .collect::<Vec<_>>();
     let merged_lines = merge_pdf_wrapped_lines(&normalized_lines);
     let mut candidate_lines = merged_lines
@@ -7439,7 +7450,7 @@ fn parse_crf_fields_from_pdf_text(pdf_text: &str) -> Vec<ImportedCrfFieldDraft> 
 
     for normalized_line in candidate_lines {
         let cleaned_label = sanitize_pdf_field_label(&normalized_line);
-        if cleaned_label.is_empty() {
+        if !is_plausible_import_label(&cleaned_label) {
             continue;
         }
         let (field_type, options_json) = infer_pdf_field_type_and_options(&cleaned_label);
@@ -7471,6 +7482,9 @@ fn looks_like_pdf_field_line(line: &str) -> bool {
     if trimmed.len() < 3 {
         return false;
     }
+    if contains_pdf_encoding_noise(trimmed) {
+        return false;
+    }
     if trimmed.ends_with('?') || trimmed.ends_with(':') || trimmed.contains("_____") {
         return true;
     }
@@ -7489,6 +7503,9 @@ fn looks_like_pdf_field_line(line: &str) -> bool {
 fn looks_like_pdf_field_line_relaxed(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.len() < 4 || trimmed.len() > 140 {
+        return false;
+    }
+    if contains_pdf_encoding_noise(trimmed) {
         return false;
     }
     if looks_like_pdf_page_noise(trimmed) {
@@ -7693,9 +7710,71 @@ fn sanitize_pdf_field_label(line: &str) -> String {
         without_bullets
     };
     normalize_whitespace(without_numbering)
+        .replace('\u{fffd}', " ")
+        .replace("??", " ")
         .trim_end_matches(':')
         .trim()
         .to_string()
+}
+
+fn decode_lopdf_bytes_best_effort(bytes: &[u8]) -> String {
+    let decoded_primary = normalize_whitespace(&LopdfDocument::decode_text(None, bytes));
+    if is_plausible_import_label(&decoded_primary) {
+        return decoded_primary;
+    }
+    let decoded_fallback = normalize_whitespace(&String::from_utf8_lossy(bytes));
+    if is_plausible_import_label(&decoded_fallback) {
+        return decoded_fallback;
+    }
+    decoded_primary
+}
+
+fn contains_pdf_encoding_noise(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("unimplemented??identity-h")
+        || lower.contains("unimplemented??identity-v")
+        || lower.contains("identity-h unimplemented")
+        || lower.contains("identity-v unimplemented")
+        || lower.contains("unimplemented??")
+    {
+        return true;
+    }
+    lower.matches("unimplemented").count() >= 2
+}
+
+fn is_plausible_import_label(label: &str) -> bool {
+    let trimmed = label.trim();
+    if trimmed.len() < 2 || trimmed.len() > 180 {
+        return false;
+    }
+    if contains_pdf_encoding_noise(trimmed) {
+        return false;
+    }
+    if looks_like_pdf_page_noise(trimmed) {
+        return false;
+    }
+    let alpha_count = trimmed
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
+    if alpha_count < 2 {
+        return false;
+    }
+    let tokens = trimmed
+        .split_whitespace()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if tokens.len() > 3 {
+        let mut token_counts: HashMap<String, usize> = HashMap::new();
+        for token in &tokens {
+            *token_counts.entry(token.clone()).or_insert(0) += 1;
+        }
+        let max_count = token_counts.values().copied().max().unwrap_or(0);
+        if max_count.saturating_mul(100) / tokens.len() >= 60 {
+            return false;
+        }
+    }
+    true
 }
 
 fn infer_pdf_field_type_and_options(label: &str) -> (String, String) {
