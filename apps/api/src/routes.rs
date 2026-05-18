@@ -6884,27 +6884,58 @@ fn cingulum_theme_css() -> &'static str {
     a:hover { color: var(--cg-orange); }
     ul { padding-left: 1.1rem; margin: 0.5rem 0 0; }
     li { margin-bottom: 0.28rem; }
+    form:not([style*="display:inline"]):not([style*="display:inline-block"]) {
+      max-width: 760px;
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      border: 1px solid rgba(39, 79, 112, 0.22);
+      border-radius: 16px;
+      padding: 0.9rem 1rem 1.05rem;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78), 0 8px 16px rgba(2, 24, 43, 0.07);
+      margin-top: 0.7rem;
+      margin-bottom: 0.8rem;
+    }
+    form[style*="display:inline"],
+    form[style*="display:inline-block"] {
+      max-width: none;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      box-shadow: none;
+      margin: 0;
+    }
     label {
       font-size: 0.84rem;
-      font-weight: 700;
-      margin-bottom: 0.28rem;
-      margin-top: 0.55rem;
+      font-weight: 800;
+      margin-bottom: 0.24rem;
+      margin-top: 0.62rem;
       display: block;
+      color: #1b3956;
     }
-    input, textarea, select {
-      width: 100%;
-      border: 1px solid rgba(197, 183, 171, 0.95);
-      border-radius: 11px;
-      padding: 0.64rem;
-      background: #fffefc;
+    input:not([type="checkbox"]):not([type="radio"]), textarea, select {
+      width: min(100%, 680px);
+      border: 1px solid rgba(47, 88, 120, 0.28);
+      border-radius: 14px;
+      padding: 0.76rem 0.82rem;
+      background: #ffffff;
       color: var(--cg-navy);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+      box-shadow: inset 0 1px 2px rgba(15, 45, 72, 0.08);
     }
-    input:focus, textarea:focus, select:focus {
-      outline: 2px solid rgba(240, 87, 8, 0.3);
+    input[type="checkbox"], input[type="radio"] {
+      width: auto;
+      accent-color: var(--cg-orange);
+      transform: scale(1.05);
+      margin-top: 0.18rem;
+    }
+    input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus, select:focus {
+      outline: 2px solid rgba(240, 87, 8, 0.22);
       border-color: var(--cg-orange);
+      box-shadow: 0 0 0 4px rgba(240, 87, 8, 0.08);
     }
-    textarea { min-height: 140px; }
+    textarea {
+      min-height: 190px;
+      resize: vertical;
+    }
     form[data-crf-field-form] [data-options-section] {
       margin-top: 0.35rem;
     }
@@ -6933,8 +6964,8 @@ fn cingulum_theme_css() -> &'static str {
       background: linear-gradient(135deg, #f36e1d 0%, var(--cg-orange) 100%);
       color: #fff;
       border: none;
-      border-radius: 11px;
-      padding: 0.64rem 0.95rem;
+      border-radius: 12px;
+      padding: 0.66rem 1rem;
       cursor: pointer;
       font-weight: 700;
       margin-top: 0.62rem;
