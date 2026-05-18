@@ -1581,7 +1581,10 @@ struct StudyCrfFieldForm {
     field_label: String,
     field_type: String,
     required: Option<String>,
+    #[serde(default)]
     options_json: String,
+    #[serde(default)]
+    options_text: String,
     display_order: String,
 }
 
@@ -3564,12 +3567,13 @@ async fn render_study_workbench(
             .iter()
             .map(|field| {
                 let field_type_options_html = render_crf_field_type_options(&field.field_type);
+                let options_text_value = options_json_to_lines(&field.options_json);
                 format!(
                     r#"<li>
   <strong>{}</strong> ({}) <small>key={} · required={} · order={} · options={}</small>
   <details style="margin-top:0.35rem;">
     <summary><strong>Edit field</strong></summary>
-    <form method="post" action="/ui/studies/fields/{}/update" style="margin-top:0.55rem;">
+    <form method="post" action="/ui/studies/fields/{}/update" data-crf-field-form style="margin-top:0.55rem;">
       <label>Admin email</label>
       <input name="admin_email" value="{}" required />
       <label>Field key</label>
@@ -3577,11 +3581,15 @@ async fn render_study_workbench(
       <label>Field label</label>
       <input name="field_label" value="{}" required />
       <label>Field type</label>
-      <select name="field_type" required>{}</select>
+      <select name="field_type" data-field-type-select required>{}</select>
       <label>Required</label>
       <input type="checkbox" name="required" value="true" {} />
-      <label>Options JSON (for select fields)</label>
-      <input name="options_json" value="{}" />
+      <div data-options-section>
+        <label>Choice options (one per line)</label>
+        <textarea name="options_text" placeholder="Option A&#10;Option B">{}</textarea>
+        <input type="hidden" name="options_json" value="{}" />
+        <small class="muted">Used only for single-select or multi-select field types.</small>
+      </div>
       <label>Display order</label>
       <input name="display_order" value="{}" />
       <button type="submit">Save Field Changes</button>
@@ -3600,6 +3608,7 @@ async fn render_study_workbench(
                     html_escape(&field.field_label),
                     field_type_options_html,
                     if field.required { "checked" } else { "" },
+                    html_escape(&options_text_value),
                     html_escape(&field.options_json),
                     field.display_order
                 )
@@ -4150,7 +4159,7 @@ async fn render_study_workbench(
   <h2>4) CRF Field Builder</h2>
   <p><strong>Selected template:</strong> {}</p>
   <p class="muted">Add new fields below. To edit an existing field, use the <strong>Edit field</strong> option in the list.</p>
-  <form method="post" action="{}">
+  <form method="post" action="{}" data-crf-field-form>
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Field key</label>
@@ -4158,20 +4167,24 @@ async fn render_study_workbench(
     <label>Field label</label>
     <input name="field_label" placeholder="Systolic blood pressure" required />
     <label>Field type</label>
-    <select name="field_type" required>
-      <option value="text">text</option>
-      <option value="textarea">textarea</option>
-      <option value="number">number</option>
-      <option value="date">date</option>
-      <option value="datetime">datetime</option>
-      <option value="boolean">boolean</option>
-      <option value="single_select">single_select</option>
-      <option value="multi_select">multi_select</option>
+    <select name="field_type" data-field-type-select required>
+      <option value="text" selected>Short text</option>
+      <option value="textarea">Long text</option>
+      <option value="number">Number</option>
+      <option value="date">Date</option>
+      <option value="datetime">Date + time</option>
+      <option value="boolean">Yes / No</option>
+      <option value="single_select">Single choice (one answer)</option>
+      <option value="multi_select">Multiple choice (many answers)</option>
     </select>
     <label>Required</label>
     <input type="checkbox" name="required" value="true" />
-    <label>Options JSON (for select fields)</label>
-    <input name="options_json" placeholder='["Yes","No"]' />
+    <div data-options-section>
+      <label>Choice options (one per line)</label>
+      <textarea name="options_text" placeholder="Yes&#10;No&#10;Unknown"></textarea>
+      <input type="hidden" name="options_json" value="[]" />
+      <small class="muted">Only needed for Single choice or Multiple choice fields.</small>
+    </div>
     <label>Display order</label>
     <input name="display_order" value="0" />
     <button type="submit">Add Field</button>
@@ -4635,7 +4648,11 @@ async fn submit_add_study_crf_field(
             "admin_email lacks organization manager access".to_string(),
         )));
     }
-    let options_json = normalize_options_json_input(form.options_json.trim());
+    let options_json = normalize_crf_field_options(
+        form.field_type.trim(),
+        form.options_text.trim(),
+        form.options_json.trim(),
+    );
     let display_order = form.display_order.trim().parse::<i32>().unwrap_or(0).max(0);
     if let Err(err) = ctx
         .db
@@ -4705,7 +4722,11 @@ async fn submit_update_study_crf_field(
             "admin_email lacks organization manager access".to_string(),
         )));
     }
-    let options_json = normalize_options_json_input(form.options_json.trim());
+    let options_json = normalize_crf_field_options(
+        form.field_type.trim(),
+        form.options_text.trim(),
+        form.options_json.trim(),
+    );
     let display_order = form.display_order.trim().parse::<i32>().unwrap_or(0).max(0);
     if let Err(err) = ctx
         .db
@@ -6454,19 +6475,64 @@ fn normalize_options_json_input(input: &str) -> String {
     serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
 }
 
+fn is_select_field_type(field_type: &str) -> bool {
+    matches!(
+        field_type.trim().to_ascii_lowercase().as_str(),
+        "single_select" | "multi_select"
+    )
+}
+
+fn normalize_crf_field_options(field_type: &str, options_text: &str, options_json: &str) -> String {
+    if !is_select_field_type(field_type) {
+        return "[]".to_string();
+    }
+    let options_text_trimmed = options_text.trim();
+    if !options_text_trimmed.is_empty() {
+        let values = options_text_trimmed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        return serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string());
+    }
+    normalize_options_json_input(options_json)
+}
+
+fn options_json_to_lines(options_json: &str) -> String {
+    let trimmed = options_json.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(array) = value.as_array() {
+            return array
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| item.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+    }
+    trimmed.to_string()
+}
+
 fn render_crf_field_type_options(selected_type: &str) -> String {
     [
-        "text",
-        "textarea",
-        "number",
-        "date",
-        "datetime",
-        "boolean",
-        "single_select",
-        "multi_select",
+        ("text", "Short text"),
+        ("textarea", "Long text"),
+        ("number", "Number"),
+        ("date", "Date"),
+        ("datetime", "Date + time"),
+        ("boolean", "Yes / No"),
+        ("single_select", "Single choice (one answer)"),
+        ("multi_select", "Multiple choice (many answers)"),
     ]
     .iter()
-    .map(|field_type| {
+    .map(|(field_type, label)| {
         let selected = if field_type.eq_ignore_ascii_case(selected_type) {
             " selected"
         } else {
@@ -6474,7 +6540,7 @@ fn render_crf_field_type_options(selected_type: &str) -> String {
         };
         format!(
             r#"<option value="{}"{}>{}</option>"#,
-            field_type, selected, field_type
+            field_type, selected, label
         )
     })
     .collect::<Vec<_>>()
@@ -6492,7 +6558,7 @@ fn map_crf_field_error_to_notice(prefix: &str, error_text: &str) -> String {
         return format!("{prefix}: invalid field type.");
     }
     if normalized.contains("invalid input syntax for type json") {
-        return format!("{prefix}: options JSON is invalid.");
+        return format!("{prefix}: choice options format is invalid.");
     }
     format!("{prefix}: {error_text}")
 }
@@ -6833,6 +6899,12 @@ fn cingulum_theme_css() -> &'static str {
       border-color: var(--cg-orange);
     }
     textarea { min-height: 140px; }
+    form[data-crf-field-form] [data-options-section] {
+      margin-top: 0.35rem;
+    }
+    form[data-crf-field-form] [data-options-section] textarea {
+      min-height: 88px;
+    }
     button {
       background: linear-gradient(135deg, #f36e1d 0%, var(--cg-orange) 100%);
       color: #fff;
@@ -7068,6 +7140,19 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
         buttons.forEach((btn) => {{
           btn.addEventListener('click', () => activate(btn.getAttribute('data-tab-id')));
         }});
+      }});
+      const fieldForms = Array.from(document.querySelectorAll('form[data-crf-field-form]'));
+      fieldForms.forEach((form) => {{
+        const fieldTypeSelect = form.querySelector('[data-field-type-select]');
+        const optionsSection = form.querySelector('[data-options-section]');
+        if (!fieldTypeSelect || !optionsSection) return;
+        const syncFieldOptionsVisibility = () => {{
+          const fieldType = (fieldTypeSelect.value || '').toLowerCase();
+          const showOptions = fieldType === 'single_select' || fieldType === 'multi_select';
+          optionsSection.style.display = showOptions ? 'block' : 'none';
+        }};
+        fieldTypeSelect.addEventListener('change', syncFieldOptionsVisibility);
+        syncFieldOptionsVisibility();
       }});
       const hashId = window.location.hash ? window.location.hash.slice(1) : '';
       if (hashId) {{
