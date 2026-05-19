@@ -8,9 +8,9 @@ use uuid::Uuid;
 use crate::models::{
     DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite, MediaUploadTicket,
     Organization, OrganizationSummaryRow, OutboundEmail, Patient, PatientStudyVisit, Project,
-    ProjectProgressRow, Provider, Site, StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission,
+    ProjectProgressRow, Provider, Site, SiteStartupChecklistItem, StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission,
     StudyCrfTemplate, StudyDataQuery, StudyOperationalSummary, StudyPhaseEvent, StudyReadiness,
-    StudyStartupChecklistItem, StudyVisitTemplate, User, UserMembership,
+    StudyStartupChecklistItem, StudyVisitTemplate, User, UserMembership, AuditLog,
 };
 
 #[derive(Clone)]
@@ -50,6 +50,41 @@ const DEFAULT_STUDY_STARTUP_CHECKLIST_ITEMS: [(&str, &str); 8] = [
     (
         "team_training_complete",
         "Study team training and SOP acknowledgement completed",
+    ),
+];
+
+const DEFAULT_SITE_STARTUP_CHECKLIST_ITEMS: [(&str, &str); 8] = [
+    (
+        "data_use_agreement",
+        "Data Use Agreement (DUA) Executed",
+    ),
+    (
+        "security_risk_assessment",
+        "IT & Cybersecurity Risk Assessment Approved",
+    ),
+    (
+        "irb_approval",
+        "Local IRB/Ethics Committee Approval Documented",
+    ),
+    (
+        "investigator_qualifications",
+        "PI & Sub-I CVs and Medical Licenses Collected",
+    ),
+    (
+        "financial_disclosure",
+        "Financial Disclosure Forms Collected",
+    ),
+    (
+        "protocol_training",
+        "Protocol and EDC System Training Completed",
+    ),
+    (
+        "delegation_log",
+        "Delegation of Authority Log Signed",
+    ),
+    (
+        "statement_of_investigator",
+        "Statement of Investigator (e.g., FDA Form 1572) Signed",
     ),
 ];
 
@@ -154,6 +189,8 @@ impl Db {
                     study_summary,
                     phase_changed_at,
                     hex_code,
+                    status,
+                    last_activity_at,
                     created_at
                 FROM projects
                 WHERE organization_id = $1
@@ -176,6 +213,8 @@ impl Db {
                 study_summary: r.get("study_summary"),
                 phase_changed_at: r.get("phase_changed_at"),
                 hex_code: r.get("hex_code"),
+                status: r.get("status"),
+                last_activity_at: r.get("last_activity_at"),
                 created_at: r.get("created_at"),
             })
             .collect())
@@ -186,7 +225,7 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT id, project_id, name, principal_investigator, hex_code, created_at
+                SELECT id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
                 FROM sites
                 WHERE project_id = $1
                 ORDER BY created_at DESC
@@ -201,7 +240,11 @@ impl Db {
                 project_id: r.get("project_id"),
                 name: r.get("name"),
                 principal_investigator: r.get("principal_investigator"),
+                co_principal_investigator: r.get("co_principal_investigator"),
+                sub_investigator: r.get("sub_investigator"),
                 hex_code: r.get("hex_code"),
+                status: r.get("status"),
+                last_activity_at: r.get("last_activity_at"),
                 created_at: r.get("created_at"),
             })
             .collect())
@@ -235,6 +278,8 @@ impl Db {
                     study_summary,
                     phase_changed_at,
                     hex_code,
+                    status,
+                    last_activity_at,
                     created_at
                 "#,
                 &[&organization_id, &name, &therapeutic_area, &hex_code],
@@ -252,6 +297,8 @@ impl Db {
             study_summary: row.get("study_summary"),
             phase_changed_at: row.get("phase_changed_at"),
             hex_code: row.get("hex_code"),
+            status: row.get("status"),
+            last_activity_at: row.get("last_activity_at"),
             created_at: row.get("created_at"),
         })
     }
@@ -695,6 +742,8 @@ impl Db {
         field_type: &str,
         required: bool,
         options_json: &str,
+        branching_logic_json: Option<&str>,
+        edit_checks_json: Option<&str>,
         display_order: i32,
     ) -> anyhow::Result<StudyCrfField> {
         if normalize_crf_field_type(field_type).is_none() {
@@ -711,9 +760,11 @@ impl Db {
                     field_type,
                     required,
                     options_json,
+                    branching_logic_json,
+                    edit_checks_json,
                     display_order
                 )
-                VALUES ($1, $2, $3, $4, $5, $6::TEXT::JSONB, $7)
+                VALUES ($1, $2, $3, $4, $5, $6::TEXT::JSONB, $7::TEXT::JSONB, $8::TEXT::JSONB, $9)
                 RETURNING
                     id,
                     template_id,
@@ -722,6 +773,8 @@ impl Db {
                     field_type,
                     required,
                     options_json::TEXT AS options_json,
+                    branching_logic_json::TEXT AS branching_logic_json,
+                    edit_checks_json::TEXT AS edit_checks_json,
                     display_order,
                     created_at
                 "#,
@@ -732,6 +785,8 @@ impl Db {
                     &field_type,
                     &required,
                     &options_json,
+                    &branching_logic_json,
+                    &edit_checks_json,
                     &display_order,
                 ],
             )
@@ -755,6 +810,8 @@ impl Db {
                     field_type,
                     required,
                     options_json::TEXT AS options_json,
+                    branching_logic_json::TEXT AS branching_logic_json,
+                    edit_checks_json::TEXT AS edit_checks_json,
                     display_order,
                     created_at
                 FROM study_crf_fields
@@ -774,6 +831,8 @@ impl Db {
         field_type: &str,
         required: bool,
         options_json: &str,
+        branching_logic_json: Option<&str>,
+        edit_checks_json: Option<&str>,
         display_order: i32,
     ) -> anyhow::Result<StudyCrfField> {
         if normalize_crf_field_type(field_type).is_none() {
@@ -790,7 +849,9 @@ impl Db {
                     field_type = $4,
                     required = $5,
                     options_json = $6::TEXT::JSONB,
-                    display_order = $7
+                    branching_logic_json = $7::TEXT::JSONB,
+                    edit_checks_json = $8::TEXT::JSONB,
+                    display_order = $9
                 WHERE id = $1
                 RETURNING
                     id,
@@ -800,6 +861,8 @@ impl Db {
                     field_type,
                     required,
                     options_json::TEXT AS options_json,
+                    branching_logic_json::TEXT AS branching_logic_json,
+                    edit_checks_json::TEXT AS edit_checks_json,
                     display_order,
                     created_at
                 "#,
@@ -810,6 +873,8 @@ impl Db {
                     &field_type,
                     &required,
                     &options_json,
+                    &branching_logic_json,
+                    &edit_checks_json,
                     &display_order,
                 ],
             )
@@ -833,6 +898,8 @@ impl Db {
                     field_type,
                     required,
                     options_json::TEXT AS options_json,
+                    branching_logic_json::TEXT AS branching_logic_json,
+                    edit_checks_json::TEXT AS edit_checks_json,
                     display_order,
                     created_at
                 FROM study_crf_fields
@@ -1097,6 +1164,7 @@ impl Db {
                     entered_by_user_id,
                     submitted_at,
                     locked_at,
+                    sdv_status,
                     created_at,
                     updated_at
                 "#,
@@ -1110,6 +1178,17 @@ impl Db {
                 ],
             )
             .await?;
+        
+        let site_opt: Option<Uuid> = client
+            .query_opt("SELECT site_id FROM patients WHERE id = $1", &[&patient_id])
+            .await?
+            .and_then(|r| r.get("site_id"));
+        if let Some(site_id) = site_opt {
+            self.touch_site_activity(site_id).await?;
+        } else {
+            self.touch_project_activity(project_id).await?;
+        }
+        
         Ok(row_to_study_crf_submission(&row))
     }
 
@@ -1132,6 +1211,7 @@ impl Db {
                     entered_by_user_id,
                     submitted_at,
                     locked_at,
+                    sdv_status,
                     created_at,
                     updated_at
                 FROM study_crf_submissions
@@ -1164,6 +1244,7 @@ impl Db {
                     entered_by_user_id,
                     submitted_at,
                     locked_at,
+                    sdv_status,
                     created_at,
                     updated_at
                 FROM study_crf_submissions
@@ -1200,6 +1281,7 @@ impl Db {
                     entered_by_user_id,
                     submitted_at,
                     locked_at,
+                    sdv_status,
                     created_at,
                     updated_at
                 "#,
@@ -1247,10 +1329,44 @@ impl Db {
                     entered_by_user_id,
                     submitted_at,
                     locked_at,
+                    sdv_status,
                     created_at,
                     updated_at
                 "#,
                 &[&submission_id],
+            )
+            .await?;
+        Ok(row_to_study_crf_submission(&row))
+    }
+
+    pub async fn update_study_crf_submission_sdv_status(
+        &self,
+        submission_id: Uuid,
+        sdv_status: &str,
+    ) -> anyhow::Result<StudyCrfSubmission> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                UPDATE study_crf_submissions
+                SET sdv_status = $2, updated_at = NOW()
+                WHERE id = $1
+                RETURNING
+                    id,
+                    project_id,
+                    template_id,
+                    patient_id,
+                    patient_visit_id,
+                    answers_json::TEXT AS answers_json,
+                    status,
+                    entered_by_user_id,
+                    submitted_at,
+                    locked_at,
+                    sdv_status,
+                    created_at,
+                    updated_at
+                "#,
+                &[&submission_id, &sdv_status],
             )
             .await?;
         Ok(row_to_study_crf_submission(&row))
@@ -1638,6 +1754,122 @@ impl Db {
         Ok(row_to_study_startup_checklist_item(&row))
     }
 
+    pub async fn list_site_startup_checklist_items(
+        &self,
+        site_id: Uuid,
+    ) -> anyhow::Result<Vec<SiteStartupChecklistItem>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    site_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes,
+                    created_at
+                FROM site_startup_checklist_items
+                WHERE site_id = $1
+                ORDER BY created_at ASC
+                "#,
+                &[&site_id],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(row_to_site_startup_checklist_item)
+            .collect())
+    }
+
+    pub async fn ensure_default_site_startup_checklist_items(
+        &self,
+        site_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        for (item_code, item_label) in DEFAULT_SITE_STARTUP_CHECKLIST_ITEMS {
+            client
+                .execute(
+                    r#"
+                    INSERT INTO site_startup_checklist_items (site_id, item_code, item_label)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (site_id, item_code) DO NOTHING
+                    "#,
+                    &[&site_id, &item_code, &item_label],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn set_site_startup_checklist_item(
+        &self,
+        site_id: Uuid,
+        item_code: &str,
+        item_label: &str,
+        completed: bool,
+        completed_by_user_id: Option<Uuid>,
+        notes: &str,
+    ) -> anyhow::Result<SiteStartupChecklistItem> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO site_startup_checklist_items (
+                    site_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes
+                )
+                VALUES (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5,
+                    CASE WHEN $4 THEN NOW() ELSE NULL END,
+                    $6
+                )
+                ON CONFLICT (site_id, item_code)
+                DO UPDATE SET
+                    item_label = EXCLUDED.item_label,
+                    completed = EXCLUDED.completed,
+                    completed_by_user_id = EXCLUDED.completed_by_user_id,
+                    completed_at = CASE
+                        WHEN EXCLUDED.completed THEN NOW()
+                        ELSE NULL
+                    END,
+                    notes = EXCLUDED.notes
+                RETURNING
+                    id,
+                    site_id,
+                    item_code,
+                    item_label,
+                    completed,
+                    completed_by_user_id,
+                    completed_at,
+                    notes,
+                    created_at
+                "#,
+                &[
+                    &site_id,
+                    &item_code,
+                    &item_label,
+                    &completed,
+                    &completed_by_user_id,
+                    &notes,
+                ],
+            )
+            .await?;
+        Ok(row_to_site_startup_checklist_item(&row))
+    }
+
     pub async fn study_operational_summary(
         &self,
         project_id: Uuid,
@@ -1718,6 +1950,8 @@ impl Db {
         project_id: Uuid,
         name: &str,
         principal_investigator: &str,
+        co_principal_investigator: Option<&str>,
+        sub_investigator: Option<&str>,
     ) -> anyhow::Result<Site> {
         let client = self.pool.get().await?;
         let project_hex = self.ensure_project_hex_code(&client, project_id).await?;
@@ -1725,21 +1959,104 @@ impl Db {
         let row = client
             .query_one(
                 r#"
-                INSERT INTO sites (project_id, name, principal_investigator, hex_code)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id, project_id, name, principal_investigator, hex_code, created_at
+                INSERT INTO sites (project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
                 "#,
-                &[&project_id, &name, &principal_investigator, &hex_code],
+                &[&project_id, &name, &principal_investigator, &co_principal_investigator, &sub_investigator, &hex_code],
             )
             .await?;
+        let site_id: Uuid = row.get("id");
+        self.ensure_default_site_startup_checklist_items(site_id).await?;
+
         Ok(Site {
-            id: row.get("id"),
+            id: site_id,
             project_id: row.get("project_id"),
             name: row.get("name"),
             principal_investigator: row.get("principal_investigator"),
+            co_principal_investigator: row.get("co_principal_investigator"),
+            sub_investigator: row.get("sub_investigator"),
             hex_code: row.get("hex_code"),
+            status: row.get("status"),
+            last_activity_at: row.get("last_activity_at"),
             created_at: row.get("created_at"),
         })
+    }
+
+    pub async fn delete_site(&self, site_id: Uuid) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute("DELETE FROM sites WHERE id = $1", &[&site_id])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_site_status(&self, site_id: Uuid, status: &str) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute("UPDATE sites SET status = $1, last_activity_at = NOW() WHERE id = $2", &[&status, &site_id])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_project_status(&self, project_id: Uuid, status: &str) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute("UPDATE projects SET status = $1, last_activity_at = NOW() WHERE id = $2", &[&status, &project_id])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn touch_site_activity(&self, site_id: Uuid) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                "UPDATE sites SET last_activity_at = NOW() WHERE id = $1",
+                &[&site_id],
+            )
+            .await?;
+        client
+            .execute(
+                "UPDATE projects SET last_activity_at = NOW() WHERE id = (SELECT project_id FROM sites WHERE id = $1)",
+                &[&site_id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn touch_project_activity(&self, project_id: Uuid) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                "UPDATE projects SET last_activity_at = NOW() WHERE id = $1",
+                &[&project_id],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn auto_archive_dormant_entities(&self, days_threshold: f64) -> anyhow::Result<(u64, u64)> {
+        let client = self.pool.get().await?;
+        
+        let updated_sites = client
+            .execute(
+                "UPDATE sites 
+                 SET status = 'dormant' 
+                 WHERE status = 'active' AND last_activity_at < NOW() - ($1 * INTERVAL '1 day')",
+                &[&days_threshold],
+            )
+            .await?;
+            
+        let updated_projects = client
+            .execute(
+                "UPDATE projects 
+                 SET status = 'dormant' 
+                 WHERE status = 'active' AND last_activity_at < NOW() - ($1 * INTERVAL '1 day')",
+                &[&days_threshold],
+            )
+            .await?;
+            
+        Ok((updated_sites, updated_projects))
     }
 
     pub async fn create_form_invite(
@@ -1832,6 +2149,8 @@ impl Db {
                     study_summary,
                     phase_changed_at,
                     hex_code,
+                    status,
+                    last_activity_at,
                     created_at
                 FROM projects
                 WHERE id = $1
@@ -1852,6 +2171,8 @@ impl Db {
             study_summary: r.get("study_summary"),
             phase_changed_at: r.get("phase_changed_at"),
             hex_code: r.get("hex_code"),
+            status: r.get("status"),
+            last_activity_at: r.get("last_activity_at"),
             created_at: r.get("created_at"),
         }))
     }
@@ -1861,7 +2182,7 @@ impl Db {
         let row = client
             .query_opt(
                 r#"
-                SELECT id, project_id, name, principal_investigator, hex_code, created_at
+                SELECT id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
                 FROM sites
                 WHERE id = $1
                 "#,
@@ -1873,7 +2194,11 @@ impl Db {
             project_id: r.get("project_id"),
             name: r.get("name"),
             principal_investigator: r.get("principal_investigator"),
+            co_principal_investigator: r.get("co_principal_investigator"),
+            sub_investigator: r.get("sub_investigator"),
             hex_code: r.get("hex_code"),
+            status: r.get("status"),
+            last_activity_at: r.get("last_activity_at"),
             created_at: r.get("created_at"),
         }))
     }
@@ -2243,6 +2568,7 @@ impl Db {
                 ],
             )
             .await?;
+        self.touch_site_activity(site_id).await?;
         Ok(row_to_patient(&row))
     }
 
@@ -3238,6 +3564,54 @@ impl Db {
             .await?;
         Ok(())
     }
+    pub async fn insert_audit_log(
+        &self,
+        entity_table: &str,
+        entity_id: Uuid,
+        action: &str,
+        changed_by_user_id: Option<Uuid>,
+        old_data: Option<&str>,
+        new_data: Option<&str>,
+        reason: Option<&str>,
+    ) -> anyhow::Result<AuditLog> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO audit_logs (
+                    entity_table,
+                    entity_id,
+                    action,
+                    changed_by_user_id,
+                    old_data,
+                    new_data,
+                    reason
+                )
+                VALUES ($1, $2, $3, $4, $5::TEXT::JSONB, $6::TEXT::JSONB, $7)
+                RETURNING
+                    id,
+                    entity_table,
+                    entity_id,
+                    action,
+                    changed_by_user_id,
+                    old_data::TEXT AS old_data,
+                    new_data::TEXT AS new_data,
+                    reason,
+                    created_at
+                "#,
+                &[
+                    &entity_table,
+                    &entity_id,
+                    &action,
+                    &changed_by_user_id,
+                    &old_data,
+                    &new_data,
+                    &reason,
+                ],
+            )
+            .await?;
+        Ok(row_to_audit_log(&row))
+    }
 }
 
 fn normalize_encounter_type(raw: &str) -> Option<String> {
@@ -3251,6 +3625,7 @@ fn normalize_encounter_type(raw: &str) -> Option<String> {
         _ => None,
     }
 }
+
 
 fn normalize_organization_kind(raw: &str) -> Option<String> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -3350,6 +3725,20 @@ fn random_hex_segment(len: usize, min_letters: usize) -> String {
     }
 }
 
+fn row_to_audit_log(row: &Row) -> AuditLog {
+    AuditLog {
+        id: row.get("id"),
+        entity_table: row.get("entity_table"),
+        entity_id: row.get("entity_id"),
+        action: row.get("action"),
+        changed_by_user_id: row.get("changed_by_user_id"),
+        old_data: row.get("old_data"),
+        new_data: row.get("new_data"),
+        reason: row.get("reason"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn row_to_data_use_agreement(row: &Row) -> DataUseAgreement {
     DataUseAgreement {
         id: row.get("id"),
@@ -3426,6 +3815,8 @@ fn row_to_project(row: &Row) -> Project {
         study_summary: row.get("study_summary"),
         phase_changed_at: row.get("phase_changed_at"),
         hex_code: row.get("hex_code"),
+        status: row.get("status"),
+        last_activity_at: row.get("last_activity_at"),
         created_at: row.get("created_at"),
     }
 }
@@ -3480,6 +3871,8 @@ fn row_to_study_crf_field(row: &Row) -> StudyCrfField {
         field_type: row.get("field_type"),
         required: row.get("required"),
         options_json: row.get("options_json"),
+        branching_logic_json: row.get("branching_logic_json"),
+        edit_checks_json: row.get("edit_checks_json"),
         display_order: row.get("display_order"),
         created_at: row.get("created_at"),
     }
@@ -3527,6 +3920,7 @@ fn row_to_study_crf_submission(row: &Row) -> StudyCrfSubmission {
         entered_by_user_id: row.get("entered_by_user_id"),
         submitted_at: row.get("submitted_at"),
         locked_at: row.get("locked_at"),
+        sdv_status: row.get("sdv_status"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
@@ -3566,6 +3960,20 @@ fn row_to_study_startup_checklist_item(row: &Row) -> StudyStartupChecklistItem {
     StudyStartupChecklistItem {
         id: row.get("id"),
         project_id: row.get("project_id"),
+        item_code: row.get("item_code"),
+        item_label: row.get("item_label"),
+        completed: row.get("completed"),
+        completed_by_user_id: row.get("completed_by_user_id"),
+        completed_at: row.get("completed_at"),
+        notes: row.get("notes"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn row_to_site_startup_checklist_item(row: &Row) -> SiteStartupChecklistItem {
+    SiteStartupChecklistItem {
+        id: row.get("id"),
+        site_id: row.get("site_id"),
         item_code: row.get("item_code"),
         item_label: row.get("item_label"),
         completed: row.get("completed"),

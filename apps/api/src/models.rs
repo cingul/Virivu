@@ -26,6 +26,8 @@ pub struct Project {
     pub study_summary: String,
     pub phase_changed_at: DateTime<Utc>,
     pub hex_code: Option<String>,
+    pub status: String,
+    pub last_activity_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -35,7 +37,11 @@ pub struct Site {
     pub project_id: Uuid,
     pub name: String,
     pub principal_investigator: String,
+    pub co_principal_investigator: Option<String>,
+    pub sub_investigator: Option<String>,
     pub hex_code: Option<String>,
+    pub status: String,
+    pub last_activity_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -118,6 +124,8 @@ pub struct StudyCrfField {
     pub field_type: String,
     pub required: bool,
     pub options_json: String,
+    pub branching_logic_json: Option<String>,
+    pub edit_checks_json: Option<String>,
     pub display_order: i32,
     pub created_at: DateTime<Utc>,
 }
@@ -162,6 +170,7 @@ pub struct StudyCrfSubmission {
     pub entered_by_user_id: Option<Uuid>,
     pub submitted_at: Option<DateTime<Utc>>,
     pub locked_at: Option<DateTime<Utc>>,
+    pub sdv_status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -182,6 +191,19 @@ pub struct StudyDataQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLog {
+    pub id: Uuid,
+    pub entity_table: String,
+    pub entity_id: Uuid,
+    pub action: String,
+    pub changed_by_user_id: Option<Uuid>,
+    pub old_data: Option<String>,
+    pub new_data: Option<String>,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudyCloseChecklistItem {
     pub id: Uuid,
     pub project_id: Uuid,
@@ -198,6 +220,19 @@ pub struct StudyCloseChecklistItem {
 pub struct StudyStartupChecklistItem {
     pub id: Uuid,
     pub project_id: Uuid,
+    pub item_code: String,
+    pub item_label: String,
+    pub completed: bool,
+    pub completed_by_user_id: Option<Uuid>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteStartupChecklistItem {
+    pub id: Uuid,
+    pub site_id: Uuid,
     pub item_code: String,
     pub item_label: String,
     pub completed: bool,

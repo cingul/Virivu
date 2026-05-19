@@ -2,6 +2,7 @@ use anyhow::Context;
 use diesel::{pg::PgConnection, prelude::*, sql_query};
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 
+// Force recompilation
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 const MIGRATION_INIT_VARIANTS: &[&str] = &["2026-05-17-000001", "2026-05-17-000001_init"];
 const MIGRATION_DUA_VARIANTS: &[&str] =

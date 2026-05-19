@@ -108,6 +108,10 @@ pub fn router(ctx: AppContext) -> Router {
             post(submit_lock_study_crf_submission),
         )
         .route(
+            "/ui/studies/submissions/{submission_id}/sdv",
+            post(submit_update_study_crf_submission_sdv),
+        )
+        .route(
             "/ui/studies/{project_id}/query",
             post(submit_create_study_data_query),
         )
@@ -126,6 +130,26 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/ui/studies/{project_id}/startup-checklist",
             post(submit_set_study_startup_checklist_item),
+        )
+        .route(
+            "/ui/app/sites/{site_id}/startup-checklist",
+            post(submit_set_site_startup_checklist_item),
+        )
+        .route(
+            "/ui/app/sites/{site_id}/delete",
+            post(submit_app_delete_site),
+        )
+        .route(
+            "/ui/app/sites/{site_id}/toggle-dormancy",
+            post(submit_app_site_toggle_dormancy),
+        )
+        .route(
+            "/ui/app/projects/{project_id}/toggle-dormancy",
+            post(submit_app_project_toggle_dormancy),
+        )
+        .route(
+            "/ui/app/auto-archive",
+            post(submit_app_auto_archive),
         )
         .route(
             "/ui/app/create-organization",
@@ -463,6 +487,8 @@ struct CreateSiteRequest {
     project_id: Uuid,
     name: String,
     principal_investigator: String,
+    co_principal_investigator: Option<String>,
+    sub_investigator: Option<String>,
 }
 
 async fn create_site(
@@ -484,6 +510,8 @@ async fn create_site(
             payload.project_id,
             payload.name.trim(),
             payload.principal_investigator.trim(),
+            payload.co_principal_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            payload.sub_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -648,6 +676,8 @@ struct AddStudyCrfFieldRequest {
     field_type: String,
     required: Option<bool>,
     options_json: Option<String>,
+    branching_logic_json: Option<String>,
+    edit_checks_json: Option<String>,
     display_order: Option<i32>,
 }
 
@@ -675,6 +705,14 @@ async fn add_study_crf_field(
             "field_key and field_label are required".to_string(),
         ));
     }
+    let branching_logic = payload.branching_logic_json.as_deref().and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t) }
+    });
+    let edit_checks = payload.edit_checks_json.as_deref().and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t) }
+    });
     let field = ctx
         .db
         .add_study_crf_field(
@@ -684,6 +722,8 @@ async fn add_study_crf_field(
             payload.field_type.trim(),
             payload.required.unwrap_or(false),
             payload.options_json.as_deref().unwrap_or("[]").trim(),
+            branching_logic,
+            edit_checks,
             payload.display_order.unwrap_or(0),
         )
         .await
@@ -1482,6 +1522,7 @@ struct AppDashboardQuery {
     project_id: Option<String>,
     patient_id: Option<String>,
     notice: Option<String>,
+    view: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1506,6 +1547,8 @@ struct AppCreateSiteForm {
     project_id: String,
     site_name: String,
     principal_investigator: String,
+    co_principal_investigator: Option<String>,
+    sub_investigator: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1561,6 +1604,7 @@ struct StudyWorkbenchQuery {
     template_id: Option<String>,
     submission_id: Option<String>,
     notice: Option<String>,
+    view: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1602,6 +1646,10 @@ struct StudyCrfFieldForm {
     options_json: String,
     #[serde(default)]
     options_text: String,
+    #[serde(default)]
+    branching_logic_json: String,
+    #[serde(default)]
+    edit_checks_json: String,
     display_order: String,
 }
 
@@ -1820,8 +1868,6 @@ async fn render_foundation_command_center(
             })
             .count();
     }
-
-    let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
     let selected_org_q = selected_org_id
         .map(|org_id| format!("&organization_id={org_id}"))
         .unwrap_or_default();
@@ -1851,9 +1897,11 @@ async fn render_foundation_command_center(
     let organization_options_html = organizations
         .iter()
         .map(|org| {
+            let selected = if Some(org.id) == selected_org_id { "selected" } else { "" };
             format!(
-                r#"<option value="{}">{} ({})</option>"#,
+                r#"<option value="{}" {}>{} ({})</option>"#,
                 org.id,
+                selected,
                 html_escape(&org.name),
                 html_escape(&org.organization_kind)
             )
@@ -1862,23 +1910,55 @@ async fn render_foundation_command_center(
         .join("");
 
     let managed_organizations_html = if child_organizations.is_empty() {
-        "<li>No partner organizations yet. Use Operations Workspace to create hospitals, tenants, and sponsors under Cingulum Foundation.</li>".to_string()
+        r#"<div class="action-card is-informative" style="grid-column: 1 / -1;"><div class="action-title">No partner organizations yet</div><div class="action-desc">Use Operations Workspace to create hospitals, tenants, and sponsors under Cingulum Foundation.</div></div>"#.to_string()
     } else {
         child_organizations
             .iter()
             .map(|org| {
+                let colors = ["#02182B", "#283E28", "#F05708", "#C5B7AB", "#A3C4BC"];
+                let name_bytes = org.name.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                let logo_svg = format!(
+                    r#"<svg width="30" height="30" viewBox="0 0 32 32" style="border-radius:5px; box-shadow:inset 0 0 3px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                );
                 format!(
-                    r#"<li><strong>{}</strong> <small>(kind: {} · workspace: {} · hex: {})</small><br/><a href="/ui/app?admin_email={}&organization_id={}">Operations</a> · <a href="/ui/studies?admin_email={}&organization_id={}">Studies</a> · <a href="/ui/dua?admin_email={}&organization_id={}">DUA</a></li>"#,
+                    r#"<div class="action-card" style="display:flex; flex-direction:column; gap:0.55rem; padding:0.85rem;">
+  <div style="display:flex; align-items:center; gap:0.7rem;">
+    {}
+    <div>
+      <div class="action-title" style="font-size:1.05rem;">{}</div>
+      <div style="display:flex; gap:0.3rem; margin-top:0.15rem; flex-wrap:wrap;">
+        <span class="status-chip" style="font-size:0.7rem; padding:0.12rem 0.45rem;">{}</span>
+        <span class="status-chip" style="font-size:0.7rem; padding:0.12rem 0.45rem;">workspace: {}</span>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex; gap:0.8rem; margin-top:0.3rem; font-size:0.88rem; font-weight:700;">
+    <a href="/ui/app?admin_email={}&organization_id={}">Operations</a>
+    <a href="/ui/studies?admin_email={}&organization_id={}">Studies</a>
+    <a href="/ui/dua?admin_email={}&organization_id={}">DUA</a>
+  </div>
+</div>"#,
+                    logo_svg,
                     html_escape(&org.name),
                     html_escape(&org.organization_kind),
                     html_escape(org.workspace_slug.as_deref().unwrap_or("pending")),
-                    html_escape(org.hex_code.as_deref().unwrap_or("pending")),
-                    admin_email_q,
-                    org.id,
-                    admin_email_q,
-                    org.id,
-                    admin_email_q,
-                    org.id
+                    admin_email_q, org.id,
+                    admin_email_q, org.id,
+                    admin_email_q, org.id
                 )
             })
             .collect::<Vec<_>>()
@@ -1888,38 +1968,37 @@ async fn render_foundation_command_center(
     let mut next_actions = Vec::new();
     if selected_org_id.is_none() {
         next_actions.push(
-            "<li>Select the Cingulum Foundation workspace to activate network-level controls.</li>"
-                .to_string(),
+            r##"<a href="#" class="action-card is-informative"><div class="action-title">Select workspace</div><div class="action-desc">Select the Cingulum Foundation workspace to activate network-level controls.</div></a>"##.to_string()
         );
     }
     if child_organizations.is_empty() {
         next_actions.push(format!(
-            r#"<li>Onboard the first partner site or institution in <a href="{}">Operations Workspace</a>.</li>"#,
+            r#"<a href="{}" class="action-card is-blocked"><div class="action-title">Onboard partner institution</div><div class="action-desc">Setup organizations and site structure in Operations Workspace.</div></a>"#,
             app_workspace_url
         ));
     }
     if total_projects == 0 {
         next_actions.push(format!(
-            r#"<li>Launch the first study in <a href="{}">Study Workbench</a> to kick off enrollment.</li>"#,
+            r#"<a href="{}" class="action-card is-blocked"><div class="action-title">Launch first study</div><div class="action-desc">Open the Study Workbench to kick off enrollment and protocols.</div></a>"#,
             study_workspace_url
         ));
     }
     if total_duas == 0 {
         next_actions.push(format!(
-            r#"<li>Draft your first cross-site DUA in the <a href="{}">DUA Console</a>.</li>"#,
+            r#"<a href="{}" class="action-card is-blocked"><div class="action-title">Draft initial DUA</div><div class="action-desc">Draft your first cross-site DUA in the DUA Console.</div></a>"#,
             dua_workspace_url
         ));
     }
     if pending_duas > 0 {
         next_actions.push(format!(
-            r#"<li>Review {} pending DUA record(s) in the <a href="{}">DUA Console</a> to unblock study startup.</li>"#,
-            pending_duas, dua_workspace_url
+            r#"<a href="{}" class="action-card is-blocked"><div class="action-title">Review pending agreements</div><div class="action-desc">Review {} pending DUA record(s) in the DUA Console to unblock study startup.</div></a>"#,
+            dua_workspace_url, pending_duas
         ));
     }
     if next_actions.is_empty() {
         next_actions.push(format!(
-            r#"<li>Network looks active. Continue monitoring execution in <a href="{}">Study Workbench</a> and <a href="{}">Operations Workspace</a>.</li>"#,
-            study_workspace_url, app_workspace_url
+            r#"<a href="{}" class="action-card is-ready"><div class="action-title">Network active</div><div class="action-desc">Continue monitoring execution in Study Workbench and Operations Workspace.</div></a>"#,
+            study_workspace_url
         ));
     }
     let next_actions_html = next_actions.join("");
@@ -1936,55 +2015,69 @@ async fn render_foundation_command_center(
     <label>Foundation admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Workspace to administer</label>
-    <input name="organization_id" list="foundation-organization-options" value="{}" placeholder="Select Cingulum Foundation root" />
-    <button type="submit">Load command center</button>
+    <select name="organization_id" onchange="this.form.submit()">
+      {}
+    </select>
+    <button type="submit">Load Workspace</button>
   </form>
-  <p style="margin-top:0.75rem;"><strong>Active workspace:</strong> {}</p>
-  <p class="muted">Tenant-isolated controls remain in effect. All actions are scoped to the selected organization and its managed sites.</p>
+  <a href="{}" class="action-card is-informative" style="margin-top:1.1rem; display:block;">
+    <div class="action-title">Active workspace context</div>
+    <div class="action-desc" style="margin-bottom:0.5rem; font-size:1rem; color:#02182b;">
+      <strong>{}</strong>
+    </div>
+    <div class="action-desc" style="font-size:0.8rem; line-height:1.35; margin-bottom:0.6rem; color:#2d3748;">
+      Tenant-isolated controls remain in effect. All actions are scoped to the selected organization and its managed sites.
+    </div>
+    <span class="action-tag">Isolated Scope</span>
+  </a>
 </section>
 
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.8rem;">
-  <section class="card">
-    <h2>Network coverage</h2>
-    <p><strong>Managed organizations:</strong> {}</p>
-    <p><strong>Research networks:</strong> {}</p>
-    <p><strong>Hospitals:</strong> {}</p>
-    <p><strong>Tenants:</strong> {}</p>
-    <p><strong>Sponsors:</strong> {}</p>
-    <p><strong>Other kinds:</strong> {}</p>
-  </section>
-  <section class="card">
-    <h2>Research operations snapshot</h2>
-    <p><strong>Projects tracked:</strong> {}</p>
-    <p><strong>Sites configured:</strong> {}</p>
-    <p><strong>DUAs tracked:</strong> {}</p>
-    <p><strong>Pending DUA actions:</strong> {}</p>
-  </section>
-</div>
+<section class="card">
+  <h2>Network coverage</h2>
+  <div class="info-grid">
+    <div class="info-card"><div class="metric-label">Managed orgs</div><div class="metric-value">{}</div></div>
+    <div class="info-card"><div class="metric-label">Research networks</div><div class="metric-value">{}</div></div>
+    <div class="info-card"><div class="metric-label">Hospitals</div><div class="metric-value">{}</div></div>
+    <div class="info-card"><div class="metric-label">Tenants</div><div class="metric-value">{}</div></div>
+    <div class="info-card"><div class="metric-label">Sponsors</div><div class="metric-value">{}</div></div>
+    <div class="info-card"><div class="metric-label">Other kinds</div><div class="metric-value">{}</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Research operations snapshot</h2>
+  <div class="info-grid">
+    <div class="info-card"><div class="metric-label">Projects tracked</div><div class="metric-value">{}</div></div>
+    <div class="info-card"><div class="metric-label">Sites configured</div><div class="metric-value">{}</div></div>
+    <div class="info-card"><div class="metric-label">DUAs tracked</div><div class="metric-value">{}</div></div>
+    <div class="info-card" style="border-left:4px solid #f05708;"><div class="metric-label" style="color:#f05708;">Pending DUA actions</div><div class="metric-value">{}</div></div>
+  </div>
+</section>
 
 <section class="card">
   <h2>Guided execution path</h2>
-  <ol>
-    <li><strong>Onboard institutions:</strong> setup organizations and site structure in <a href="{}">Operations Workspace</a>.</li>
-    <li><strong>Launch and monitor studies:</strong> manage startup, CRFs, visits, and query resolution in <a href="{}">Study Workbench</a>.</li>
-    <li><strong>Close legal bottlenecks:</strong> draft and finalize agreements in <a href="{}">DUA Console</a>.</li>
-    <li><strong>Accelerate with digital tools:</strong> standardize data capture, reduce manual handoffs, and maintain real-time program visibility.</li>
-  </ol>
+  <div class="action-grid">
+    <a href="{}" class="action-card"><div class="action-title">1. Onboard institutions</div><div class="action-desc">Setup organizations and site structure in Operations Workspace.</div></a>
+    <a href="{}" class="action-card"><div class="action-title">2. Launch & monitor studies</div><div class="action-desc">Manage startup, CRF templates, visits, and queries in Study Workbench.</div></a>
+    <a href="{}" class="action-card"><div class="action-title">3. Close legal bottlenecks</div><div class="action-desc">Draft and finalize agreements in DUA Console.</div></a>
+    <div class="action-card is-ready"><div class="action-title">4. Accelerate with digital tools</div><div class="action-desc">Standardize data capture, reduce manual handoffs, and maintain real-time program visibility.</div></div>
+  </div>
 </section>
 
 <section class="card">
   <h2>Recommended next actions</h2>
-  <ul>{}</ul>
+  <div class="action-grid">{}</div>
 </section>
 
 <section class="card">
   <h2>Managed organizations</h2>
-  <ul>{}</ul>
+  <div class="action-grid">{}</div>
 </section>
 "#,
         notice_html,
         html_escape(admin_email.trim()),
-        selected_org_value,
+        organization_options_html,
+        app_workspace_url.clone(),
         selected_workspace_label,
         child_organizations.len(),
         research_network_count,
@@ -2003,17 +2096,9 @@ async fn render_foundation_command_center(
         managed_organizations_html
     );
 
-    let page = format!(
-        r#"
-{}
-<datalist id="foundation-organization-options">{}</datalist>
-"#,
-        body, organization_options_html
-    );
-
     Ok(Html(render_cingulum_page(
         "Cingulum Foundation Command Center",
-        page,
+        body,
     )))
 }
 
@@ -2068,6 +2153,16 @@ async fn render_app_dashboard(
     } else {
         Vec::new()
     };
+
+    let mut site_checklists = std::collections::HashMap::new();
+    for site in &sites {
+        let items = ctx
+            .db
+            .list_site_startup_checklist_items(site.id)
+            .await
+            .map_err(ApiError::internal)?;
+        site_checklists.insert(site.id, items);
+    }
 
     let duas = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -2148,23 +2243,76 @@ async fn render_app_dashboard(
         .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
         .unwrap_or_default();
 
+    let color1 = "#02182b";
+    let color2 = "#f05708";
+    let color3 = "#c5b7ab";
+    let color4 = "#283e28";
+    let color5 = "#e7e5da";
+    let colors = [color1, color2, color3, color4, color5];
+
     let organizations_html = if organizations.is_empty() {
-        "<li>No organizations available yet.</li>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No organizations available yet.</p>".to_string()
     } else {
         organizations
             .iter()
             .map(|org| {
+                let hex = org.hex_code.as_deref().unwrap_or("000000");
+                let name_bytes = org.name.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                
+                let logo_svg = format!(
+                    r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                );
+
+                let parent_label = org.parent_organization_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+
                 format!(
-                    r#"<li><a href="/ui/app?admin_email={}&organization_id={}">{}</a> <small>(kind: {} · id: {} · hex: {} · parent: {})</small></li>"#,
+                    r#"<a href="/ui/app?admin_email={}&organization_id={}" class="dashboard-card" style="text-decoration:none; color:inherit;">
+  <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:0.75rem;">
+    <div>
+      {}
+    </div>
+    <span class="status-chip" style="background:#02182b; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">{}</span>
+  </div>
+  
+  <div>
+    <h4 style="margin:0 0 0.25rem 0; font-size:1.1rem; font-weight:700; color:#02182b;">
+      {}
+    </h4>
+    <div style="font-size:0.8rem; color:#718096; margin-bottom:0.5rem;">
+      ID: <code style="font-size:0.75rem;">{}</code>
+    </div>
+  </div>
+
+  <div style="border-top:1px solid #edf2f7; padding-top:0.75rem; margin-top:0.75rem; display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:#718096;">
+    <span>Hex: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code></span>
+    <span>Parent: <span style="font-style:italic;">{}</span></span>
+  </div>
+</a>"#,
                     admin_email_q,
                     org.id,
-                    html_escape(&org.name),
+                    logo_svg,
                     html_escape(&org.organization_kind),
+                    html_escape(&org.name),
                     org.id,
-                    html_escape(org.hex_code.as_deref().unwrap_or("pending")),
-                    org.parent_organization_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string())
+                    html_escape(hex),
+                    html_escape(&parent_label)
                 )
             })
             .collect::<Vec<_>>()
@@ -2172,7 +2320,7 @@ async fn render_app_dashboard(
     };
 
     let projects_html = if projects.is_empty() {
-        "<li>No projects yet for selected organization.</li>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No projects yet for selected organization.</p>".to_string()
     } else {
         projects
             .iter()
@@ -2180,14 +2328,93 @@ async fn render_app_dashboard(
                 let selected_org = selected_org_id
                     .map(|org_id| format!("&organization_id={}", org_id))
                     .unwrap_or_default();
+                let status_badge = if project.status == "dormant" {
+                    r#"<span class="status-chip" style="background:#718096; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">DORMANT</span>"#
+                } else {
+                    r#"<span class="status-chip" style="background:#48bb78; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">ACTIVE</span>"#
+                };
+                let toggle_label = if project.status == "dormant" {
+                    "Activate"
+                } else {
+                    "Mark Dormant"
+                };
+                let toggle_style = if project.status == "dormant" {
+                    "background:#48bb78; color:white; border:none; padding:0.25rem 0.6rem; border-radius:4px; font-size:0.8rem; cursor:pointer;"
+                } else {
+                    "background:#e2e8f0; color:#4a5568; border:1px solid #cbd5e0; padding:0.25rem 0.6rem; border-radius:4px; font-size:0.8rem; cursor:pointer;"
+                };
+                let last_act = format!(
+                    "Last activity: {}",
+                    project.last_activity_at.format("%Y-%m-%d %H:%M:%S UTC")
+                );
+
+                let name_bytes = project.name.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                
+                let logo_svg = format!(
+                    r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                );
+
+                let proj_link_style = if project.status == "dormant" {
+                    "color:inherit; text-decoration:line-through; font-weight:700;"
+                } else {
+                    "color:inherit; text-decoration:none; hover:text-decoration:underline; font-weight:700;"
+                };
+
                 format!(
-                    r#"<li><a href="/ui/app?admin_email={}{}&project_id={}">{}</a> <small>(area: {} · hex: {})</small></li>"#,
+                    r#"<div class="dashboard-card">
+  <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:0.75rem;">
+    <div>
+      {}
+    </div>
+    {}
+  </div>
+  
+  <div>
+    <h4 style="margin:0 0 0.25rem 0; font-size:1.1rem; font-weight:700; color:#02182b;">
+      <a href="/ui/app?admin_email={}{}&project_id={}" style="{}">{}</a>
+    </h4>
+    <div style="font-size:0.8rem; color:#718096; margin-bottom:0.5rem;">
+      Area: <strong>{}</strong> · Hex: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code>
+    </div>
+  </div>
+
+  <div style="border-top:1px solid #edf2f7; padding-top:0.75rem; margin-top:0.75rem; display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:#718096;">
+    <span style="font-size:0.7rem;">{}</span>
+    <form method="post" action="/ui/app/projects/{}/toggle-dormancy" style="margin:0;">
+      <input type="hidden" name="admin_email" value="{}" />
+      <button type="submit" style="{}">{}</button>
+    </form>
+  </div>
+</div>"#,
+                    logo_svg,
+                    status_badge,
                     admin_email_q,
                     selected_org,
                     project.id,
+                    proj_link_style,
                     html_escape(&project.name),
                     html_escape(&project.therapeutic_area),
-                    html_escape(project.hex_code.as_deref().unwrap_or("pending"))
+                    html_escape(project.hex_code.as_deref().unwrap_or("pending")),
+                    last_act,
+                    project.id,
+                    html_escape(admin_email.trim()),
+                    toggle_style,
+                    toggle_label
                 )
             })
             .collect::<Vec<_>>()
@@ -2195,17 +2422,176 @@ async fn render_app_dashboard(
     };
 
     let sites_html = if sites.is_empty() {
-        "<li>No sites yet for selected project.</li>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No sites yet for selected project.</p>".to_string()
     } else {
         sites
             .iter()
             .map(|site| {
+                let items = site_checklists.get(&site.id).cloned().unwrap_or_default();
+                let checklist_html = if items.is_empty() {
+                    "<p style=\"color:#718096; font-size:0.8rem; font-style:italic; margin:0;\">No checklist items found.</p>".to_string()
+                } else {
+                    items
+                        .iter()
+                        .map(|item| {
+                            let status = if item.completed {
+                                "<span class=\"status-chip\" style=\"background:#02182b; color:white; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;\">COMPLETED</span>"
+                            } else {
+                                "<span class=\"status-chip\" style=\"background:#cbd5e0; color:#4a5568; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;\">PENDING</span>"
+                            };
+                            let action = format!("/ui/app/sites/{}/startup-checklist", site.id);
+                            let form_html = if item.completed {
+                                format!(
+                                    r#"<form method="post" action="{}" style="margin-top:0.45rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.45rem;align-items:center;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <input type="hidden" name="item_code" value="{}" />
+  <input type="hidden" name="item_label" value="{}" />
+  <input name="notes" value="{}" placeholder="Compliance note" style="border:1px solid #cbd5e0; padding:0.25rem; border-radius:4px; font-size:0.8rem;" />
+  <button type="submit" style="background:#e2e8f0; color:#4a5568; border:1px solid #cbd5e0; padding:0.25rem 0.6rem; border-radius:4px; font-size:0.8rem; cursor:pointer;">Undo Complete</button>
+</form>"#,
+                                    action,
+                                    html_escape(admin_email.trim()),
+                                    html_escape(&item.item_code),
+                                    html_escape(&item.item_label),
+                                    html_escape(&item.notes)
+                                )
+                            } else {
+                                format!(
+                                    r#"<form method="post" action="{}" style="margin-top:0.45rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.45rem;align-items:center;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <input type="hidden" name="item_code" value="{}" />
+  <input type="hidden" name="item_label" value="{}" />
+  <input type="hidden" name="completed" value="true" />
+  <input name="notes" value="{}" placeholder="Compliance verification note (REQUIRED)" required style="border: 1px solid #f05708; padding:0.25rem; border-radius:4px; font-size:0.8rem;" />
+  <button type="submit" style="background:#02182b; color:white; padding:0.25rem 0.6rem; border:none; border-radius:4px; font-size:0.8rem; cursor:pointer;">Mark Complete</button>
+</form>"#,
+                                    action,
+                                    html_escape(admin_email.trim()),
+                                    html_escape(&item.item_code),
+                                    html_escape(&item.item_label),
+                                    html_escape(&item.notes)
+                                )
+                            };
+                            format!(
+                                r#"<div style="background:{}; border-left:4px solid {}; border-radius:6px; padding:0.75rem; margin-bottom:0.5rem; display:flex; flex-direction:column; gap:0.25rem; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <strong style="color:#02182b; font-size:0.9rem;">{}</strong>
+    {}
+  </div>
+  {}
+</div>"#,
+                                if item.completed { "#e7e5da" } else { "#f8fafc" },
+                                if item.completed { "#02182b" } else { "#f05708" },
+                                html_escape(&item.item_label),
+                                status,
+                                form_html
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                };
+
+                let status_badge = if site.status == "dormant" {
+                    r#"<span class="status-chip" style="background:#718096; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">DORMANT</span>"#
+                } else {
+                    r#"<span class="status-chip" style="background:#48bb78; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">ACTIVE</span>"#
+                };
+
+                let toggle_label = if site.status == "dormant" {
+                    "Activate Site"
+                } else {
+                    "Mark Dormant"
+                };
+
+                let toggle_style = if site.status == "dormant" {
+                    "background:#48bb78; color:white; padding:0.25rem 0.6rem; font-size:0.8rem; border:none; border-radius:4px; cursor:pointer;"
+                } else {
+                    "background:#e2e8f0; color:#4a5568; border:1px solid #cbd5e0; padding:0.25rem 0.6rem; font-size:0.8rem; border-radius:4px; cursor:pointer;"
+                };
+
+                let card_style = if site.status == "dormant" {
+                    r#"class="dashboard-card" style="min-height:220px; opacity:0.75; text-decoration:line-through;""#
+                } else {
+                    r#"class="dashboard-card" style="min-height:220px;""#
+                };
+
+                let last_act = format!(
+                    "Last activity: {}",
+                    site.last_activity_at.format("%Y-%m-%d %H:%M:%S UTC")
+                );
+
+                let name_bytes = site.name.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                
+                let logo_svg = format!(
+                    r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                );
+
                 format!(
-                    "<li><strong>{}</strong> <small>(PI: {} · hex: {} · id: {})</small></li>",
+                    r#"<div {}>
+  <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:0.75rem; border-bottom:1px solid #edf2f7; padding-bottom:0.75rem;">
+    <div style="display:flex; gap:0.75rem; align-items:center;">
+      {}
+      <div>
+        <h4 style="margin:0; font-size:1.1rem; font-weight:700; color:#02182b;">{}</h4>
+        <small style="color:#718096; font-size:0.75rem;">PI: <strong>{}</strong> · Hex: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.25rem; border-radius:3px; font-weight:bold;">{}</code> · ID: <code style="font-size:0.7rem;">{}</code></small>
+      </div>
+    </div>
+    <div>
+      {}
+    </div>
+  </div>
+  
+  <div>
+    <h5 style="margin:0 0 0.5rem 0; font-size:0.85rem; font-weight:700; color:#02182b; text-transform:uppercase; letter-spacing:0.05em;">Startup Checklist</h5>
+    <div style="max-height:300px; overflow-y:auto; padding-right:0.25rem;">{}</div>
+  </div>
+
+  <div style="margin-top:1.25rem; border-top:1px solid #edf2f7; padding-top:0.75rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+    <div style="display:flex; gap:0.45rem; align-items:center;">
+      <form method="post" action="/ui/app/sites/{}/toggle-dormancy" style="margin:0;">
+        <input type="hidden" name="admin_email" value="{}" />
+        <button type="submit" style="{}">{}</button>
+      </form>
+      <form method="post" action="/ui/app/sites/{}/delete" onsubmit="return confirm('Are you sure you want to delete this site? This will remove all associated startup checklist items.');" style="margin:0;">
+        <input type="hidden" name="admin_email" value="{}" />
+        <button type="submit" style="background:#e53e3e; color:white; padding:0.25rem 0.6rem; font-size:0.8rem; border:none; border-radius:4px; cursor:pointer;">Delete Site</button>
+      </form>
+    </div>
+    <div style="font-size:0.7rem; color:#718096; text-align:right;">
+      {}
+    </div>
+  </div>
+</div>"#,
+                    card_style,
+                    logo_svg,
                     html_escape(&site.name),
                     html_escape(&site.principal_investigator),
                     html_escape(site.hex_code.as_deref().unwrap_or("pending")),
-                    site.id
+                    site.id,
+                    status_badge,
+                    checklist_html,
+                    site.id,
+                    html_escape(admin_email.trim()),
+                    toggle_style,
+                    toggle_label,
+                    site.id,
+                    html_escape(admin_email.trim()),
+                    last_act
                 )
             })
             .collect::<Vec<_>>()
@@ -2213,16 +2599,59 @@ async fn render_app_dashboard(
     };
 
     let dua_html = if duas.is_empty() {
-        "<li>No DUAs yet for selected organization.</li>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No Data Use Agreements (DUAs) found for this organization.</p>".to_string()
     } else {
         duas.iter()
             .take(8)
             .map(|dua| {
+                let name_bytes = dua.hospital_name.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                
+                let logo_svg = format!(
+                    r#"<svg width="28" height="28" viewBox="0 0 32 32" style="border-radius:5px; box-shadow:inset 0 0 3px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                );
+
+                let badge_style = if dua.status.to_lowercase() == "signed" {
+                    "background:#283e28; color:white; font-size:0.75rem; font-weight:bold; padding:0.2rem 0.5rem; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;"
+                } else {
+                    "background:#f05708; color:white; font-size:0.75rem; font-weight:bold; padding:0.2rem 0.5rem; border-radius:4px; text-transform:uppercase; letter-spacing:0.05em;"
+                };
+
                 format!(
-                    r#"<li><a href="/ui/dua/{}?admin_email={}">{}</a> <span class="status-chip">{}</span></li>"#,
+                    r#"<a href="/ui/dua/{}?admin_email={}" class="dashboard-card-row" style="text-decoration:none; color:inherit;">
+  <div style="display:flex; gap:0.75rem; align-items:center;">
+    {}
+    <div>
+      <strong style="color:#02182b; font-size:1.05rem;">
+        {}
+      </strong>
+      <div style="font-size:0.75rem; color:#718096; margin-top:0.15rem;">ID: <code style="font-size:0.7rem;">{}</code></div>
+    </div>
+  </div>
+  <div>
+    <span class="status-chip" style="{}">{}</span>
+  </div>
+</a>"#,
                     dua.id,
                     admin_email_q,
+                    logo_svg,
                     html_escape(&dua.hospital_name),
+                    dua.id,
+                    badge_style,
                     html_escape(&dua.status)
                 )
             })
@@ -2240,24 +2669,76 @@ async fn render_app_dashboard(
 
     let org_summary_html = if let Some(summary) = org_summary {
         format!(
-            "<p><strong>Projects:</strong> {} · <strong>Sites:</strong> {} · <strong>Form Invites:</strong> {} · <strong>Media Links:</strong> {}</p>",
+            r#"<div style="margin-bottom:1.5rem;">
+  <h3 style="color:#02182b; font-size:1.1rem; margin-bottom:0.75rem; border-bottom:2px solid #e7e5da; padding-bottom:0.25rem;">Organization Metrics Overview</h3>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem;">
+    
+    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+      <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#02182b;"></div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Projects</div>
+      <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
+    </div>
+
+    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+      <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#c5b7ab;"></div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Sites</div>
+      <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
+    </div>
+
+    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+      <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#283e28;"></div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Sent Form Invites</div>
+      <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
+    </div>
+
+    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+      <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#f05708;"></div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Generated Media Links</div>
+      <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
+    </div>
+
+  </div>
+</div>"#,
             summary.projects, summary.sites, summary.sent_form_invites, summary.generated_media_upload_links
         )
     } else {
-        "<p class=\"muted\">Select an organization to view summary.</p>".to_string()
+        "<div style=\"background:#e7e5da; padding:1rem; border-radius:8px; color:#02182b; font-weight:500; font-size:0.9rem; margin-bottom:1.5rem;\">ℹ️ Select an organization from the Overview tab to view detailed metrics.</div>".to_string()
     };
 
     let project_summary_html = if let Some(summary) = project_report {
         format!(
-            "<p><strong>Sites:</strong> {} · <strong>Form Invites:</strong> {} · <strong>Media Capture Requests:</strong> {}</p>",
+            r#"<div>
+  <h3 style="color:#02182b; font-size:1.1rem; margin-bottom:0.75rem; border-bottom:2px solid #e7e5da; padding-bottom:0.25rem;">Project Specific Insights</h3>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem;">
+    
+    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+      <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#02182b;"></div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Sites</div>
+      <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
+    </div>
+
+    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+      <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#283e28;"></div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Form Invites</div>
+      <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
+    </div>
+
+    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+      <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#f05708;"></div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Media Captures Requested</div>
+      <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
+    </div>
+
+  </div>
+</div>"#,
             summary.total_sites, summary.total_form_invites, summary.total_media_captures_requested
         )
     } else {
-        "<p class=\"muted\">Select a project to view summary.</p>".to_string()
+        "<div style=\"background:#e7e5da; padding:1rem; border-radius:8px; color:#02182b; font-weight:500; font-size:0.9rem;\">ℹ️ Select a project from the Overview tab to view granular insights.</div>".to_string()
     };
 
     let patients_html = if patients.is_empty() {
-        "<li>No patients yet for selected project.</li>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No patients yet for selected project.</p>".to_string()
     } else {
         patients
             .iter()
@@ -2269,12 +2750,46 @@ async fn render_app_dashboard(
                 let selected_project = selected_project_id
                     .map(|project_id| format!("&project_id={project_id}"))
                     .unwrap_or_default();
+
+                let name_bytes = patient.id.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                
+                let logo_svg = format!(
+                    r#"<svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                );
+
                 format!(
-                    r#"<li><a href="/ui/app?admin_email={}{}{}&patient_id={}">{}</a> <small>(id: {} · site: {})</small></li>"#,
+                    r#"<a href="/ui/app?admin_email={}{}{}&patient_id={}" class="dashboard-card-mini" style="text-decoration:none; color:inherit;">
+  <div>{}</div>
+  <div style="flex-grow:1; min-width:0;">
+    <strong style="color:#02182b; font-size:0.95rem; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+      {}
+    </strong>
+    <span style="font-size:0.75rem; color:#718096; display:block;">
+      ID: <code style="font-size:0.7rem; font-weight:bold;">{}</code>
+      <br/>Site ID: <code style="font-size:0.7rem;">{}</code>
+    </span>
+  </div>
+</a>"#,
                     admin_email_q,
                     selected_org,
                     selected_project,
                     patient.id,
+                    logo_svg,
                     html_escape(patient.hex_code.as_deref().unwrap_or("pending")),
                     patient.id,
                     patient
@@ -2288,59 +2803,145 @@ async fn render_app_dashboard(
     };
 
     let providers_html = if providers.is_empty() {
-        "<li>No providers yet for selected organization.</li>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No providers yet for selected organization.</p>".to_string()
     } else {
-        providers
-            .iter()
-            .take(12)
-            .map(|provider| {
-                format!(
-                    "<li><strong>{}</strong> <small>(hex: {} · title: {})</small></li>",
-                    html_escape(&provider.name),
-                    html_escape(&provider.hex_code),
-                    html_escape(&provider.title)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("")
+        let mut html = String::new();
+        html.push_str(r#"<table style="width:100%; border-collapse:collapse; margin-top:0.5rem; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+  <thead>
+    <tr style="background:#02182b; color:white; text-align:left;">
+      <th style="padding:0.75rem 1rem;">Provider Name</th>
+      <th style="padding:0.75rem 1rem;">Title / Specialty</th>
+      <th style="padding:0.75rem 1rem;">Cryptographic Hex Block</th>
+    </tr>
+  </thead>
+  <tbody>"#);
+        for provider in providers.iter().take(12) {
+            let name_bytes = provider.name.as_bytes();
+            let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+            let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+            let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+            let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+            
+            let c1 = colors[b1 % 5];
+            let c2 = colors[b2 % 5];
+            let c3 = colors[b3 % 5];
+            let c4 = colors[b4 % 5];
+            
+            let logo_svg = format!(
+                r#"<svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                c1, c2, c3, c4
+            );
+
+            html.push_str(&format!(
+                r#"<tr style="border-bottom:1px solid #e2e8f0; hover:background:#f7fafc;">
+      <td style="padding:0.75rem 1rem; font-weight:600; color:#02182b;">
+        <div style="display:flex; gap:0.6rem; align-items:center;">
+          {}
+          <span>{}</span>
+        </div>
+      </td>
+      <td style="padding:0.75rem 1rem; color:#4a5568;">{}</td>
+      <td style="padding:0.75rem 1rem;"><code style="background:#e7e5da; color:#02182b; padding:0.2rem 0.4rem; border-radius:4px; font-weight:bold;">{}</code></td>
+    </tr>"#,
+                logo_svg,
+                html_escape(&provider.name),
+                html_escape(&provider.title),
+                html_escape(&provider.hex_code)
+            ));
+        }
+        html.push_str("</tbody></table>");
+        html
     };
 
     let encounters_html = if encounters.is_empty() {
-        "<li>No encounters yet for selected patient.</li>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No encounters yet for selected patient.</p>".to_string()
     } else {
-        encounters
-            .iter()
-            .take(16)
-            .map(|encounter| {
-                format!(
-                    "<li><strong>{}</strong> <small>(type: {} · provider: {})</small></li>",
-                    html_escape(&encounter.hex_code),
-                    html_escape(&encounter.encounter_type),
-                    encounter
-                        .provider_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("")
+        let mut html = String::new();
+        html.push_str(r#"<table style="width:100%; border-collapse:collapse; margin-top:0.5rem; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+  <thead>
+    <tr style="background:#02182b; color:white; text-align:left;">
+      <th style="padding:0.75rem 1rem;">Range-Aware Encounter Hex</th>
+      <th style="padding:0.75rem 1rem;">Encounter Type</th>
+      <th style="padding:0.75rem 1rem;">Associated Provider ID</th>
+      <th style="padding:0.75rem 1rem;">Clinical Notes</th>
+    </tr>
+  </thead>
+  <tbody>"#);
+        for encounter in encounters.iter().take(16) {
+            let provider_label = encounter
+                .provider_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let notes_label = if encounter.notes.is_empty() { "—" } else { &encounter.notes };
+            html.push_str(&format!(
+                r#"<tr style="border-bottom:1px solid #e2e8f0; hover:background:#f7fafc;">
+      <td style="padding:0.75rem 1rem;"><code style="background:#e7e5da; color:#f05708; padding:0.2rem 0.4rem; border-radius:4px; font-weight:bold;">{}</code></td>
+      <td style="padding:0.75rem 1rem; color:#4a5568;"><span class="status-chip" style="background:#c5b7ab; color:#02182b; font-weight:bold;">{}</span></td>
+      <td style="padding:0.75rem 1rem; font-size:0.85rem; color:#718096;">{}</td>
+      <td style="padding:0.75rem 1rem; color:#4a5568; font-style:italic;">{}</td>
+    </tr>"#,
+                html_escape(&encounter.hex_code),
+                html_escape(&encounter.encounter_type),
+                html_escape(&provider_label),
+                html_escape(notes_label)
+            ));
+        }
+        html.push_str("</tbody></table>");
+        html
     };
 
     let child_organizations_html = if child_organizations.is_empty() {
-        "<li>No child organizations under current workspace.</li>".to_string()
+        "<p style=\"color:#718096; font-style:italic; margin:0;\">No child organizations under current workspace.</p>".to_string()
     } else {
-        child_organizations
+        let cards = child_organizations
             .iter()
             .map(|org| {
+                let name_bytes = org.name.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                
+                let logo_svg = format!(
+                    r#"<svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                );
+
                 format!(
-                    "<li><strong>{}</strong> <small>(kind: {} · id: {})</small></li>",
+                    r#"<div class="dashboard-card-mini">
+  <div>{}</div>
+  <div style="flex-grow:1; min-width:0;">
+    <strong style="color:#02182b; font-size:0.9rem; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{}</strong>
+    <span style="font-size:0.75rem; color:#718096; display:block;">Kind: {} · ID: <code style="font-size:0.7rem;">{}</code></span>
+  </div>
+</div>"#,
+                    logo_svg,
                     html_escape(&org.name),
                     html_escape(&org.organization_kind),
                     org.id
                 )
             })
             .collect::<Vec<_>>()
-            .join("")
+            .join("");
+        format!(
+            r#"<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:0.75rem; margin-top:0.75rem; margin-bottom:1.5rem;">{}</div>"#,
+            cards
+        )
     };
 
     let organization_options_html = organizations
@@ -2412,57 +3013,90 @@ async fn render_app_dashboard(
         })
         .unwrap_or_else(|| format!("/ui/foundation?admin_email={}", admin_email_q));
 
-    let body = format!(
-        r#"
-<h1>Virivu Research Web App</h1>
-<p class="muted">Unified operations workspace: institutions, trial setup, patient workflows, legal agreements, and analytics.</p>
-{}
-<div class="tab-shell">
-<nav class="tab-bar" data-tab-group="app-tabs">
-  <button type="button" class="tab-button is-active" data-tab-id="overview">Overview</button>
-  <button type="button" class="tab-button" data-tab-id="projects">Projects</button>
-  <button type="button" class="tab-button" data-tab-id="sites">Sites</button>
-  <button type="button" class="tab-button" data-tab-id="patients">Patients</button>
-  <button type="button" class="tab-button" data-tab-id="providers">Providers</button>
-  <button type="button" class="tab-button" data-tab-id="analytics">Analytics</button>
-  <button type="button" class="tab-button" data-tab-id="legal">Legal</button>
-</nav>
-<section class="card tab-panel is-active" data-tab-group="app-tabs" data-tab-panel="overview">
-  <h2>Workspace Context</h2>
-  <p><strong>Admin:</strong> {}</p>
-  <p><strong>Organization:</strong> {}</p>
-  <p><strong>Project:</strong> {}</p>
-  <h3 style="margin-top:0.8rem;">Child organizations</h3>
-  <ul>{}</ul>
-  <p><a href="{}">Open Cingulum Foundation command center</a></p>
-  <p><a href="/ui/studies">Open study lifecycle + CRF workbench</a></p>
-  <p><a href="/ui/dua?admin_email={}">Open dedicated DUA console</a></p>
-</section>
+    let view = query.view.as_deref().unwrap_or("overview");
+    let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
-<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="projects">
+    let global_nav = format!(
+        r#"<nav class="global-nav" style="margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; display: flex; gap: 1rem; font-size: 0.9rem;">
+  <a href="{}">Foundation</a>
+  <a href="/ui/app?admin_email={}&organization_id={}">Org Command Center</a>
+  <a href="/ui/studies?admin_email={}&organization_id={}">Study Dashboard</a>
+  <a href="/ui/dua?admin_email={}&organization_id={}">DUA Console</a>
+</nav>"#,
+        foundation_hub_url,
+        admin_email_q, selected_org_value,
+        admin_email_q, selected_org_value,
+        admin_email_q, selected_org_value,
+    );
+
+    let tab_bar = format!(
+        r#"<nav class="tab-bar" style="margin-bottom: 1rem;">
+  <a class="tab-button {}" href="?view=overview&admin_email={}&organization_id={}">Overview</a>
+  <a class="tab-button {}" href="?view=projects&admin_email={}&organization_id={}">Projects</a>
+  <a class="tab-button {}" href="?view=sites&admin_email={}&organization_id={}">Sites</a>
+  <a class="tab-button {}" href="?view=patients&admin_email={}&organization_id={}">Patients</a>
+  <a class="tab-button {}" href="?view=providers&admin_email={}&organization_id={}">Providers</a>
+  <a class="tab-button {}" href="?view=analytics&admin_email={}&organization_id={}">Analytics</a>
+  <a class="tab-button {}" href="?view=legal&admin_email={}&organization_id={}">Legal</a>
+</nav>"#,
+        is_active("overview"), admin_email_q, selected_org_value,
+        is_active("projects"), admin_email_q, selected_org_value,
+        is_active("sites"), admin_email_q, selected_org_value,
+        is_active("patients"), admin_email_q, selected_org_value,
+        is_active("providers"), admin_email_q, selected_org_value,
+        is_active("analytics"), admin_email_q, selected_org_value,
+        is_active("legal"), admin_email_q, selected_org_value,
+    );
+
+    let panel_content = match view {
+        "projects" => format!(
+            r#"<section class="card">
   <h2>1) Organizations</h2>
-  <form method="post" action="/ui/app/create-organization">
-    <label>Admin email (platform admin)</label>
-    <input name="admin_email" value="{}" required />
-    <label>Organization legal name</label>
-    <input name="organization_name" placeholder="Cingulum Foundation Inc." required />
-    <label>Parent organization ID (optional; blank = Cingulum Foundation root)</label>
-    <input name="parent_organization_id" list="app-organization-options" value="{}" placeholder="root-managed child org" />
-    <label>Organization type</label>
-    <select name="organization_kind">
-      <option value="tenant" selected>tenant</option>
-      <option value="research_network">research_network</option>
-      <option value="hospital">hospital</option>
-      <option value="sponsor">sponsor</option>
-    </select>
-    <button type="submit">Create Organization</button>
-  </form>
-  <h3 style="margin-top:1rem;">Available organizations</h3>
-  <ul>{}</ul>
+  <p style="color:#718096; margin-bottom:1rem; font-size:0.9rem;">
+    Organizations represent distinct medical entities, tenants, or hospital networks within the platform.
+  </p>
+  
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1rem; margin-top:1rem;">
+    {}
+    <div id="add-org-card" style="background:#f7fafc; border:2px dashed #cbd5e0; border-radius:12px; padding:1.25rem; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:160px; cursor:pointer; hover:background:#edf2f7; hover:border-color:#02182b; transition:all 0.2s;" onclick="document.getElementById('org-create-modal').showModal()">
+      <span style="font-size:3rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
+      <span style="font-size:0.9rem; font-weight:600; color:#718096; margin-top:0.5rem;">Add Organization</span>
+    </div>
+  </div>
+
+  <dialog id="org-create-modal" style="border:none; border-radius:12px; padding:2rem; width:100%; max-width:480px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04); background:#fff;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid #edf2f7; padding-bottom:0.75rem;">
+      <h3 style="margin:0; color:#02182b; font-size:1.25rem;">Create New Organization</h3>
+      <button onclick="document.getElementById('org-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer;">&times;</button>
+    </div>
+    <form method="post" action="/ui/app/create-organization" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email (platform admin)</label>
+      <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Organization legal name</label>
+      <input name="organization_name" placeholder="Cingulum Foundation Inc." required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Parent organization ID (optional)</label>
+      <input name="parent_organization_id" list="app-organization-options" value="{}" placeholder="root-managed child org" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Organization type</label>
+      <select name="organization_kind" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:white;">
+        <option value="tenant" selected>tenant</option>
+        <option value="research_network">research_network</option>
+        <option value="hospital">hospital</option>
+        <option value="sponsor">sponsor</option>
+      </select>
+      
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Organization</button>
+    </form>
+  </dialog>
 </section>
 
-<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="projects">
+<section class="card" style="margin-top: 1rem;">
   <h2>2) Project Setup</h2>
+  <p style="color:#718096; margin-bottom:1rem; font-size:0.9rem;">
+    Project Setup configures an individual clinical trial, medical study, or registry under the umbrella of a specific organization.
+  </p>
   <form method="post" action="/ui/app/create-project">
     <label>Admin email</label>
     <input name="admin_email" value="{}" required />
@@ -2474,129 +3108,429 @@ async fn render_app_dashboard(
     <input name="therapeutic_area" placeholder="Neurology" required />
     <button type="submit">Create Project</button>
   </form>
-  <h3 style="margin-top:1rem;">Projects</h3>
-  <ul>{}</ul>
-</section>
-
-<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="sites">
+  <h3 style="margin-top:1.5rem; color:#02182b;">Projects</h3>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">{}</div>
+</section>"#,
+            organizations_html,
+            html_escape(admin_email.trim()),
+            selected_org_value.clone(),
+            html_escape(admin_email.trim()),
+            selected_org_value.clone(),
+            projects_html
+        ),
+        "sites" => format!(
+            r#"<section class="card">
   <h2>3) Site Setup</h2>
-  <form method="post" action="/ui/app/create-site">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Project ID</label>
-    <input name="project_id" list="app-project-options" value="{}" required />
-    <label>Site name</label>
-    <input name="site_name" placeholder="North Campus Site A" required />
-    <label>Principal investigator</label>
-    <input name="principal_investigator" placeholder="Dr. Example" required />
-    <button type="submit">Create Site</button>
-  </form>
-  <h3 style="margin-top:1rem;">Sites</h3>
-  <ul>{}</ul>
-</section>
+  <p style="color:#718096; margin-bottom:1.5rem; font-size:0.9rem;">
+    Register clinical trial sites, designate investigators, and track activation checklists.
+  </p>
+  
+  <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700;">Sites</h3>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:1.5rem; margin-top:1rem;">
+    <div id="add-site-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:220px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('site-create-modal').showModal()">
+      <span style="font-size:3rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
+      <span style="font-size:0.95rem; font-weight:600; color:#718096; margin-top:0.5rem;">Create New Site</span>
+    </div>
+    {}
+  </div>
 
-<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="patients">
+  <dialog id="site-create-modal" style="border:none; border-radius:16px; padding:2rem; width:100%; max-width:480px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); background:#fff;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid #edf2f7; padding-bottom:0.75rem;">
+      <h3 style="margin:0; color:#02182b; font-size:1.25rem; font-weight:700;">Create New Site</h3>
+      <button onclick="document.getElementById('site-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer; line-height:1;">&times;</button>
+    </div>
+    <form method="post" action="/ui/app/create-site" style="display:flex; flex-direction:column; gap:0.85rem; margin:0;">
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+      <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; background:#f7fafc;" readonly />
+      
+      <input type="hidden" name="project_id" value="{}" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Site name</label>
+      <input name="site_name" placeholder="North Campus Site A" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Principal investigator</label>
+      <input name="principal_investigator" placeholder="Dr. Example" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Co-Principal investigator (optional)</label>
+      <input name="co_principal_investigator" placeholder="Dr. Smith" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Sub-Investigator (optional)</label>
+      <input name="sub_investigator" placeholder="Dr. Doe" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Site</button>
+    </form>
+  </dialog>
+</section>"#,
+            sites_html,
+            html_escape(admin_email.trim()),
+            selected_project_value.clone()
+        ),
+        "patients" => format!(
+            r#"<section class="card">
   <h2>4) Patient Workflow</h2>
-  <form method="post" action="/ui/app/create-patient" style="margin-bottom:1rem;">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Site ID</label>
-    <input name="site_id" list="app-site-options" placeholder="site-uuid" required />
-    <label>External subject label (optional)</label>
-    <input name="external_subject_id" placeholder="SUBJ-001" />
-    <label>Patient email (optional)</label>
-    <input type="email" name="email" placeholder="patient@example.org" />
-    <label>Date of birth (optional, YYYY-MM-DD)</label>
-    <input name="date_of_birth" placeholder="1980-01-01" />
-    <button type="submit">Create Patient + Cascading Hex ID</button>
-  </form>
+  <p style="color:#718096; margin-bottom:1.5rem; font-size:0.9rem;">
+    Manage clinical trial subjects, deploy digital intake forms, and generate secure media upload channels.
+  </p>
 
-  <form method="post" action="/ui/app/send-invite" style="margin-bottom:1rem;">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Organization ID</label>
-    <input name="organization_id" list="app-organization-options" value="{}" required />
-    <label>Project ID</label>
-    <input name="project_id" list="app-project-options" value="{}" required />
-    <label>Patient email</label>
-    <input type="email" name="patient_email" placeholder="patient@example.org" required />
-    <label>Form type</label>
-    <input name="form_type" placeholder="demographics-intake" required />
-    <button type="submit">Send Patient Form Invite</button>
-  </form>
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1.5rem; margin-bottom:2rem;">
+    <!-- Send Patient Form Invite Card -->
+    <div class="dashboard-card" style="padding:1.5rem; min-height:unset;">
+      <h3 style="margin-top:0; color:#02182b; font-size:1.1rem; font-weight:700; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem; margin-bottom:1rem;">Send Patient Form Invite</h3>
+      <form method="post" action="/ui/app/send-invite" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+        <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
+        
+        <input type="hidden" name="organization_id" value="{}" />
+        <input type="hidden" name="project_id" value="{}" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Patient email</label>
+        <input type="email" name="patient_email" placeholder="patient@example.org" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Form type</label>
+        <input name="form_type" placeholder="demographics-intake" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Send Form Invite</button>
+      </form>
+    </div>
 
-  <form method="post" action="/ui/app/create-media-ticket">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Organization ID</label>
-    <input name="organization_id" list="app-organization-options" value="{}" required />
-    <label>Project ID</label>
-    <input name="project_id" list="app-project-options" value="{}" required />
-    <label>Patient ID</label>
-    <input name="patient_id" list="app-patient-options" placeholder="subject-001" required />
-    <label>MIME type</label>
-    <input name="mime_type" placeholder="video/mp4" required />
-    <button type="submit">Generate Media Upload Link</button>
-  </form>
+    <!-- Generate Media Upload Link Card -->
+    <div class="dashboard-card" style="padding:1.5rem; min-height:unset;">
+      <h3 style="margin-top:0; color:#02182b; font-size:1.1rem; font-weight:700; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem; margin-bottom:1rem;">Generate Media Upload Link</h3>
+      <form method="post" action="/ui/app/create-media-ticket" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+        <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
+        
+        <input type="hidden" name="organization_id" value="{}" />
+        <input type="hidden" name="project_id" value="{}" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Patient ID</label>
+        <input name="patient_id" list="app-patient-options" placeholder="subject-001" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">MIME type</label>
+        <input name="mime_type" placeholder="video/mp4" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Generate Upload Link</button>
+      </form>
+    </div>
+  </div>
 
-  <h3 style="margin-top:1rem;">Patients</h3>
-  <ul>{}</ul>
-</section>
+  <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700;">Patients</h3>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">
+    <div id="add-patient-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('patient-create-modal').showModal()">
+      <span style="font-size:2.5rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
+      <span style="font-size:0.85rem; font-weight:600; color:#718096; margin-top:0.25rem;">Create New Patient</span>
+    </div>
+    {}
+  </div>
 
-<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="providers">
+  <dialog id="patient-create-modal" style="border:none; border-radius:16px; padding:2rem; width:100%; max-width:480px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); background:#fff;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid #edf2f7; padding-bottom:0.75rem;">
+      <h3 style="margin:0; color:#02182b; font-size:1.25rem; font-weight:700;">Create New Patient</h3>
+      <button onclick="document.getElementById('patient-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer; line-height:1;">&times;</button>
+    </div>
+    <form method="post" action="/ui/app/create-patient" style="display:flex; flex-direction:column; gap:0.85rem; margin:0;">
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+      <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; background:#f7fafc;" readonly />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Site ID</label>
+      <input name="site_id" list="app-site-options" placeholder="site-uuid" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">External subject label (optional)</label>
+      <input name="external_subject_id" placeholder="SUBJ-001" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Patient email (optional)</label>
+      <input type="email" name="email" placeholder="patient@example.org" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Date of birth (optional, YYYY-MM-DD)</label>
+      <input name="date_of_birth" placeholder="1980-01-01" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Patient + Cascading Hex ID</button>
+    </form>
+  </dialog>
+</section>"#,
+            html_escape(admin_email.trim()),
+            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+            selected_project_id.map(|v| v.to_string()).unwrap_or_default(),
+            html_escape(admin_email.trim()),
+            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+            selected_project_id.map(|v| v.to_string()).unwrap_or_default(),
+            patients_html,
+            html_escape(admin_email.trim())
+        ),
+        "providers" => format!(
+            r##"<section class="card">
   <h2>5) Providers + Encounters</h2>
-  <form method="post" action="/ui/app/create-provider" style="margin-bottom:1rem;">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Organization ID</label>
-    <input name="organization_id" list="app-organization-options" value="{}" required />
-    <label>Provider name</label>
-    <input name="provider_name" placeholder="Dr. Jane Doe" required />
-    <label>Provider title</label>
-    <input name="provider_title" placeholder="Cardiology" />
-    <label>Referral source</label>
-    <input name="referral_source" placeholder="External referral network" />
-    <button type="submit">Register Provider + Hex Block</button>
-  </form>
+  <p style="color:#718096; margin-bottom:1.5rem; font-size:0.9rem;">
+    Register medical providers and log range-aware clinical encounters under cryptographic hex protection.
+  </p>
 
-  <form method="post" action="/ui/app/create-encounter">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Patient ID</label>
-    <input name="patient_id" list="app-patient-options" value="{}" placeholder="patient-uuid" required />
-    <label>Encounter type</label>
-    <select name="encounter_type" required>
-      <option value="outpatient">outpatient (000-2FF)</option>
-      <option value="inpatient">inpatient (300-5FF)</option>
-      <option value="labs">labs (600-8FF)</option>
-      <option value="imaging">imaging (900-BFF)</option>
-      <option value="procedures">procedures (C00-EFF)</option>
-      <option value="misc">misc (F00-FFF)</option>
-    </select>
-    <label>Provider ID (optional)</label>
-    <input name="provider_id" list="app-provider-options" placeholder="provider-uuid" />
-    <label>Notes (optional)</label>
-    <input name="notes" placeholder="Encounter notes" />
-    <button type="submit">Create Encounter + Range-Aware Hex</button>
-  </form>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:1.5rem; margin-bottom:2rem;">
+    <!-- Register Provider Card -->
+    <div class="dashboard-card" style="padding:1.5rem; min-height:unset; position:relative; overflow:hidden;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+          <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block;">
+            <rect x="0" y="0" width="16" height="16" fill="#f05708" />
+            <rect x="16" y="0" width="16" height="16" fill="#02182b" />
+            <rect x="0" y="16" width="16" height="16" fill="#e7e5da" />
+            <rect x="16" y="16" width="16" height="16" fill="#02182b" />
+          </svg>
+          <h3 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">Register Provider</h3>
+        </div>
+      </div>
+      <form method="post" action="/ui/app/create-provider" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+        <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
+        
+        <input type="hidden" name="organization_id" value="{}" />
 
-  <h3 style="margin-top:1rem;">Providers</h3>
-  <ul>{}</ul>
-  <h3 style="margin-top:1rem;">Encounters for selected patient</h3>
-  <ul>{}</ul>
-</section>
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Provider name</label>
+        <input name="provider_name" placeholder="Dr. Jane Doe" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Provider title / Specialty</label>
+        <input name="provider_title" placeholder="Cardiology" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Referral source</label>
+        <input name="referral_source" placeholder="External referral network" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Register Provider + Hex Block</button>
+      </form>
+    </div>
 
-<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="analytics">
+    <!-- Create Encounter Card -->
+    <div class="dashboard-card" style="padding:1.5rem; min-height:unset; position:relative; overflow:hidden;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+          <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block;">
+            <rect x="0" y="0" width="16" height="16" fill="#02182b" />
+            <rect x="16" y="0" width="16" height="16" fill="#f05708" />
+            <rect x="0" y="16" width="16" height="16" fill="#02182b" />
+            <rect x="16" y="16" width="16" height="16" fill="#e7e5da" />
+          </svg>
+          <h3 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">Create Encounter</h3>
+        </div>
+      </div>
+      <form method="post" action="/ui/app/create-encounter" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+        <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Patient ID</label>
+        <input name="patient_id" list="app-patient-options" value="{}" placeholder="patient-uuid" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Encounter type</label>
+        <select name="encounter_type" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:white; font-size:0.9rem; color:#2d3748;">
+          <option value="outpatient">outpatient (000-2FF)</option>
+          <option value="inpatient">inpatient (300-5FF)</option>
+          <option value="labs">labs (600-8FF)</option>
+          <option value="imaging">imaging (900-BFF)</option>
+          <option value="procedures">procedures (C00-EFF)</option>
+          <option value="misc">misc (F00-FFF)</option>
+        </select>
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Provider ID (optional)</label>
+        <input name="provider_id" list="app-provider-options" placeholder="provider-uuid" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Notes (optional)</label>
+        <input name="notes" placeholder="Encounter notes" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        
+        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Create Encounter + Range-Aware Hex</button>
+      </form>
+    </div>
+  </div>
+
+  <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700; font-size:1.25rem;">Registered Providers</h3>
+  <div style="margin-bottom:2rem;">{}</div>
+  <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700; font-size:1.25rem;">Encounters for Selected Patient</h3>
+  <div>{}</div>
+</section>"##,
+            html_escape(admin_email.trim()),
+            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+            html_escape(admin_email.trim()),
+            selected_patient_value,
+            providers_html,
+            encounters_html
+        ),
+        "analytics" => format!(
+            r#"<section class="card">
   <h2>6) Analytics Summary</h2>
   {}
   {}
-</section>
-
-<section class="card tab-panel" data-tab-group="app-tabs" data-tab-panel="legal">
+</section>"#,
+            org_summary_html, project_summary_html
+        ),
+        "legal" => format!(
+            r#"<section class="card">
   <h2>7) Legal / DUA</h2>
-  <ul>{}</ul>
-</section>
-</div>
+  <div style="display:flex; flex-direction:column; gap:1rem; margin-top:1rem;">{}</div>
+</section>"#,
+            dua_html
+        ),
+        _ => {
+            let admin_val = admin_email.trim();
+            let org_val = if selected_org_value.is_empty() {
+                "none selected".to_string()
+            } else {
+                selected_org_value.clone()
+            };
+            let proj_val = if selected_project_value.is_empty() {
+                "none selected".to_string()
+            } else {
+                selected_project_value.clone()
+            };
+
+            let admin_logo = r##"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="#02182b" />
+  <rect x="16" y="0" width="16" height="16" fill="#c5b7ab" />
+  <rect x="0" y="16" width="16" height="16" fill="#c5b7ab" />
+  <rect x="16" y="16" width="16" height="16" fill="#02182b" />
+</svg>"##;
+
+            let org_logo = if selected_org_value.is_empty() {
+                r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; background:#edf2f7; display:block;"></svg>"#.to_string()
+            } else {
+                let name_bytes = selected_org_value.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                format!(
+                    r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                )
+            };
+
+            let proj_logo = if selected_project_value.is_empty() {
+                r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; background:#edf2f7; display:block;"></svg>"#.to_string()
+            } else {
+                let name_bytes = selected_project_value.as_bytes();
+                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                let c1 = colors[b1 % 5];
+                let c2 = colors[b2 % 5];
+                let c3 = colors[b3 % 5];
+                let c4 = colors[b4 % 5];
+                format!(
+                    r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#,
+                    c1, c2, c3, c4
+                )
+            };
+
+            format!(
+                r#"<section style="display:flex; flex-direction:column; gap:1.5rem;">
+  <div>
+    <h2 style="color:#02182b; margin:0 0 0.5rem 0; font-size:1.5rem; font-weight:700;">Workspace Overview</h2>
+    <p style="color:#718096; margin:0; font-size:0.9rem;">High-level clinical trial environment diagnostics and active telemetry context.</p>
+  </div>
+
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1.25rem;">
+    <!-- Admin Context Card -->
+    <div style="background:white; border-radius:12px; border:1px solid #e2e8f0; padding:1.25rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05); display:flex; flex-direction:column; justify-content:space-between; min-height:140px;">
+      <div style="display:flex; justify-content:space-between; align-items:start;">
+        <div>{}</div>
+        <span style="background:#02182b; color:white; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-transform:uppercase;">Admin Context</span>
+      </div>
+      <div style="margin-top:1rem;">
+        <h4 style="margin:0; font-size:1rem; font-weight:700; color:#2d3748;">Administrative Officer</h4>
+        <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#718096; word-break:break-all;">{}</p>
+      </div>
+    </div>
+
+    <!-- Active Organization Card -->
+    <div style="background:white; border-radius:12px; border:1px solid #e2e8f0; padding:1.25rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05); display:flex; flex-direction:column; justify-content:space-between; min-height:140px;">
+      <div style="display:flex; justify-content:space-between; align-items:start;">
+        <div>{}</div>
+        <span style="background:#283e28; color:white; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-transform:uppercase;">Active Tenant</span>
+      </div>
+      <div style="margin-top:1rem;">
+        <h4 style="margin:0; font-size:1rem; font-weight:700; color:#2d3748;">Organization</h4>
+        <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#718096; font-weight:600;">{}</p>
+      </div>
+    </div>
+
+    <!-- Active Project Card -->
+    <div style="background:white; border-radius:12px; border:1px solid #e2e8f0; padding:1.25rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05); display:flex; flex-direction:column; justify-content:space-between; min-height:140px;">
+      <div style="display:flex; justify-content:space-between; align-items:start;">
+        <div>{}</div>
+        <span style="background:#f05708; color:white; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-transform:uppercase;">Active Project</span>
+      </div>
+      <div style="margin-top:1rem;">
+        <h4 style="margin:0; font-size:1rem; font-weight:700; color:#2d3748;">Clinical Trial Registry</h4>
+        <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#718096; font-weight:600;">{}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Child Organizations Card -->
+  <div style="background:#f8fafc; border-radius:12px; border:1px solid #edf2f7; padding:1.5rem;">
+    <h3 style="margin:0 0 0.5rem 0; color:#02182b; font-size:1.15rem; font-weight:700;">Subordinate Organizations</h3>
+    <p style="color:#718096; margin:0 0 1rem 0; font-size:0.85rem;">Clinical affiliates and tenant operations managed within the active scope.</p>
+    {}
+  </div>
+
+  <!-- Quick Command Actions -->
+  <div style="background:white; border-radius:12px; border:1px solid #e2e8f0; padding:1.25rem; display:flex; flex-wrap:wrap; gap:1rem; align-items:center;">
+    <span style="font-weight:700; color:#02182b; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.05em;">Quick Actions:</span>
+    <a href="{}" style="background:#02182b; color:white; padding:0.5rem 1rem; border-radius:6px; text-decoration:none; font-size:0.85rem; font-weight:600; box-shadow:0 2px 4px rgba(2,24,43,0.15); transition:background 0.2s;">Cingulum Foundation Command Center</a>
+    <a href="/ui/studies?admin_email={}" style="background:#283e28; color:white; padding:0.5rem 1rem; border-radius:6px; text-decoration:none; font-size:0.85rem; font-weight:600; box-shadow:0 2px 4px rgba(40,62,40,0.15); transition:background 0.2s;">Study Lifecycle & CRF Workbench</a>
+    <a href="/ui/dua?admin_email={}" style="background:#c5b7ab; color:#02182b; padding:0.5rem 1rem; border-radius:6px; text-decoration:none; font-size:0.85rem; font-weight:600; transition:background 0.2s;">DUA Console</a>
+  </div>
+</section>"#,
+                admin_logo,
+                html_escape(admin_val),
+                org_logo,
+                html_escape(&org_val),
+                proj_logo,
+                html_escape(&proj_val),
+                child_organizations_html,
+                foundation_hub_url,
+                html_escape(admin_val),
+                html_escape(admin_val)
+            )
+        },
+    };
+
+    let auto_archive_banner = format!(
+        r#"<div style="background:#edf2f7; border: 1px solid #e2e8f0; padding:1rem; border-radius:6px; margin-bottom:1.5rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
+  <div>
+    <h3 style="margin:0; font-size:1.1rem; color:#2d3748; display:flex; align-items:center; gap:0.5rem;">
+      <span style="background:#3182ce; color:white; padding:0.1rem 0.4rem; border-radius:3px; font-size:0.75rem; font-weight:bold;">SYSTEM AUDIT</span>
+      Clinical Inactivity & Dormancy Audit
+    </h3>
+    <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#4a5568;">Scans and transitions clinical sites and studies inactive for 3+ years (1,095 days) to dormant status.</p>
+  </div>
+  <form method="post" action="/ui/app/auto-archive" style="margin:0;">
+    <input type="hidden" name="admin_email" value="{}" />
+    <button type="submit" style="background:#3182ce; color:white; padding:0.5rem 1rem; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">Run Inactivity Scan (3 Year Rule)</button>
+  </form>
+</div>"#,
+        html_escape(admin_email.trim())
+    );
+
+    let body = format!(
+        r#"
+{}
+<h1>Organization Command Center</h1>
+<p class="muted">Unified operations workspace: institutions, trial setup, patient workflows, legal agreements, and analytics.</p>
+{}
+{}
+{}
+{}
 
 <datalist id="app-organization-options">{}</datalist>
 <datalist id="app-project-options">{}</datalist>
@@ -2604,51 +3538,11 @@ async fn render_app_dashboard(
 <datalist id="app-patient-options">{}</datalist>
 <datalist id="app-provider-options">{}</datalist>
 "#,
+        global_nav,
         notice_html,
-        html_escape(admin_email.trim()),
-        if selected_org_value.is_empty() {
-            "<span class=\"muted\">none selected</span>".to_string()
-        } else {
-            selected_org_value.clone()
-        },
-        if selected_project_value.is_empty() {
-            "<span class=\"muted\">none selected</span>".to_string()
-        } else {
-            selected_project_value.clone()
-        },
-        child_organizations_html,
-        foundation_hub_url,
-        admin_email_q,
-        html_escape(admin_email.trim()),
-        selected_org_value.clone(),
-        organizations_html,
-        html_escape(admin_email.trim()),
-        selected_org_value.clone(),
-        projects_html,
-        html_escape(admin_email.trim()),
-        selected_project_value.clone(),
-        sites_html,
-        html_escape(admin_email.trim()),
-        html_escape(admin_email.trim()),
-        selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
-        selected_project_id
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
-        html_escape(admin_email.trim()),
-        selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
-        selected_project_id
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
-        patients_html,
-        html_escape(admin_email.trim()),
-        selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
-        html_escape(admin_email.trim()),
-        selected_patient_value,
-        providers_html,
-        encounters_html,
-        org_summary_html,
-        project_summary_html,
-        dua_html,
+        auto_archive_banner,
+        tab_bar,
+        panel_content,
         organization_options_html,
         project_options_html,
         site_options_html,
@@ -2656,7 +3550,7 @@ async fn render_app_dashboard(
         provider_options_html_app
     );
 
-    Ok(Html(render_cingulum_page("Virivu Research Web App", body)))
+    Ok(Html(render_cingulum_page("Organization Command Center", body)))
 }
 
 async fn submit_app_create_organization(
@@ -2772,6 +3666,8 @@ async fn submit_app_create_site(
             project_id,
             form.site_name.trim(),
             form.principal_investigator.trim(),
+            form.co_principal_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            form.sub_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -2782,6 +3678,160 @@ async fn submit_app_create_site(
         project.organization_id,
         project_id,
         query_escape("Site created")
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct AppDeleteSiteForm {
+    admin_email: String,
+}
+
+async fn submit_app_delete_site(
+    State(ctx): State<AppContext>,
+    Path(site_id): Path<Uuid>,
+    Form(form): Form<AppDeleteSiteForm>,
+) -> Result<Redirect, ApiError> {
+    let site = ctx
+        .db
+        .get_site(site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(site.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    ctx.db
+        .delete_site(site_id)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        query_escape("Site deleted successfully")
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct AppToggleDormancyForm {
+    admin_email: String,
+}
+
+async fn submit_app_site_toggle_dormancy(
+    State(ctx): State<AppContext>,
+    Path(site_id): Path<Uuid>,
+    Form(form): Form<AppToggleDormancyForm>,
+) -> Result<Redirect, ApiError> {
+    let site = ctx
+        .db
+        .get_site(site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(site.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    
+    let next_status = if site.status == "dormant" { "active" } else { "dormant" };
+    ctx.db
+        .set_site_status(site_id, next_status)
+        .await
+        .map_err(ApiError::internal)?;
+        
+    let notice = format!("Site status updated to {}", next_status);
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&view=sites&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        query_escape(&notice)
+    )))
+}
+
+async fn submit_app_project_toggle_dormancy(
+    State(ctx): State<AppContext>,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<AppToggleDormancyForm>,
+) -> Result<Redirect, ApiError> {
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    
+    let next_status = if project.status == "dormant" { "active" } else { "dormant" };
+    ctx.db
+        .set_project_status(project_id, next_status)
+        .await
+        .map_err(ApiError::internal)?;
+        
+    let notice = format!("Study status updated to {}", next_status);
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&view=projects&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        query_escape(&notice)
+    )))
+}
+
+async fn submit_app_auto_archive(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppToggleDormancyForm>,
+) -> Result<Redirect, ApiError> {
+    let days_threshold = 1095.0;
+    let (sites_archived, projects_archived) = ctx
+        .db
+        .auto_archive_dormant_entities(days_threshold)
+        .await
+        .map_err(ApiError::internal)?;
+        
+    let notice = format!(
+        "Inactivity scan completed: archived {} sites and {} studies with no activity for 3+ years.",
+        sites_archived, projects_archived
+    );
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        query_escape(&notice)
     )))
 }
 
@@ -3617,6 +4667,10 @@ async fn render_study_workbench(
         <input type="hidden" name="options_json" value="{}" />
         <small class="muted">Used only for single-select or multi-select field types.</small>
       </div>
+      <label>Branching logic JSON</label>
+      <textarea name="branching_logic_json" placeholder='e.g. {{"field": "has_allergy", "op": "eq", "value": "yes"}}' style="font-family:monospace;width:100%;height:60px;">{}</textarea>
+      <label>Edit checks JSON</label>
+      <textarea name="edit_checks_json" placeholder='e.g. [{{"op": "min", "value": 18}}]' style="font-family:monospace;width:100%;height:60px;">{}</textarea>
       <label>Display order</label>
       <input name="display_order" value="{}" />
       <button type="submit">Save Field Changes</button>
@@ -3634,6 +4688,8 @@ async fn render_study_workbench(
                     if field.required { "checked" } else { "" },
                     html_escape(&options_text_value),
                     html_escape(&field.options_json),
+                    html_escape(field.branching_logic_json.as_deref().unwrap_or("")),
+                    html_escape(field.edit_checks_json.as_deref().unwrap_or("")),
                     field.display_order
                 )
             })
@@ -3713,7 +4769,7 @@ async fn render_study_workbench(
                     .map(|project_id| format!("&project_id={project_id}"))
                     .unwrap_or_default();
                 format!(
-                    r#"<li><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(template={} patient={} status={})</small></li>"#,
+                    r#"<li><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(template={} patient={} status={} SDV={})</small></li>"#,
                     admin_email_q,
                     selected_org,
                     selected_project,
@@ -3721,7 +4777,8 @@ async fn render_study_workbench(
                     submission.id,
                     submission.template_id,
                     submission.patient_id,
-                    html_escape(&submission.status)
+                    html_escape(&submission.status),
+                    html_escape(&submission.sdv_status)
                 )
             })
             .collect::<Vec<_>>()
@@ -4068,6 +5125,9 @@ async fn render_study_workbench(
     let lock_submission_action = selected_submission_id
         .map(|id| format!("/ui/studies/submissions/{id}/lock"))
         .unwrap_or_else(|| "#".to_string());
+    let sdv_submission_action = selected_submission_id
+        .map(|id| format!("/ui/studies/submissions/{id}/sdv"))
+        .unwrap_or_else(|| "#".to_string());
     let create_query_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/query"))
         .unwrap_or_else(|| "#".to_string());
@@ -4078,45 +5138,59 @@ async fn render_study_workbench(
         .map(|id| format!("/ui/studies/{id}/close-checklist"))
         .unwrap_or_else(|| "#".to_string());
 
-    let body = format!(
-        r#"
-<h1>Study Lifecycle + CRF Workbench</h1>
-<p class="muted">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
-{}
-<div class="tab-shell">
-<nav class="tab-bar" data-tab-group="study-tabs">
-  <button type="button" class="tab-button is-active" data-tab-id="overview">Overview</button>
-  <button type="button" class="tab-button" data-tab-id="setup">Study Setup</button>
-  <button type="button" class="tab-button" data-tab-id="lifecycle">Lifecycle</button>
-  <button type="button" class="tab-button" data-tab-id="crf-templates">CRF Templates</button>
-  <button type="button" class="tab-button" data-tab-id="crf-fields">CRF Fields</button>
-  <button type="button" class="tab-button" data-tab-id="visits">Visits</button>
-  <button type="button" class="tab-button" data-tab-id="submissions">Submissions</button>
-  <button type="button" class="tab-button" data-tab-id="queries">Queries</button>
-  <button type="button" class="tab-button" data-tab-id="startup">Startup</button>
-  <button type="button" class="tab-button" data-tab-id="close">Close</button>
-</nav>
+    let view = query.view.as_deref().unwrap_or("overview");
+    let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
-<section class="card tab-panel is-active" data-tab-group="study-tabs" data-tab-panel="overview">
-  <h2>Overview</h2>
-  <p class="muted">Start here: review active studies, then execute pending actions for the selected study.</p>
-  <p><strong>Admin:</strong> {}</p>
-  <p><strong>Organization:</strong> {}</p>
-  <p><strong>Selected study:</strong> {}</p>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.8rem;margin-top:0.7rem;">
-    <section class="card" style="margin:0;">
-      <h3>Active studies</h3>
-      <ul>{}</ul>
-    </section>
-    <section class="card" style="margin:0;">
-      <h3>Pending actions</h3>
-      <ul>{}</ul>
-    </section>
-  </div>
-  <p style="margin-top:0.8rem;"><a href="{}">Back to unified app dashboard</a></p>
-</section>
+    let foundation_hub_url = selected_org_id
+        .map(|org_id| {
+            format!(
+                "/ui/foundation?admin_email={}&organization_id={org_id}",
+                html_escape(admin_email.trim())
+            )
+        })
+        .unwrap_or_else(|| format!("/ui/foundation?admin_email={}", html_escape(admin_email.trim())));
 
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="setup">
+    let global_nav = format!(
+        r#"<nav class="global-nav" style="margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; display: flex; gap: 1rem; font-size: 0.9rem;">
+  <a href="{}">Foundation</a>
+  <a href="/ui/app?admin_email={}&organization_id={}">Org Command Center</a>
+  <a href="/ui/studies?admin_email={}&organization_id={}">Study Dashboard</a>
+  <a href="/ui/dua?admin_email={}&organization_id={}">DUA Console</a>
+</nav>"#,
+        foundation_hub_url,
+        html_escape(admin_email.trim()), selected_org_value,
+        html_escape(admin_email.trim()), selected_org_value,
+        html_escape(admin_email.trim()), selected_org_value,
+    );
+
+    let tab_bar = format!(
+        r#"<nav class="tab-bar" style="margin-bottom: 1rem;">
+  <a class="tab-button {}" href="?view=overview&admin_email={}&organization_id={}&project_id={}">Overview</a>
+  <a class="tab-button {}" href="?view=setup&admin_email={}&organization_id={}&project_id={}">Study Setup</a>
+  <a class="tab-button {}" href="?view=lifecycle&admin_email={}&organization_id={}&project_id={}">Lifecycle</a>
+  <a class="tab-button {}" href="?view=crf-templates&admin_email={}&organization_id={}&project_id={}">CRF Templates</a>
+  <a class="tab-button {}" href="?view=crf-fields&admin_email={}&organization_id={}&project_id={}">CRF Fields</a>
+  <a class="tab-button {}" href="?view=visits&admin_email={}&organization_id={}&project_id={}">Visits</a>
+  <a class="tab-button {}" href="?view=submissions&admin_email={}&organization_id={}&project_id={}">Submissions</a>
+  <a class="tab-button {}" href="?view=queries&admin_email={}&organization_id={}&project_id={}">Queries</a>
+  <a class="tab-button {}" href="?view=startup&admin_email={}&organization_id={}&project_id={}">Startup</a>
+  <a class="tab-button {}" href="?view=close&admin_email={}&organization_id={}&project_id={}">Close</a>
+</nav>"#,
+        is_active("overview"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("setup"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("lifecycle"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("crf-templates"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("crf-fields"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("visits"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("submissions"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("queries"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("startup"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("close"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+    );
+
+    let panel_content = match view {
+        "setup" => format!(
+            r#"<section class="card">
   <h2>1) Create Study (clinicaltrials.gov-style metadata + internal ops)</h2>
   <form method="post" action="/ui/studies/create">
     <label>Admin email</label>
@@ -4139,9 +5213,13 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">Study portfolio</h3>
   <ul>{}</ul>
-</section>
-
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="lifecycle">
+</section>"#,
+            html_escape(admin_email.trim()),
+            selected_org_value.clone(),
+            study_rows_html
+        ),
+        "lifecycle" => format!(
+            r#"<section class="card">
   <h2>2) Lifecycle Transition</h2>
   {}
   {}
@@ -4163,9 +5241,17 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">Phase events</h3>
   <ul>{}</ul>
-</section>
-
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="crf-templates">
+</section>"#,
+            lifecycle_kpi_cards_html,
+            lifecycle_action_cards_html,
+            lifecycle_gate_html,
+            phase_action,
+            selected_project_value.clone(),
+            html_escape(admin_email.trim()),
+            phase_events_html
+        ),
+        "crf-templates" => format!(
+            r#"<section class="card">
   <h2>3) CRF Template Design</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -4186,9 +5272,13 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">CRF templates</h3>
   <ul>{}</ul>
-</section>
-
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="crf-fields">
+</section>"#,
+            crf_template_action,
+            html_escape(admin_email.trim()),
+            templates_html
+        ),
+        "crf-fields" => format!(
+            r#"<section class="card">
   <h2>4) CRF Field Builder</h2>
   <p><strong>Selected template:</strong> {}</p>
   <p class="muted">Add new fields below. To edit an existing field, use the <strong>Edit field</strong> option in the list.</p>
@@ -4221,6 +5311,10 @@ async fn render_study_workbench(
       <input type="hidden" name="options_json" value="[]" />
       <small class="muted">Only needed for Single choice or Multiple choice fields.</small>
     </div>
+    <label>Branching logic JSON</label>
+    <textarea name="branching_logic_json" placeholder='e.g. {{"field": "has_allergy", "op": "eq", "value": "yes"}}' style="font-family:monospace;width:100%;height:60px;"></textarea>
+    <label>Edit checks JSON</label>
+    <textarea name="edit_checks_json" placeholder='e.g. [{{"op": "min", "value": 18}}]' style="font-family:monospace;width:100%;height:60px;"></textarea>
     <label>Display order</label>
     <input name="display_order" value="0" />
     <button type="submit">Add Field</button>
@@ -4265,9 +5359,25 @@ async fn render_study_workbench(
   </details>
   <h3 style="margin-top:1rem;">Fields</h3>
   <ul>{}</ul>
-</section>
-
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="visits">
+</section>"#,
+            if selected_template_value.is_empty() {
+                "<span class=\"muted\">none selected</span>".to_string()
+            } else {
+                selected_template_value.clone()
+            },
+            crf_field_action,
+            html_escape(admin_email.trim()),
+            import_html_fields_action,
+            html_escape(admin_email.trim()),
+            field_count,
+            bulk_delete_fields_action,
+            html_escape(admin_email.trim()),
+            bulk_delete_corrupted_fields_action,
+            html_escape(admin_email.trim()),
+            fields_html
+        ),
+        "visits" => format!(
+            r#"<section class="card">
   <h2>5) Visit Schedule Engine</h2>
   <form method="post" action="{}" style="margin-bottom:1rem;">
     <label>Admin email</label>
@@ -4300,9 +5410,16 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">Scheduled visits</h3>
   <ul>{}</ul>
-</section>
-
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="submissions">
+</section>"#,
+            visit_template_action,
+            html_escape(admin_email.trim()),
+            visit_templates_html,
+            schedule_visit_action,
+            html_escape(admin_email.trim()),
+            patient_visits_html
+        ),
+        "submissions" => format!(
+            r#"<section class="card">
   <h2>6) CRF Submission Workflow</h2>
   <form method="post" action="{}" style="margin-bottom:1rem;">
     <label>Admin email</label>
@@ -4322,17 +5439,44 @@ async fn render_study_workbench(
     <input type="hidden" name="admin_email" value="{}" />
     <button type="submit">Mark Submitted</button>
   </form>
-  <form method="post" action="{}" style="display:inline-block;">
+  <form method="post" action="{}" style="display:inline-block; margin-right:0.5rem;">
     <input type="hidden" name="admin_email" value="{}" />
     <button type="submit">Lock Submission</button>
+  </form>
+  <form method="post" action="{}" style="display:inline-block;">
+    <input type="hidden" name="admin_email" value="{}" />
+    <label style="display:inline; margin-left:0.5rem; margin-right:0.2rem;">SDV Status:</label>
+    <select name="sdv_status" style="display:inline; width:auto; padding:0.2rem; margin-right:0.3rem;" required>
+      <option value="pending">Pending</option>
+      <option value="verified">Verified</option>
+      <option value="failed">Failed</option>
+    </select>
+    <button type="submit">Update SDV</button>
   </form>
   <h3 style="margin-top:1rem;">Patients</h3>
   <ul>{}</ul>
   <h3 style="margin-top:1rem;">Submissions</h3>
   <ul>{}</ul>
-</section>
-
-<section class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="queries">
+</section>"#,
+            create_submission_action,
+            html_escape(admin_email.trim()),
+            selected_template_value,
+            if selected_submission_value.is_empty() {
+                "<span class=\"muted\">none selected</span>".to_string()
+            } else {
+                selected_submission_value.clone()
+            },
+            submit_submission_action,
+            html_escape(admin_email.trim()),
+            lock_submission_action,
+            html_escape(admin_email.trim()),
+            sdv_submission_action,
+            html_escape(admin_email.trim()),
+            patients_html,
+            submissions_html
+        ),
+        "queries" => format!(
+            r#"<section class="card">
   <h2>7) Monitor Query Management</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -4347,9 +5491,14 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">Queries</h3>
   <ul>{}</ul>
-</section>
-
-<section id="startup-checklist-panel" class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="startup">
+</section>"#,
+            create_query_action,
+            html_escape(admin_email.trim()),
+            selected_submission_value.clone(),
+            data_queries_html
+        ),
+        "startup" => format!(
+            r#"<section class="card">
   <h2>8) Study Startup Checklist</h2>
   <p class="muted">Use this checklist to move from setup to launch. Work through pending tasks and mark them complete.</p>
   {}
@@ -4372,9 +5521,16 @@ async fn render_study_workbench(
       <button type="submit">Save Startup Item</button>
     </form>
   </details>
-</section>
-
-<section id="close-checklist-panel" class="card tab-panel" data-tab-group="study-tabs" data-tab-panel="close">
+</section>"#,
+            startup_summary_html,
+            startup_workflow_framework_html,
+            startup_next_action_html,
+            startup_checklist_html,
+            startup_checklist_action,
+            html_escape(admin_email.trim())
+        ),
+        "close" => format!(
+            r#"<section class="card">
   <h2>9) Study Close Checklist</h2>
   <form method="post" action="{}">
     <label>Admin email</label>
@@ -4390,8 +5546,51 @@ async fn render_study_workbench(
     <button type="submit">Upsert Checklist Item</button>
   </form>
   <ul>{}</ul>
-</section>
-</div>
+</section>"#,
+            checklist_action,
+            html_escape(admin_email.trim()),
+            checklist_html
+        ),
+        _ => format!(
+            r#"<section class="card">
+  <h2>Overview</h2>
+  <p class="muted">Start here: review active studies, then execute pending actions for the selected study.</p>
+  <p><strong>Admin:</strong> {}</p>
+  <p><strong>Organization:</strong> {}</p>
+  <p><strong>Selected study:</strong> {}</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.8rem;margin-top:0.7rem;">
+    <section class="card" style="margin:0;">
+      <h3>Active studies</h3>
+      <ul>{}</ul>
+    </section>
+    <section class="card" style="margin:0;">
+      <h3>Pending actions</h3>
+      <ul>{}</ul>
+    </section>
+  </div>
+  <p style="margin-top:0.8rem;"><a href="{}">Back to unified app dashboard</a></p>
+</section>"#,
+            html_escape(admin_email.trim()),
+            if selected_org_value.is_empty() {
+                "<span class=\"muted\">none selected</span>".to_string()
+            } else {
+                selected_org_value.clone()
+            },
+            selected_study_label,
+            active_studies_html,
+            pending_actions_html,
+            app_dashboard_url
+        ),
+    };
+
+    let body = format!(
+        r#"
+{}
+<h1>Study Dashboard</h1>
+<p class="muted">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
+{}
+{}
+{}
 
 <datalist id="study-patient-options">{}</datalist>
 <datalist id="study-template-options">{}</datalist>
@@ -4399,85 +5598,17 @@ async fn render_study_workbench(
 <datalist id="study-visit-options">{}</datalist>
 <datalist id="study-submission-options">{}</datalist>
 "#,
+        global_nav,
         notice_html,
-        html_escape(admin_email.trim()),
-        if selected_org_value.is_empty() {
-            "<span class=\"muted\">none selected</span>".to_string()
-        } else {
-            selected_org_value.clone()
-        },
-        selected_study_label,
-        active_studies_html,
-        pending_actions_html,
-        app_dashboard_url,
-        html_escape(admin_email.trim()),
-        selected_org_value,
-        study_rows_html,
-        lifecycle_kpi_cards_html,
-        lifecycle_action_cards_html,
-        lifecycle_gate_html,
-        phase_action,
-        selected_project_value.clone(),
-        html_escape(admin_email.trim()),
-        phase_events_html,
-        crf_template_action,
-        html_escape(admin_email.trim()),
-        templates_html,
-        if selected_template_value.is_empty() {
-            "<span class=\"muted\">none selected</span>".to_string()
-        } else {
-            selected_template_value.clone()
-        },
-        crf_field_action,
-        html_escape(admin_email.trim()),
-        import_html_fields_action,
-        html_escape(admin_email.trim()),
-        field_count,
-        bulk_delete_fields_action,
-        html_escape(admin_email.trim()),
-        bulk_delete_corrupted_fields_action,
-        html_escape(admin_email.trim()),
-        fields_html,
-        visit_template_action,
-        html_escape(admin_email.trim()),
-        visit_templates_html,
-        schedule_visit_action,
-        html_escape(admin_email.trim()),
-        patient_visits_html,
-        create_submission_action,
-        html_escape(admin_email.trim()),
-        selected_template_value,
-        if selected_submission_value.is_empty() {
-            "<span class=\"muted\">none selected</span>".to_string()
-        } else {
-            selected_submission_value.clone()
-        },
-        submit_submission_action,
-        html_escape(admin_email.trim()),
-        lock_submission_action,
-        html_escape(admin_email.trim()),
-        patients_html,
-        submissions_html,
-        create_query_action,
-        html_escape(admin_email.trim()),
-        selected_submission_value,
-        data_queries_html,
-        startup_summary_html,
-        startup_workflow_framework_html,
-        startup_next_action_html,
-        startup_checklist_html,
-        startup_checklist_action,
-        html_escape(admin_email.trim()),
-        checklist_action,
-        html_escape(admin_email.trim()),
-        checklist_html,
+        tab_bar,
+        panel_content,
         patient_options_html,
         template_options_html,
         visit_template_options_html,
         visit_options_html,
         submission_options_html
     );
-    Ok(Html(render_cingulum_page("Study Workbench", body)))
+    Ok(Html(render_cingulum_page("Study Dashboard", body)))
 }
 
 async fn submit_create_study_from_ui(
@@ -4735,6 +5866,18 @@ async fn submit_add_study_crf_field(
         form.options_json.trim(),
     );
     let display_order = form.display_order.trim().parse::<i32>().unwrap_or(0).max(0);
+    let branching_logic_trimmed = form.branching_logic_json.trim();
+    let branching_logic = if branching_logic_trimmed.is_empty() {
+        None
+    } else {
+        Some(branching_logic_trimmed)
+    };
+    let edit_checks_trimmed = form.edit_checks_json.trim();
+    let edit_checks = if edit_checks_trimmed.is_empty() {
+        None
+    } else {
+        Some(edit_checks_trimmed)
+    };
     if let Err(err) = ctx
         .db
         .add_study_crf_field(
@@ -4744,6 +5887,8 @@ async fn submit_add_study_crf_field(
             form.field_type.trim(),
             form.required.is_some(),
             &options_json,
+            branching_logic,
+            edit_checks,
             display_order,
         )
         .await
@@ -5035,6 +6180,8 @@ async fn submit_import_study_crf_fields_html(
                     &draft.field_type,
                     draft.required,
                     &draft.options_json,
+                    None,
+                    None,
                     display_order,
                 )
                 .await
@@ -5050,6 +6197,8 @@ async fn submit_import_study_crf_fields_html(
                     &draft.field_type,
                     draft.required,
                     &draft.options_json,
+                    None,
+                    None,
                     display_order,
                 )
                 .await
@@ -5124,6 +6273,18 @@ async fn submit_update_study_crf_field(
         form.options_json.trim(),
     );
     let display_order = form.display_order.trim().parse::<i32>().unwrap_or(0).max(0);
+    let branching_logic_trimmed = form.branching_logic_json.trim();
+    let branching_logic = if branching_logic_trimmed.is_empty() {
+        None
+    } else {
+        Some(branching_logic_trimmed)
+    };
+    let edit_checks_trimmed = form.edit_checks_json.trim();
+    let edit_checks = if edit_checks_trimmed.is_empty() {
+        None
+    } else {
+        Some(edit_checks_trimmed)
+    };
     if let Err(err) = ctx
         .db
         .update_study_crf_field(
@@ -5133,6 +6294,8 @@ async fn submit_update_study_crf_field(
             form.field_type.trim(),
             form.required.is_some(),
             &options_json,
+            branching_logic,
+            edit_checks,
             display_order,
         )
         .await
@@ -5433,6 +6596,53 @@ async fn submit_lock_study_crf_submission(
     )))
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateStudyCrfSubmissionSdvForm {
+    admin_email: String,
+    sdv_status: String,
+}
+
+async fn submit_update_study_crf_submission_sdv(
+    State(ctx): State<AppContext>,
+    Path(submission_id): Path<Uuid>,
+    Form(form): Form<UpdateStudyCrfSubmissionSdvForm>,
+) -> Result<Redirect, ApiError> {
+    let submission = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(submission.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    ctx.db
+        .update_study_crf_submission_sdv_status(submission_id, form.sdv_status.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&tab=submissions&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
+        submission_id,
+        query_escape("SDV status updated successfully")
+    )))
+}
+
 async fn submit_create_study_data_query(
     State(ctx): State<AppContext>,
     Path(project_id): Path<Uuid>,
@@ -5591,6 +6801,11 @@ async fn submit_set_study_startup_checklist_item(
         )));
     }
     let completed = form.completed.is_some();
+    if completed && form.notes.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "A compliance verification comment is required when marking a startup checklist item as complete.".to_string()
+        ));
+    }
     let completed_by_user_id = if completed {
         ctx.db
             .get_user_by_email(form.admin_email.trim())
@@ -5621,6 +6836,73 @@ async fn submit_set_study_startup_checklist_item(
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
+        query_escape(notice)
+    )))
+}
+
+async fn submit_set_site_startup_checklist_item(
+    State(ctx): State<AppContext>,
+    Path(site_id): Path<Uuid>,
+    Form(form): Form<StudyChecklistItemForm>,
+) -> Result<Redirect, ApiError> {
+    let site = ctx
+        .db
+        .get_site(site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+    let project = ctx
+        .db
+        .get_project(site.project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    let allowed = ctx
+        .db
+        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
+        .await
+        .map_err(ApiError::internal)?;
+    if !allowed {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email lacks organization manager access".to_string(),
+        )));
+    }
+    let completed = form.completed.is_some();
+    if completed && form.notes.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "A compliance verification comment is required when marking a startup checklist item as complete.".to_string()
+        ));
+    }
+    let completed_by_user_id = if completed {
+        ctx.db
+            .get_user_by_email(form.admin_email.trim())
+            .await
+            .map_err(ApiError::internal)?
+            .map(|u| u.id)
+    } else {
+        None
+    };
+    ctx.db
+        .set_site_startup_checklist_item(
+            site_id,
+            form.item_code.trim(),
+            form.item_label.trim(),
+            completed,
+            completed_by_user_id,
+            form.notes.trim(),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    let notice = if completed {
+        "Site startup task completed"
+    } else {
+        "Site startup task marked pending"
+    };
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&view=sites&notice={}",
+        query_escape(form.admin_email.trim()),
+        project.organization_id,
+        project.id,
         query_escape(notice)
     )))
 }
@@ -5785,24 +7067,78 @@ async fn render_dua_admin_page(
         .collect::<Vec<_>>()
         .join("");
 
+    let colors = ["#02182b", "#283e28", "#f05708", "#e7e5da", "#4a5568"];
     let managed_orgs_html = if organizations.is_empty() {
-        "<li>No organizations found for this admin email yet.</li>".to_string()
+        r#"<div class="dashboard-card" style="padding:1.5rem; min-height:unset; border:1px solid #cbd5e0; text-align:center;">
+          <p style="color:#718096; font-style:italic; margin:0;">No organizations found for this admin email yet.</p>
+        </div>"#.to_string()
     } else {
-        organizations
-            .iter()
-            .map(|org| {
-                format!(
-                    "<li><strong>{}</strong> — {} <small>(kind: {} · parent: {})</small></li>",
-                    html_escape(&org.name),
-                    org.id,
-                    html_escape(&org.organization_kind),
-                    org.parent_organization_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("")
+        let mut cards = vec![];
+        for org in &organizations {
+            let name_bytes = org.name.as_bytes();
+            let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+            let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+            let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+            let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+            
+            let c1 = colors[b1 % 5];
+            let c2 = colors[b2 % 5];
+            let c3 = colors[b3 % 5];
+            let c4 = colors[b4 % 5];
+            
+            let logo_svg = format!(
+                r##"<svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"##,
+                c1, c2, c3, c4
+            );
+
+            let is_active = org.id.to_string() == selected_organization_id;
+            let active_style = if is_active {
+                "border: 2px solid var(--cg-navy); background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);"
+            } else {
+                "border: 1px solid rgba(47, 88, 120, 0.28);"
+            };
+            let active_badge = if is_active {
+                r#"<span style="font-size:0.75rem; font-weight:800; background:var(--cg-navy); color:white; padding:0.2rem 0.5rem; border-radius:6px; text-transform:uppercase; letter-spacing:0.05em; display:inline-block;">Active Workspace</span>"#
+            } else {
+                ""
+            };
+
+            cards.push(format!(
+                r##"<a href="/ui/dua?admin_email={}&organization_id={}" class="dashboard-card" style="text-decoration:none; color:inherit; padding:1.25rem; min-height:unset; display:flex; flex-direction:column; gap:0.75rem; transition:all 0.2s; position:relative; overflow:hidden; {}">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem;">
+    <div style="display:flex; gap:0.6rem; align-items:center;">
+      {}
+      <h4 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">{}</h4>
+    </div>
+    {}
+  </div>
+  <div style="font-size:0.8rem; color:#4a5568; font-family:monospace; word-break:break-all; margin-top:0.25rem;">
+    <strong>ID:</strong> {}
+  </div>
+  <div style="display:flex; gap:0.5rem; font-size:0.75rem; color:#718096; margin-top:auto; padding-top:0.5rem; border-top:1px solid #edf2f7;">
+    <span style="background:#e2e8f0; color:#4a5568; padding:0.15rem 0.4rem; border-radius:4px; font-weight:600;">Kind: {}</span>
+    <span style="background:#e2e8f0; color:#4a5568; padding:0.15rem 0.4rem; border-radius:4px; font-weight:600;">Parent: {}</span>
+  </div>
+</a>"##,
+                query_escape(admin_email.trim()),
+                org.id,
+                active_style,
+                logo_svg,
+                html_escape(&org.name),
+                active_badge,
+                org.id,
+                html_escape(&org.organization_kind),
+                org.parent_organization_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            ));
+        }
+        cards.join("\n")
     };
     let org_duas = if let Some(org_id) = selected_organization_uuid {
         ctx.db
@@ -5813,16 +7149,37 @@ async fn render_dua_admin_page(
         Vec::new()
     };
     let org_duas_html = if org_duas.is_empty() {
-        "<li>No DUAs for selected organization yet.</li>".to_string()
+        r#"<div class="dashboard-card" style="padding:1.5rem; min-height:unset; border:1px solid #cbd5e0; text-align:center;">
+          <p style="color:#718096; font-style:italic; margin:0;">No DUAs for selected organization yet.</p>
+        </div>"#.to_string()
     } else {
         org_duas
             .iter()
             .map(|dua| {
+                let badge_color = match dua.status.as_str() {
+                    "signed" => "background:#e6fffa; color:#234e52; border:1px solid #b2f5ea;",
+                    "draft" => "background:#feebc8; color:#7b341e; border:1px solid #fbd38d;",
+                    _ => "background:#edf2f7; color:#4a5568; border:1px solid #e2e8f0;",
+                };
                 format!(
-                    r#"<li><a href="/ui/dua/{}?admin_email={}">{}</a> <span class="status-chip">{}</span></li>"#,
+                    r##"<a href="/ui/dua/{}?admin_email={}" class="dashboard-card-row" style="text-decoration:none; color:inherit; margin-bottom:0.75rem; border:1px solid rgba(47, 88, 120, 0.28); padding:1rem; border-radius:10px; display:flex; justify-content:space-between; align-items:center; transition:all 0.15s;">
+  <div style="display:flex; gap:0.75rem; align-items:center;">
+    <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
+      <rect x="0" y="0" width="32" height="32" fill="#02182b" />
+      <path d="M8 8h16v2H8zm0 6h16v2H8zm0 6h10v2H8z" fill="white" />
+    </svg>
+    <div>
+      <span style="font-weight:700; color:#02182b; font-size:1.05rem;">{}</span>
+      <div style="font-size:0.75rem; color:#718096; margin-top:0.15rem; font-family:monospace;">ID: {}</div>
+    </div>
+  </div>
+  <span class="status-chip" style="font-weight:700; font-size:0.75rem; padding:0.25rem 0.5rem; border-radius:6px; text-transform:uppercase; {}">{}</span>
+</a>"##,
                     dua.id,
                     query_escape(admin_email.trim()),
                     html_escape(&dua.hospital_name),
+                    dua.id,
+                    badge_color,
                     html_escape(&dua.status)
                 )
             })
@@ -5836,98 +7193,171 @@ async fn render_dua_admin_page(
         .unwrap_or_default();
 
     let body = format!(
-        r#"
-  <h1>Electronic Data Use Agreements</h1>
-  <p class="muted">Create and manage DUA records between hospitals and Cingulum Foundation Inc.</p>
-  {}
-  <section class="card">
-    <h2>Step 1: Create or choose organization</h2>
-    <form method="post" action="/ui/dua/create-organization">
-      <label>Admin email (platform admin required to create org)</label>
-      <input name="admin_email" value="{}" required />
+        r##"<div style="background:linear-gradient(135deg, #02182b 0%, #283e28 100%); padding:2rem; border-radius:16px; color:white; margin-bottom:2rem; box-shadow:0 10px 25px rgba(2,24,43,0.15); border:1px solid rgba(255,255,255,0.08);">
+  <h1 style="color:white; margin:0 0 0.5rem; font-size:2rem; font-weight:800;">Electronic Data Use Agreements</h1>
+  <p style="color:rgba(255,255,255,0.8); margin:0; font-size:0.95rem;">
+    Create, sign, and manage secure clinical Data Use Agreements (DUA) between healthcare providers and Cingulum Foundation Inc.
+  </p>
+</div>
 
-      <label>New organization legal name</label>
-      <input name="organization_name" placeholder="Cingulum Foundation Inc." required />
-      <label>Parent organization ID (optional; blank = Cingulum Foundation root)</label>
-      <input name="parent_organization_id" list="organization-options" value="{}" placeholder="child under foundation" />
-      <label>Organization type</label>
-      <select name="organization_kind">
-        <option value="tenant" selected>tenant</option>
-        <option value="research_network">research_network</option>
-        <option value="hospital">hospital</option>
-        <option value="sponsor">sponsor</option>
-      </select>
+{}
 
-      <button type="submit">Create Organization</button>
+<!-- Available Organizations List -->
+<div class="card" style="margin-bottom:2rem; padding:1.5rem;">
+  <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
+    <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15);">
+      <rect x="0" y="0" width="16" height="16" fill="#02182b" />
+      <rect x="16" y="0" width="16" height="16" fill="#f05708" />
+      <rect x="0" y="16" width="16" height="16" fill="#02182b" />
+      <rect x="16" y="16" width="16" height="16" fill="#e7e5da" />
+    </svg>
+    <h2 style="margin:0; font-size:1.25rem;">Organizations available for this admin</h2>
+  </div>
+  <p style="color:#718096; font-size:0.85rem; margin-bottom:1.25rem;">
+    Click an organization card to select it and view its scoped agreements.
+  </p>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem;">
+    {}
+    <div id="add-org-card" style="background:#f8fafc; border:2px dashed #cbd5e0; border-radius:12px; padding:1.25rem; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:160px; cursor:pointer; transition:all 0.2s;" onclick="document.getElementById('org-create-modal').showModal()">
+      <span style="font-size:3rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
+      <span style="font-size:0.9rem; font-weight:700; color:#718096; margin-top:0.5rem;">Add New Organization</span>
+    </div>
+  </div>
+</div>
+
+<!-- Scoped DUA Workspace Section -->
+<div class="card" style="margin-bottom:2rem; padding:1.5rem;">
+  <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
+    <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15);">
+      <rect x="0" y="0" width="32" height="32" fill="#02182b" />
+      <path d="M6 6h20v2H6zm0 6h20v2H6zm0 6h14v2H6z" fill="white" />
+    </svg>
+    <h2 style="margin:0; font-size:1.25rem;">Selected organization DUA workspace</h2>
+  </div>
+  <p style="color:#718096; font-size:0.85rem; margin-bottom:1.25rem;">
+    DUAs below are scoped only to the currently chosen active organization workspace.
+  </p>
+  <div>
+    {}
+  </div>
+</div>
+
+<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:1.5rem; margin-bottom:2rem; align-items:start;">
+  <!-- Return to Existing Workspace Card -->
+  <div class="card" style="margin:0; padding:1.5rem; height:100%; display:flex; flex-direction:column;">
+    <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
+      <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15);">
+        <rect x="0" y="0" width="16" height="16" fill="#283e28" />
+        <rect x="16" y="0" width="16" height="16" fill="#e7e5da" />
+        <rect x="0" y="16" width="16" height="16" fill="#02182b" />
+        <rect x="16" y="16" width="16" height="16" fill="#283e28" />
+      </svg>
+      <h2 style="margin:0; font-size:1.25rem;">Return to existing agreement workspace</h2>
+    </div>
+    <form method="post" action="/ui/dua/open-agreement" style="margin:0; background:none; border:none; padding:0; box-shadow:none; max-width:none; display:flex; flex-direction:column; flex:1; justify-content:space-between;">
+      <div>
+        <label>Admin email</label>
+        <input name="admin_email" value="{}" required style="background:#f7fafc;" readonly />
+        <label>Agreement ID (UUID)</label>
+        <input name="agreement_id" placeholder="agreement-uuid" required />
+      </div>
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:8px; font-weight:600; cursor:pointer; width:100%; margin-top:1.5rem; transition:background 0.2s;">Open Agreement Workspace</button>
     </form>
-    <h3 style="margin-top:1rem;">Organizations available for this admin</h3>
-    <ul>{}</ul>
-  </section>
+  </div>
 
-  <section class="card">
-    <h2>Return to existing agreement workspace</h2>
-    <form method="post" action="/ui/dua/open-agreement">
-      <label>Admin email</label>
-      <input name="admin_email" value="{}" required />
-      <label>Agreement ID (UUID)</label>
-      <input name="agreement_id" placeholder="agreement-uuid" required />
-      <button type="submit">Open Agreement Workspace</button>
+  <!-- Step 2: Draft DUA Section -->
+  <div class="card" style="margin:0; padding:1.5rem;">
+    <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
+      <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15);">
+        <rect x="0" y="0" width="16" height="16" fill="#f05708" />
+        <rect x="16" y="0" width="16" height="16" fill="#e7e5da" />
+        <rect x="0" y="16" width="16" height="16" fill="#02182b" />
+        <rect x="16" y="16" width="16" height="16" fill="#283e28" />
+      </svg>
+      <h2 style="margin:0; font-size:1.25rem;">Step 2: Draft DUA</h2>
+    </div>
+    <p style="color:#718096; font-size:0.85rem; margin-bottom:1.25rem;">
+      Draft a new Data Use Agreement for the selected organization and queue the hospital legal signing process.
+    </p>
+    <form method="post" action="/ui/dua/draft" style="margin:0; background:none; border:none; padding:0; box-shadow:none; max-width:none;">
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1.25rem; align-items:start;">
+        <div>
+          <label>Admin email (must be org manager or platform admin)</label>
+          <input name="admin_email" value="{}" required style="background:#f7fafc;" readonly />
+
+          <label>Organization ID (UUID)</label>
+          <input name="organization_id" list="organization-options" value="{}" placeholder="organization-uuid" required />
+          <datalist id="organization-options">
+            {}
+          </datalist>
+
+          <label>Hospital legal name</label>
+          <input name="hospital_name" placeholder="Hospital Name" required />
+
+          <label>Hospital contact name</label>
+          <input name="hospital_contact_name" placeholder="Contact Name" required />
+
+          <label>Hospital contact email</label>
+          <input type="email" name="hospital_contact_email" placeholder="legal@hospital.org" required />
+        </div>
+        <div>
+          <label>Agreement version</label>
+          <input name="agreement_version" value="1.0" required />
+
+          <label>Effective date (YYYY-MM-DD)</label>
+          <input name="effective_date" placeholder="2026-06-01" />
+
+          <label>Expiration date (YYYY-MM-DD)</label>
+          <input name="expiration_date" placeholder="2027-06-01" />
+
+          <label>Agreement text</label>
+          <textarea name="agreement_text" required style="height:210px; font-family:monospace; font-size:0.85rem;">{}</textarea>
+        </div>
+      </div>
+
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.9rem; border-radius:8px; font-weight:700; cursor:pointer; width:100%; margin-top:1.5rem; transition:background 0.2s; font-size:1rem;">Create DUA + Queue Hospital Signing Link</button>
     </form>
-  </section>
+  </div>
+</div>
 
-  <section class="card">
-    <h2>Selected organization DUA workspace</h2>
-    <p class="muted">DUAs below are scoped only to the chosen organization.</p>
-    <ul>{}</ul>
-  </section>
+<!-- Create Organization Modal -->
+<dialog id="org-create-modal" style="border:none; border-radius:12px; padding:2rem; width:100%; max-width:480px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04); background:#fff;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid #edf2f7; padding-bottom:0.75rem;">
+    <h3 style="margin:0; color:#02182b; font-size:1.25rem;">Create New Organization</h3>
+    <button onclick="document.getElementById('org-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer;">&times;</button>
+  </div>
+  <form method="post" action="/ui/dua/create-organization" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
+    <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email (platform admin required to create org)</label>
+    <input name="admin_email" value="{}" required style="background:#f7fafc; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" readonly />
 
-  <section class="card">
-    <h2>Step 2: Draft DUA</h2>
-    <form method="post" action="/ui/dua/draft">
-      <label>Admin email (must be org manager or platform admin)</label>
-      <input name="admin_email" value="{}" required />
+    <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">New organization legal name</label>
+    <input name="organization_name" placeholder="Cingulum Foundation Inc." required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+    
+    <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Parent organization ID (optional; blank = Cingulum Foundation root)</label>
+    <input name="parent_organization_id" list="organization-options" value="{}" placeholder="child under foundation" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+    
+    <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Organization type</label>
+    <select name="organization_kind" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:white;">
+      <option value="tenant" selected>tenant</option>
+      <option value="research_network">research_network</option>
+      <option value="hospital">hospital</option>
+      <option value="sponsor">sponsor</option>
+    </select>
 
-      <label>Organization ID (UUID)</label>
-      <input name="organization_id" list="organization-options" value="{}" placeholder="organization-uuid" required />
-      <datalist id="organization-options">
-        {}
-      </datalist>
-
-      <label>Hospital legal name</label>
-      <input name="hospital_name" placeholder="Hospital Name" required />
-
-      <label>Hospital contact name</label>
-      <input name="hospital_contact_name" placeholder="Contact Name" required />
-
-      <label>Hospital contact email</label>
-      <input type="email" name="hospital_contact_email" placeholder="legal@hospital.org" required />
-
-      <label>Agreement version</label>
-      <input name="agreement_version" value="1.0" required />
-
-      <label>Effective date (YYYY-MM-DD)</label>
-      <input name="effective_date" placeholder="2026-06-01" />
-
-      <label>Expiration date (YYYY-MM-DD)</label>
-      <input name="expiration_date" placeholder="2027-06-01" />
-
-      <label>Agreement text</label>
-      <textarea name="agreement_text" required>{}</textarea>
-
-      <button type="submit">Create DUA + Queue Hospital Signing Link</button>
-    </form>
-  </section>
-"#,
+    <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:8px; font-weight:600; cursor:pointer; width:100%; margin-top:1rem; transition:background 0.2s;">Create Organization</button>
+  </form>
+</dialog>
+"##,
         notice_html,
-        html_escape(&admin_email),
-        html_escape(&selected_organization_id),
         managed_orgs_html,
-        html_escape(&admin_email),
         org_duas_html,
+        html_escape(&admin_email),
         html_escape(&admin_email),
         html_escape(&selected_organization_id),
         organization_options,
-        html_escape(default_dua_text())
+        html_escape(default_dua_text()),
+        html_escape(&admin_email),
+        html_escape(&selected_organization_id)
     );
 
     Ok(Html(render_cingulum_page("Virivu DUA Console", body)))
@@ -8452,6 +9882,7 @@ fn cingulum_theme_css() -> &'static str {
     }
     .action-card {
       display: block;
+      position: relative;
       text-decoration: none;
       border: 1px solid rgba(197, 183, 171, 0.9);
       border-radius: 13px;
@@ -8460,6 +9891,90 @@ fn cingulum_theme_css() -> &'static str {
       color: #10263d;
       transition: transform 140ms ease, box-shadow 160ms ease, border-color 140ms ease;
       box-shadow: 0 9px 18px rgba(2, 24, 43, 0.08);
+    }
+    a.action-card,
+    a.dashboard-card,
+    a.dashboard-card-row,
+    a.dashboard-card-mini {
+      padding-right: 2.3rem !important;
+    }
+    a.action-card::after,
+    a.dashboard-card::after,
+    a.dashboard-card-row::after,
+    a.dashboard-card-mini::after {
+      content: 'CX';
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      background: linear-gradient(135deg, var(--cg-navy) 0%, var(--cg-orange) 100%);
+      color: white;
+      font-size: 7.5px;
+      font-weight: 900;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 4px rgba(2, 24, 43, 0.25);
+      opacity: 0.75;
+      transition: all 0.22s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    a.action-card:hover::after,
+    a.dashboard-card:hover::after,
+    a.dashboard-card-row:hover::after,
+    a.dashboard-card-mini:hover::after {
+      opacity: 1;
+      transform: scale(1.18);
+      box-shadow: 0 4px 8px rgba(240, 87, 8, 0.4);
+    }
+    .dashboard-card {
+      background: white;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+      padding: 1.25rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      min-height: 160px;
+      transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+    }
+    .dashboard-card:hover {
+      border-color: var(--cg-navy) !important;
+      box-shadow: 0 6px 12px -2px rgba(2, 24, 43, 0.08);
+    }
+    .dashboard-card-row {
+      background: white;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+      padding: 1.25rem;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.02);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+      transition: all 0.15s;
+      margin-bottom: 1rem;
+    }
+    .dashboard-card-row:hover {
+      border-color: var(--cg-navy) !important;
+    }
+    .dashboard-card-mini {
+      background: white;
+      border-radius: 10px;
+      border: 1px solid #e2e8f0;
+      padding: 1rem;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      position: relative;
+      transition: border-color 0.15s;
+    }
+    .dashboard-card-mini:hover {
+      border-color: var(--cg-navy) !important;
     }
     .action-card:hover {
       transform: translateY(-1px);
@@ -8768,6 +10283,103 @@ fn cingulum_home_css() -> &'static str {
       0%, 100% { transform: translateY(0); box-shadow: 0 18px 36px rgba(2, 24, 43, 0.28); }
       50% { transform: translateY(-2px); box-shadow: 0 22px 44px rgba(2, 24, 43, 0.33); }
     }
+    .form-group-card {
+      background: #ffffff;
+      border: 1px solid rgba(197, 183, 171, 0.55);
+      border-radius: 12px;
+      padding: 0.85rem 1.15rem;
+      margin-bottom: 1.1rem;
+      box-shadow: 0 4px 10px rgba(2, 24, 43, 0.02);
+      transition: all 0.22s cubic-bezier(0.25, 0.8, 0.25, 1);
+      position: relative;
+      overflow: hidden;
+      display: block;
+      cursor: pointer;
+    }
+    .form-group-card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      background: #c5b7ab;
+      opacity: 0.45;
+      transition: all 0.22s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    .form-group-card:hover {
+      border-color: rgba(2, 24, 43, 0.22);
+      box-shadow: 0 6px 14px rgba(2, 24, 43, 0.04);
+      transform: translateY(-1.5px);
+    }
+    .form-group-card.is-focused {
+      border-color: var(--cg-orange);
+      box-shadow: 0 10px 22px rgba(240, 87, 8, 0.09);
+      transform: translateY(-3px);
+    }
+    .form-group-card.is-focused::before {
+      background: var(--cg-orange);
+      opacity: 1;
+      width: 6px;
+    }
+    .form-group-card.is-complete::before {
+      background: var(--cg-forest);
+      opacity: 1;
+      width: 6px;
+    }
+    .form-group-card label {
+      margin-top: 0 !important;
+      margin-bottom: 0.22rem !important;
+      font-size: 0.76rem !important;
+      color: #718096 !important;
+      text-transform: uppercase !important;
+      letter-spacing: 0.05em !important;
+      transition: color 0.2s ease;
+      display: block;
+    }
+    .form-group-card.is-focused label {
+      color: var(--cg-orange) !important;
+    }
+    .form-group-card.is-complete label {
+      color: var(--cg-forest) !important;
+    }
+    .form-group-card input:not([type="checkbox"]):not([type="radio"]), 
+    .form-group-card textarea, 
+    .form-group-card select {
+      width: 100% !important;
+      max-width: none !important;
+      border: none !important;
+      padding: 0.25rem 0 !important;
+      font-size: 1.05rem !important;
+      font-weight: 600 !important;
+      background: transparent !important;
+      box-shadow: none !important;
+      outline: none !important;
+      margin-top: 0 !important;
+      color: var(--cg-navy) !important;
+    }
+    .form-group-card .complete-badge {
+      position: absolute;
+      top: 0.85rem;
+      right: 1.15rem;
+      font-size: 0.7rem;
+      font-weight: 800;
+      color: var(--cg-forest);
+      background: #edfbf1;
+      border: 1px solid #c2ebd0;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      opacity: 0;
+      transform: scale(0.8);
+      transition: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      pointer-events: none;
+    }
+    .form-group-card.is-complete .complete-badge {
+      opacity: 1;
+      transform: scale(1);
+    }
     @media (max-width: 820px) {
       .home-shell {
         grid-template-columns: 1fr;
@@ -8788,12 +10400,16 @@ fn render_home_page(title: &str, body_content: String) -> String {
 </head>
 <body>
   {}
+  <script>
+{}
+  </script>
 </body>
 </html>"#,
         html_escape(title),
         cingulum_theme_css(),
         cingulum_home_css(),
-        body_content
+        body_content,
+        cingulum_global_js()
     )
 }
 
@@ -8810,44 +10426,66 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
 <body>
   <main class="page">
     <div class="brand-wrap">
-      <div class="brand">Cingulum Foundation Inc.</div>
+      <a href="/ui" id="brand-link" style="text-decoration:none; color:inherit; font-weight:inherit; display:flex; flex-direction:column; align-items:flex-start;">
+        <div class="brand">Cingulum Foundation Inc.</div>
+      </a>
       <div class="brand-sub">Virivu Research Cloud · UI Refresh v3</div>
     </div>
     <div class="surface-glow"><span class="pulse-dot"></span>Tenant-isolated workspace mode is active</div>
     {}
   </main>
   <script>
-    (() => {{
+{}
+  </script>
+</body>
+</html>"#,
+        html_escape(title),
+        cingulum_theme_css(),
+        body_content,
+        cingulum_global_js()
+    )
+}
+
+fn cingulum_global_js() -> &'static str {
+    r#"
+    (() => {
+      const brandLink = document.getElementById('brand-link');
+      if (brandLink) {
+        const adminEmail = new URLSearchParams(window.location.search).get('admin_email');
+        if (adminEmail) {
+          brandLink.href = `/ui?admin_email=${encodeURIComponent(adminEmail)}`;
+        }
+      }
       const bars = document.querySelectorAll('.tab-bar[data-tab-group]');
       const tabParam = new URLSearchParams(window.location.search).get('tab');
-      bars.forEach((bar) => {{
+      bars.forEach((bar) => {
         const group = bar.getAttribute('data-tab-group');
         const buttons = Array.from(bar.querySelectorAll('.tab-button[data-tab-id]'));
-        const panels = Array.from(document.querySelectorAll(`.tab-panel[data-tab-group="${{group}}"]`));
+        const panels = Array.from(document.querySelectorAll(`.tab-panel[data-tab-group="${group}"]`));
         if (buttons.length === 0 || panels.length === 0) return;
-        const activate = (tabId) => {{
-          buttons.forEach((btn) => {{
+        const activate = (tabId) => {
+          buttons.forEach((btn) => {
             const active = btn.getAttribute('data-tab-id') === tabId;
             btn.classList.toggle('is-active', active);
             btn.setAttribute('aria-selected', active ? 'true' : 'false');
-          }});
-          panels.forEach((panel) => {{
+          });
+          panels.forEach((panel) => {
             const active = panel.getAttribute('data-tab-panel') === tabId;
             panel.classList.toggle('is-active', active);
-          }});
-        }};
+          });
+        };
         let initial = buttons.find((b) => b.classList.contains('is-active'))?.getAttribute('data-tab-id');
-        if (tabParam && buttons.some((b) => b.getAttribute('data-tab-id') === tabParam)) {{
+        if (tabParam && buttons.some((b) => b.getAttribute('data-tab-id') === tabParam)) {
           initial = tabParam;
-        }}
+        }
         if (!initial) initial = buttons[0].getAttribute('data-tab-id');
         activate(initial);
-        buttons.forEach((btn) => {{
+        buttons.forEach((btn) => {
           btn.addEventListener('click', () => activate(btn.getAttribute('data-tab-id')));
-        }});
-      }});
+        });
+      });
       const fieldForms = Array.from(document.querySelectorAll('form[data-crf-field-form]'));
-      const createOptionRow = (value = '') => {{
+      const createOptionRow = (value = '') => {
         const row = document.createElement('div');
         row.className = 'option-row';
         const input = document.createElement('input');
@@ -8862,8 +10500,8 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
         row.appendChild(input);
         row.appendChild(removeButton);
         return row;
-      }};
-      fieldForms.forEach((form) => {{
+      };
+      fieldForms.forEach((form) => {
         const fieldTypeSelect = form.querySelector('[data-field-type-select]');
         const optionsSection = form.querySelector('[data-options-section]');
         const optionList = form.querySelector('[data-option-list]');
@@ -8871,37 +10509,37 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
         const optionsTextInput = form.querySelector('input[name="options_text"]');
         const optionsInitialInput = form.querySelector('[data-options-initial]');
         if (!fieldTypeSelect || !optionsSection || !optionList || !addOptionButton || !optionsTextInput || !optionsInitialInput) return;
-        const syncOptionsTextInput = () => {{
+        const syncOptionsTextInput = () => {
           const values = Array.from(optionList.querySelectorAll('[data-option-input]'))
             .map((input) => input.value.trim())
             .filter((value) => value.length > 0);
           optionsTextInput.value = values.join('\n');
-        }};
-        const ensureOptionRow = () => {{
-          if (optionList.querySelectorAll('[data-option-input]').length === 0) {{
+        };
+        const ensureOptionRow = () => {
+          if (optionList.querySelectorAll('[data-option-input]').length === 0) {
             optionList.appendChild(createOptionRow(''));
-          }}
-        }};
-        const seedOptionRows = () => {{
+          }
+        };
+        const seedOptionRows = () => {
           const seededValues = (optionsInitialInput.value || '')
             .split(/\r?\n/)
             .map((line) => line.trim())
             .filter((line) => line.length > 0);
           optionList.innerHTML = '';
-          if (seededValues.length === 0) {{
+          if (seededValues.length === 0) {
             optionList.appendChild(createOptionRow(''));
-          }} else {{
+          } else {
             seededValues.forEach((value) => optionList.appendChild(createOptionRow(value)));
-          }}
+          }
           syncOptionsTextInput();
-        }};
+        };
         seedOptionRows();
-        optionList.addEventListener('input', (event) => {{
-          if (event.target && event.target.matches('[data-option-input]')) {{
+        optionList.addEventListener('input', (event) => {
+          if (event.target && event.target.matches('[data-option-input]')) {
             syncOptionsTextInput();
-          }}
-        }});
-        optionList.addEventListener('click', (event) => {{
+          }
+        });
+        optionList.addEventListener('click', (event) => {
           const target = event.target;
           if (!(target instanceof HTMLElement)) return;
           if (!target.matches('[data-remove-option-button]')) return;
@@ -8909,42 +10547,110 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
           if (row) row.remove();
           ensureOptionRow();
           syncOptionsTextInput();
-        }});
-        addOptionButton.addEventListener('click', () => {{
+        });
+        addOptionButton.addEventListener('click', () => {
           optionList.appendChild(createOptionRow(''));
           syncOptionsTextInput();
-        }});
-        const syncFieldOptionsVisibility = () => {{
+        });
+        const syncFieldOptionsVisibility = () => {
           const fieldType = (fieldTypeSelect.value || '').toLowerCase();
           const showOptions = fieldType === 'single_select' || fieldType === 'multi_select';
           optionsSection.style.display = showOptions ? 'block' : 'none';
-          if (showOptions) {{
+          if (showOptions) {
             ensureOptionRow();
-          }}
+          }
           syncOptionsTextInput();
-        }};
+        };
         form.addEventListener('submit', () => syncOptionsTextInput());
         fieldTypeSelect.addEventListener('change', syncFieldOptionsVisibility);
         syncFieldOptionsVisibility();
-      }});
+      });
       const hashId = window.location.hash ? window.location.hash.slice(1) : '';
-      if (hashId) {{
+      if (hashId) {
         const target = document.getElementById(hashId);
-        if (target) {{
-          window.requestAnimationFrame(() => {{
-            target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-          }});
-        }}
-      }}
-    }})();
-  </script>
-</body>
-</html>"#,
-        html_escape(title),
-        cingulum_theme_css(),
-        body_content
-    )
+        if (target) {
+          window.requestAnimationFrame(() => {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          });
+        }
+      }
+      // Dynamic Form Card Overhaul Engine
+      const overhaulFormsToCards = () => {
+        const formControls = document.querySelectorAll(
+          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) input:not([type="submit"]):not([type="button"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), ' +
+          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) textarea, ' +
+          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) select'
+        );
+        
+        formControls.forEach((control) => {
+          if (control.closest('.form-group-card')) return;
+          
+          let label = null;
+          let sibling = control.previousElementSibling;
+          while (sibling) {
+            if (sibling.tagName === 'LABEL') {
+              label = sibling;
+              break;
+            }
+            sibling = sibling.previousElementSibling;
+          }
+          
+          const card = document.createElement('div');
+          card.className = 'form-group-card';
+          if (control.tagName === 'TEXTAREA' || control.classList.contains('is-wide') || control.name === 'options_text') {
+            card.classList.add('is-wide');
+            card.style.gridColumn = '1 / -1';
+          }
+          
+          const insertRef = label || control;
+          insertRef.parentNode.insertBefore(card, insertRef);
+          
+          if (label) card.appendChild(label);
+          card.appendChild(control);
+          
+          const badge = document.createElement('span');
+          badge.className = 'complete-badge';
+          badge.textContent = '✓ Complete';
+          card.appendChild(badge);
+          
+          const updateStates = () => {
+            const val = control.value || '';
+            const isComplete = val.trim().length > 0;
+            card.classList.toggle('is-complete', isComplete);
+          };
+          
+          control.addEventListener('focus', () => card.classList.add('is-focused'));
+          control.addEventListener('blur', () => card.classList.remove('is-focused'));
+          control.addEventListener('input', updateStates);
+          control.addEventListener('change', updateStates);
+          
+          card.addEventListener('click', (e) => {
+            if (e.target !== control) {
+              control.focus();
+            }
+          });
+          
+          updateStates();
+        });
+      };
+      
+      overhaulFormsToCards();
+      // Schedule checks to catch late dynamically added forms or panels
+      setTimeout(overhaulFormsToCards, 100);
+      setTimeout(overhaulFormsToCards, 500);
+      setTimeout(overhaulFormsToCards, 1500);
+      
+      // Also listen to click events on tab-buttons to overhaul active panel forms immediately
+      document.querySelectorAll('.tab-button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          setTimeout(overhaulFormsToCards, 50);
+          setTimeout(overhaulFormsToCards, 200);
+        });
+      });
+    })();
+    "#
 }
+
 
 fn wrap_text(input: &str, max_chars: usize) -> Vec<String> {
     let mut wrapped = Vec::new();
