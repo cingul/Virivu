@@ -1991,6 +1991,15 @@ impl Db {
         Ok(())
     }
 
+    pub async fn delete_organization(&self, organization_id: Uuid) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute("DELETE FROM organizations WHERE id = $1", &[&organization_id])
+            .await?;
+        Ok(())
+    }
+
+
     pub async fn set_site_status(&self, site_id: Uuid, status: &str) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
         client

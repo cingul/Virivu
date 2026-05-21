@@ -155,6 +155,10 @@ pub fn router(ctx: AppContext) -> Router {
             "/ui/app/create-organization",
             post(submit_app_create_organization),
         )
+        .route(
+            "/ui/app/delete-organization",
+            post(submit_app_delete_organization),
+        )
         .route("/ui/app/create-project", post(submit_app_create_project))
         .route("/ui/app/create-site", post(submit_app_create_site))
         .route("/ui/app/create-patient", post(submit_app_create_patient))
@@ -176,6 +180,10 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/ui/dua/create-organization",
             post(submit_create_organization_from_ui),
+        )
+        .route(
+            "/ui/dua/delete-organization",
+            post(submit_dua_delete_organization),
         )
         .route("/ui/dua/open-agreement", post(open_dua_agreement_workspace))
         .route("/ui/dua/draft", post(render_create_dua_from_form))
@@ -1534,6 +1542,12 @@ struct AppCreateOrganizationForm {
 }
 
 #[derive(Debug, Deserialize)]
+struct AppDeleteOrganizationForm {
+    admin_email: String,
+    organization_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct AppCreateProjectForm {
     admin_email: String,
     organization_id: String,
@@ -1605,6 +1619,7 @@ struct StudyWorkbenchQuery {
     submission_id: Option<String>,
     notice: Option<String>,
     view: Option<String>,
+    tab: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2283,12 +2298,19 @@ async fn render_app_dashboard(
                     .unwrap_or_else(|| "none".to_string());
 
                 format!(
-                    r#"<a href="/ui/app?admin_email={}&organization_id={}" class="dashboard-card" style="text-decoration:none; color:inherit;">
+                    r#"<a href="/ui/app?admin_email={}&organization_id={}" class="dashboard-card" style="text-decoration:none; color:inherit; position:relative;">
   <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:0.75rem;">
     <div>
       {}
     </div>
-    <span class="status-chip" style="background:#02182b; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">{}</span>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      <span class="status-chip" style="background:#02182b; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">{}</span>
+      <form method="post" action="/ui/app/delete-organization" style="display:inline; margin:0;" onsubmit="return confirm('Are you sure you want to delete this organization? This will delete all associated projects, sites, patients, and DUA agreements.');">
+        <input type="hidden" name="organization_id" value="{}" />
+        <input type="hidden" name="admin_email" value="{}" />
+        <button type="submit" style="background:#e53e3e; color:white; border:none; padding:0.2rem 0.45rem; border-radius:6px; font-size:0.7rem; font-weight:bold; cursor:pointer; box-shadow:none; margin:0;" onclick="event.stopPropagation();">Delete</button>
+      </form>
+    </div>
   </div>
   
   <div>
@@ -2309,6 +2331,8 @@ async fn render_app_dashboard(
                     org.id,
                     logo_svg,
                     html_escape(&org.organization_kind),
+                    org.id,
+                    admin_email_q,
                     html_escape(&org.name),
                     org.id,
                     html_escape(hex),
@@ -3602,6 +3626,58 @@ async fn submit_app_create_organization(
     )))
 }
 
+async fn submit_app_delete_organization(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppDeleteOrganizationForm>,
+) -> Result<Redirect, ApiError> {
+    let is_platform_admin = ctx
+        .db
+        .email_has_platform_admin_role(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    if !is_platform_admin {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email is not a platform_admin".to_string(),
+        )));
+    }
+    let org_uuid = parse_uuid_field(&form.organization_id, "organization_id")?;
+    ctx.db
+        .delete_organization(org_uuid)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        query_escape("Organization deleted successfully")
+    )))
+}
+
+async fn submit_dua_delete_organization(
+    State(ctx): State<AppContext>,
+    Form(form): Form<AppDeleteOrganizationForm>,
+) -> Result<Redirect, ApiError> {
+    let is_platform_admin = ctx
+        .db
+        .email_has_platform_admin_role(form.admin_email.trim())
+        .await
+        .map_err(ApiError::internal)?;
+    if !is_platform_admin {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "admin_email is not a platform_admin".to_string(),
+        )));
+    }
+    let org_uuid = parse_uuid_field(&form.organization_id, "organization_id")?;
+    ctx.db
+        .delete_organization(org_uuid)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Redirect::to(&format!(
+        "/ui/dua?admin_email={}&notice={}",
+        query_escape(form.admin_email.trim()),
+        query_escape("Organization deleted successfully")
+    )))
+}
+
 async fn submit_app_create_project(
     State(ctx): State<AppContext>,
     Form(form): Form<AppCreateProjectForm>,
@@ -4267,24 +4343,60 @@ async fn render_study_workbench(
         })
         .unwrap_or_else(|| "<span class=\"muted\">none selected</span>".to_string());
 
-    let study_rows_html = if projects.is_empty() {
-        "<li>No studies yet for this organization.</li>".to_string()
+    let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
+
+    let study_cards_html = if projects.is_empty() {
+        "<p style=\"color:#718096;font-style:italic;grid-column:1/-1;\">No studies configured yet for this organization.</p>".to_string()
     } else {
         projects
             .iter()
             .map(|project| {
-                let selected_org = selected_org_id
-                    .map(|org_id| format!("&organization_id={org_id}"))
-                    .unwrap_or_default();
+                let phase = project.lifecycle_phase.trim().to_ascii_lowercase();
+                let (border_color, badge_bg, badge_color) = match phase.as_str() {
+                    "pre_study" => ("#718096", "#edf2f7", "#4a5568"),
+                    "initiated" => ("#4299e1", "#ebf8ff", "#2b6cb0"),
+                    "active" => ("#48bb78", "#f0fff4", "#2f855a"),
+                    "monitoring" => ("#ed8936", "#fffaf0", "#dd6b20"),
+                    "closeout" => ("#ecc94b", "#fffff0", "#b7791f"),
+                    "archived" => ("#e53e3e", "#fff5f5", "#c53030"),
+                    _ => ("#718096", "#edf2f7", "#4a5568"),
+                };
+                let summary_escaped = &project.study_summary;
+                let summary_preview = if summary_escaped.len() > 80 {
+                    format!("{}...", &summary_escaped[..80])
+                } else {
+                    summary_escaped.to_string()
+                };
+                
                 format!(
-                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&tab=overview">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
+                    r#"<a href="/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=overview" class="dashboard-card" style="text-decoration:none; color:inherit; padding:1.25rem; min-height:unset; display:flex; flex-direction:column; gap:0.75rem; transition:all 0.2s; position:relative; overflow:hidden; border-top: 4px solid {};">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem;">
+    <div>
+      <h4 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">{}</h4>
+      <div style="font-size:0.75rem; color:#718096; font-family:monospace; margin-top:0.15rem;">Protocol: {}</div>
+    </div>
+    <span class="status-chip" style="background:{}; color:{}; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-transform:uppercase;">{}</span>
+  </div>
+  <p style="font-size:0.85rem; color:#4a5568; line-height:1.4; margin:0 0 0.5rem 0;">
+    {}
+  </p>
+  <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:#718096; margin-top:auto; padding-top:0.5rem; border-top:1px solid #edf2f7;">
+    <span>Target: <strong>{} patients</strong></span>
+    <span>Area: <strong>{}</strong></span>
+  </div>
+</a>"#,
                     admin_email_q,
-                    selected_org,
+                    selected_org_value,
                     project.id,
+                    border_color,
                     html_escape(&project.name),
+                    html_escape(project.protocol_code.as_deref().unwrap_or("")),
+                    badge_bg,
+                    badge_color,
                     html_escape(&project.lifecycle_phase),
-                    html_escape(project.hex_code.as_deref().unwrap_or("pending")),
-                    project.planned_enrollment
+                    html_escape(&summary_preview),
+                    project.planned_enrollment,
+                    html_escape(&project.therapeutic_area)
                 )
             })
             .collect::<Vec<_>>()
@@ -5138,7 +5250,7 @@ async fn render_study_workbench(
         .map(|id| format!("/ui/studies/{id}/close-checklist"))
         .unwrap_or_else(|| "#".to_string());
 
-    let view = query.view.as_deref().unwrap_or("overview");
+    let view = query.view.as_deref().or(query.tab.as_deref()).unwrap_or("overview");
     let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
     let foundation_hub_url = selected_org_id
@@ -5190,33 +5302,57 @@ async fn render_study_workbench(
 
     let panel_content = match view {
         "setup" => format!(
-            r#"<section class="card">
-  <h2>1) Create Study (clinicaltrials.gov-style metadata + internal ops)</h2>
-  <form method="post" action="/ui/studies/create">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Organization ID</label>
-    <input name="organization_id" value="{}" required />
-    <label>Study name</label>
-    <input name="study_name" placeholder="Acute Stroke Registry 2026" required />
-    <label>Therapeutic area</label>
-    <input name="therapeutic_area" placeholder="Neurology" required />
-    <label>Protocol code</label>
-    <input name="protocol_code" placeholder="VIR-STR-26-01" />
-    <label>Planned enrollment</label>
-    <input name="planned_enrollment" value="250" />
-    <label>ClinicalTrials.gov ID (optional)</label>
-    <input name="clinicaltrials_gov_id" placeholder="NCT01234567" />
-    <label>Study summary</label>
-    <textarea name="study_summary" placeholder="Primary objective, key endpoints, and operational plan"></textarea>
-    <button type="submit">Create Study in Pre-Study Phase</button>
-  </form>
-  <h3 style="margin-top:1rem;">Study portfolio</h3>
-  <ul>{}</ul>
+            r#"<section class="card" style="padding: 1.5rem; border-radius: 16px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+    <h2 style="margin:0; font-size:1.4rem; color:var(--cg-navy); font-weight:800;">Study Portfolio Management</h2>
+  </div>
+  
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-bottom:2rem;">
+    {}
+    <div id="add-study-card" class="dashboard-card" style="background:#f8fafc; border:2px dashed #cbd5e0; border-radius:12px; padding:1.25rem; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:180px; cursor:pointer; transition:all 0.2s;" onclick="document.getElementById('study-create-modal').showModal()">
+      <span style="font-size:3rem; color:#a0aec0; font-weight:300; line-height:1; margin-bottom:0.5rem;">+</span>
+      <span style="font-size:0.9rem; font-weight:700; color:#718096;">Create New Study</span>
+    </div>
+  </div>
+
+  <!-- Create Study Modal -->
+  <dialog id="study-create-modal" style="border:none; border-radius:16px; padding:2rem; width:100%; max-width:540px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.15), 0 10px 10px -5px rgba(0,0,0,0.05); background:#fff; border-top:4px solid var(--cg-orange);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid #edf2f7; padding-bottom:0.75rem;">
+      <h3 style="margin:0; color:#02182b; font-size:1.25rem; font-weight:700;">Create New Study</h3>
+      <button onclick="document.getElementById('study-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer; box-shadow:none; padding:0; margin:0;">&times;</button>
+    </div>
+    <form method="post" action="/ui/studies/create" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+      <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
+
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Organization ID</label>
+      <input name="organization_id" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
+
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Study name</label>
+      <input name="study_name" placeholder="Acute Stroke Registry 2026" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Therapeutic area</label>
+      <input name="therapeutic_area" placeholder="Neurology" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Protocol code</label>
+      <input name="protocol_code" placeholder="VIR-STR-26-01" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Planned enrollment</label>
+      <input type="number" name="planned_enrollment" value="250" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">ClinicalTrials.gov ID (optional)</label>
+      <input name="clinicaltrials_gov_id" placeholder="NCT01234567" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Study summary</label>
+      <textarea name="study_summary" placeholder="Primary objective, key endpoints, and operational plan" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; min-height:80px; font-family:inherit;"></textarea>
+
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:8px; font-weight:600; cursor:pointer; width:100%; margin-top:1rem; transition:background 0.2s;">Create Study in Pre-Study Phase</button>
+    </form>
+  </dialog>
 </section>"#,
+            study_cards_html,
             html_escape(admin_email.trim()),
-            selected_org_value.clone(),
-            study_rows_html
+            selected_org_value.clone()
         ),
         "lifecycle" => format!(
             r#"<section class="card">
@@ -7115,7 +7251,14 @@ async fn render_dua_admin_page(
       {}
       <h4 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">{}</h4>
     </div>
-    {}
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      {}
+      <form method="post" action="/ui/dua/delete-organization" style="display:inline; margin:0;" onsubmit="return confirm('Are you sure you want to delete this organization? This will delete all associated projects, sites, patients, and DUA agreements.');">
+        <input type="hidden" name="organization_id" value="{}" />
+        <input type="hidden" name="admin_email" value="{}" />
+        <button type="submit" style="background:#e53e3e; color:white; border:none; padding:0.2rem 0.45rem; border-radius:6px; font-size:0.7rem; font-weight:bold; cursor:pointer; box-shadow:none; margin:0;" onclick="event.stopPropagation();">Delete</button>
+      </form>
+    </div>
   </div>
   <div style="font-size:0.8rem; color:#4a5568; font-family:monospace; word-break:break-all; margin-top:0.25rem;">
     <strong>ID:</strong> {}
@@ -7131,6 +7274,8 @@ async fn render_dua_admin_page(
                 logo_svg,
                 html_escape(&org.name),
                 active_badge,
+                org.id,
+                query_escape(admin_email.trim()),
                 org.id,
                 html_escape(&org.organization_kind),
                 org.parent_organization_id
@@ -10197,6 +10342,10 @@ fn cingulum_theme_css() -> &'static str {
       from { opacity: 0; transform: translateY(4px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    dialog::backdrop {
+      background: rgba(2, 24, 43, 0.45);
+      backdrop-filter: blur(4px);
+    }
     @media (max-width: 740px) {
       .brand-wrap { flex-direction: column; align-items: flex-start; gap: 0.35rem; }
       .tab-bar { position: static; }
@@ -10453,7 +10602,7 @@ fn cingulum_global_js() -> &'static str {
       if (brandLink) {
         const adminEmail = new URLSearchParams(window.location.search).get('admin_email');
         if (adminEmail) {
-          brandLink.href = `/ui?admin_email=${encodeURIComponent(adminEmail)}`;
+          brandLink.href = `/ui/foundation?admin_email=${encodeURIComponent(adminEmail)}`;
         }
       }
       const bars = document.querySelectorAll('.tab-bar[data-tab-group]');
