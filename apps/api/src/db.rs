@@ -7,10 +7,11 @@ use uuid::Uuid;
 
 use crate::models::{
     DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite, MediaUploadTicket,
-    Organization, OrganizationSummaryRow, OutboundEmail, Patient, PatientStudyVisit, Project,
-    ProjectProgressRow, Provider, Site, SiteStartupChecklistItem, StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission,
-    StudyCrfTemplate, StudyDataQuery, StudyOperationalSummary, StudyPhaseEvent, StudyReadiness,
-    StudyStartupChecklistItem, StudyVisitTemplate, User, UserMembership, AuditLog,
+    Organization, OrganizationSummaryRow, OutboundEmail, Patient, PatientSession, PatientStudyVisit,
+    Project, ProjectProgressRow, ProSubmission, Provider, Site, SiteStartupChecklistItem,
+    StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission, StudyCrfTemplate, StudyDataQuery,
+    StudyOperationalSummary, StudyPhaseEvent, StudyReadiness, StudyStartupChecklistItem,
+    StudyVisitTemplate, User, UserMembership, AuditLog,
 };
 
 #[derive(Clone)]
@@ -233,21 +234,7 @@ impl Db {
                 &[&project_id],
             )
             .await?;
-        Ok(rows
-            .iter()
-            .map(|r| Site {
-                id: r.get("id"),
-                project_id: r.get("project_id"),
-                name: r.get("name"),
-                principal_investigator: r.get("principal_investigator"),
-                co_principal_investigator: r.get("co_principal_investigator"),
-                sub_investigator: r.get("sub_investigator"),
-                hex_code: r.get("hex_code"),
-                status: r.get("status"),
-                last_activity_at: r.get("last_activity_at"),
-                created_at: r.get("created_at"),
-            })
-            .collect())
+        Ok(rows.iter().map(row_to_site).collect())
     }
 
     pub async fn create_project(
@@ -344,6 +331,8 @@ impl Db {
                     study_summary,
                     phase_changed_at,
                     hex_code,
+                    status,
+                    last_activity_at,
                     created_at
                 "#,
                 &[
@@ -1999,6 +1988,327 @@ impl Db {
         Ok(())
     }
 
+    pub async fn reset_and_seed_db(&self) -> anyhow::Result<()> {
+        let mut client = self.pool.get().await?;
+        let tx = client.transaction().await?;
+
+        // ── 0. Attempt schema migration (add new columns if missing) ──────────
+        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS site_id UUID", &[]).await;
+        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS encounter_id UUID", &[]).await;
+        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS entity_type VARCHAR(64) NOT NULL DEFAULT 'patient'", &[]).await;
+        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS entity_id UUID", &[]).await;
+        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS file_name VARCHAR(256)", &[]).await;
+        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS description VARCHAR(512)", &[]).await;
+
+        // ── 1. Wipe all data in dependency order ──────────────────────────────
+        tx.execute("DELETE FROM data_use_agreement_signatures", &[]).await?;
+        tx.execute("DELETE FROM data_use_agreements", &[]).await?;
+        tx.execute("DELETE FROM media_upload_tickets", &[]).await?;
+        tx.execute("DELETE FROM form_invites", &[]).await?;
+        tx.execute("DELETE FROM encounters", &[]).await?;
+        tx.execute("DELETE FROM patient_study_visits", &[]).await?;
+        tx.execute("DELETE FROM study_crf_submissions", &[]).await?;
+        tx.execute("DELETE FROM study_data_queries", &[]).await?;
+        tx.execute("DELETE FROM patients", &[]).await?;
+        tx.execute("DELETE FROM providers", &[]).await?;
+        tx.execute("DELETE FROM study_crf_fields", &[]).await?;
+        tx.execute("DELETE FROM study_crf_templates", &[]).await?;
+        tx.execute("DELETE FROM study_visit_templates", &[]).await?;
+        tx.execute("DELETE FROM study_phase_events", &[]).await?;
+        tx.execute("DELETE FROM study_close_checklist_items", &[]).await?;
+        tx.execute("DELETE FROM study_startup_checklist_items", &[]).await?;
+        tx.execute("DELETE FROM sites", &[]).await?;
+        tx.execute("DELETE FROM projects", &[]).await?;
+        tx.execute("DELETE FROM user_memberships WHERE organization_id IS NOT NULL OR project_id IS NOT NULL", &[]).await?;
+        tx.execute("DELETE FROM organizations", &[]).await?;
+
+        // ── 2. Organizations (11) ─────────────────────────────────────────────
+        tx.execute(r#"
+            INSERT INTO organizations (id, name, organization_kind, workspace_slug, hex_code) VALUES
+            ('00000000-0000-0000-0000-000000000001', 'Cingulum Foundation Inc.',  'platform_root',    'cingulum-foundation',   'A1B'),
+            ('00000000-0000-0000-0000-000000000002', 'Alpha Health Research',     'research_network', 'alpha-health',          'A01'),
+            ('00000000-0000-0000-0000-000000000003', 'Beta Medical Center',       'hospital',         'beta-medical',          'A02'),
+            ('00000000-0000-0000-0000-000000000004', 'Gamma Clinical Inc.',       'tenant',           'gamma-clinical',        'A03'),
+            ('00000000-0000-0000-0000-000000000005', 'Delta Pharma',              'sponsor',          'delta-pharma',          'A04'),
+            ('00000000-0000-0000-0000-000000000006', 'Epsilon Therapeutics',      'sponsor',          'epsilon-therapeutics',  'A05'),
+            ('00000000-0000-0000-0000-000000000007', 'Zeta Hospital Network',     'hospital',         'zeta-hospital',         'A06'),
+            ('00000000-0000-0000-0000-000000000008', 'Eta Alliance',              'research_network', 'eta-alliance',          'A07'),
+            ('00000000-0000-0000-0000-000000000009', 'Theta Oncology',            'tenant',           'theta-oncology',        'A08'),
+            ('00000000-0000-0000-0000-000000000010', 'Iota Care Group',           'hospital',         'iota-care',             'A09'),
+            ('00000000-0000-0000-0000-000000000011', 'Kappa Solutions',           'tenant',           'kappa-solutions',       'A0A')
+        "#, &[]).await?;
+
+        tx.execute(
+            "UPDATE organizations SET parent_organization_id = '00000000-0000-0000-0000-000000000001' WHERE id <> '00000000-0000-0000-0000-000000000001'",
+            &[],
+        ).await?;
+
+        // ── 3. Studies / Projects (10) ────────────────────────────────────────
+        tx.execute(r#"
+            INSERT INTO projects (id, organization_id, name, therapeutic_area, protocol_code, lifecycle_phase, planned_enrollment, status, hex_code, study_summary) VALUES
+            ('00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000002','Alpha Stroke Trial',       'Neurology',          'PROT-A01','active',100,'active','A01001','Randomised trial assessing clot-retrieval efficacy in acute ischaemic stroke.'),
+            ('00000000-0000-0000-0000-000000000102','00000000-0000-0000-0000-000000000003','Beta Diabetes Study',      'Endocrinology',      'PROT-B02','active',150,'active','A02002','CGM-guided insulin dosing in newly diagnosed Type-2 diabetic adults.'),
+            ('00000000-0000-0000-0000-000000000103','00000000-0000-0000-0000-000000000004','Gamma Cardiac Registry',   'Cardiology',         'PROT-C03','active',200,'active','A03003','Observational registry of STEMI outcomes across five regional centres.'),
+            ('00000000-0000-0000-0000-000000000104','00000000-0000-0000-0000-000000000005','Delta Covid Monitor',      'Infectious Diseases','PROT-D04','active',300,'active','A04004','Longitudinal post-COVID pulmonary function monitoring cohort.'),
+            ('00000000-0000-0000-0000-000000000105','00000000-0000-0000-0000-000000000006','Epsilon Lupus Trial',      'Rheumatology',       'PROT-E05','active', 80,'active','A05005','Phase III trial of belimumab dose-reduction in SLE remission maintenance.'),
+            ('00000000-0000-0000-0000-000000000106','00000000-0000-0000-0000-000000000007','Zeta Asthma Initiative',   'Pulmonology',        'PROT-F06','active',120,'active','A06006','Biologic add-on therapy vs. standard ICS in moderate-severe asthma.'),
+            ('00000000-0000-0000-0000-000000000107','00000000-0000-0000-0000-000000000008','Eta Parkinson Survey',     'Neurology',          'PROT-G07','active', 50,'active','A07007','Digital-biomarker gait analysis in early-stage Parkinson''s disease.'),
+            ('00000000-0000-0000-0000-000000000108','00000000-0000-0000-0000-000000000009','Theta Lymphoma Phase II',  'Oncology',           'PROT-H08','active', 90,'active','A08008','CAR-T cell therapy safety run-in for relapsed/refractory DLBCL.'),
+            ('00000000-0000-0000-0000-000000000109','00000000-0000-0000-0000-000000000010','Iota Alzheimer Project',   'Neurology',          'PROT-I09','active',250,'active','A09009','MRI volumetric tracking with plasma amyloid biomarker in prodromal AD.'),
+            ('00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000011','Kappa Rheumatoid Study',   'Immunology',         'PROT-J10','active',110,'active','A0A00A','JAK-inhibitor vs. MTX head-to-head in DMARD-naïve RA patients.')
+        "#, &[]).await?;
+
+        // ── 4. Sites (12 — 10 studies get 1 each, 2 studies get an extra) ─────
+        tx.execute(r#"
+            INSERT INTO sites (id, project_id, name, principal_investigator, co_principal_investigator, status, hex_code) VALUES
+            ('00000000-0000-0000-0000-000000000201','00000000-0000-0000-0000-000000000101','Alpha Neurology Center',       'Dr. Alice Vance',      'Dr. Tom Finch',    'active','A01001001'),
+            ('00000000-0000-0000-0000-000000000202','00000000-0000-0000-0000-000000000102','Beta Diabetes Clinic',         'Dr. Bob Miller',       NULL,               'active','A02002002'),
+            ('00000000-0000-0000-0000-000000000203','00000000-0000-0000-0000-000000000103','Gamma Heart Institute',        'Dr. Charlie Song',     'Dr. Maya Patel',   'active','A03003003'),
+            ('00000000-0000-0000-0000-000000000204','00000000-0000-0000-0000-000000000104','Delta Virology Lab',           'Dr. Diana Prince',     NULL,               'active','A04004004'),
+            ('00000000-0000-0000-0000-000000000205','00000000-0000-0000-0000-000000000105','Epsilon Rheumatology Lab',     'Dr. Evan Wright',      'Dr. Sara Gold',    'active','A05005005'),
+            ('00000000-0000-0000-0000-000000000206','00000000-0000-0000-0000-000000000106','Zeta Pulmonology Clinic',      'Dr. Fiona Gallagher',  NULL,               'active','A06006006'),
+            ('00000000-0000-0000-0000-000000000207','00000000-0000-0000-0000-000000000107','Eta Parkinson Center',         'Dr. George Harrison',  NULL,               'active','A07007007'),
+            ('00000000-0000-0000-0000-000000000208','00000000-0000-0000-0000-000000000108','Theta Oncology Center',        'Dr. Helen Cho',        'Dr. Jim Park',     'active','A08008008'),
+            ('00000000-0000-0000-0000-000000000209','00000000-0000-0000-0000-000000000109','Iota Memory Clinic',           'Dr. Ian McKellen',     'Dr. Rosa Diaz',    'active','A09009009'),
+            ('00000000-0000-0000-0000-000000000210','00000000-0000-0000-0000-000000000110','Kappa Immunology Hub',         'Dr. Julia Roberts',    NULL,               'active','A0A00A00A'),
+            ('00000000-0000-0000-0000-000000000211','00000000-0000-0000-0000-000000000101','Alpha Neurology East Wing',    'Dr. Sam Torres',       NULL,               'active','A01001002'),
+            ('00000000-0000-0000-0000-000000000212','00000000-0000-0000-0000-000000000103','Gamma Cardio Satellite',       'Dr. Wei Huang',        NULL,               'active','A03003004')
+        "#, &[]).await?;
+
+        // ── 5. Patients (30 — 3 per study, 2 sites for studies 101 and 103) ───
+        tx.execute(r#"
+            INSERT INTO patients (id, organization_id, project_id, site_id, external_subject_id, email, date_of_birth, hex_code) VALUES
+            -- Alpha Stroke Trial (site 201, 211)
+            ('00000000-0000-0000-0000-000000000301','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000201','SUBJ-A01','alice.neuro1@alpha.org',  '1975-04-12','A010010010001'),
+            ('00000000-0000-0000-0000-000000000302','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000201','SUBJ-A02','alice.neuro2@alpha.org',  '1962-08-19','A010010010002'),
+            ('00000000-0000-0000-0000-000000000303','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','00000000-0000-0000-0000-000000000211','SUBJ-A03','alice.neuro3@alpha.org',  '1948-03-05','A010010020001'),
+            -- Beta Diabetes Study
+            ('00000000-0000-0000-0000-000000000304','00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000102','00000000-0000-0000-0000-000000000202','SUBJ-B01','bob.diab1@beta.org',      '1982-08-22','A020020020001'),
+            ('00000000-0000-0000-0000-000000000305','00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000102','00000000-0000-0000-0000-000000000202','SUBJ-B02','bob.diab2@beta.org',      '1970-01-11','A020020020002'),
+            ('00000000-0000-0000-0000-000000000306','00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000102','00000000-0000-0000-0000-000000000202','SUBJ-B03','bob.diab3@beta.org',      '1955-11-30','A020020020003'),
+            -- Gamma Cardiac Registry (sites 203, 212)
+            ('00000000-0000-0000-0000-000000000307','00000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-000000000103','00000000-0000-0000-0000-000000000203','SUBJ-C01','charlie.card1@gamma.org', '1969-11-05','A030030030001'),
+            ('00000000-0000-0000-0000-000000000308','00000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-000000000103','00000000-0000-0000-0000-000000000203','SUBJ-C02','charlie.card2@gamma.org', '1978-06-20','A030030030002'),
+            ('00000000-0000-0000-0000-000000000309','00000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-000000000103','00000000-0000-0000-0000-000000000212','SUBJ-C03','charlie.card3@gamma.org', '1985-02-14','A030030040001'),
+            -- Delta Covid Monitor
+            ('00000000-0000-0000-0000-000000000310','00000000-0000-0000-0000-000000000005','00000000-0000-0000-0000-000000000104','00000000-0000-0000-0000-000000000204','SUBJ-D01','diana.cov1@delta.org',   '1990-01-30','A040040040001'),
+            ('00000000-0000-0000-0000-000000000311','00000000-0000-0000-0000-000000000005','00000000-0000-0000-0000-000000000104','00000000-0000-0000-0000-000000000204','SUBJ-D02','diana.cov2@delta.org',   '1984-09-17','A040040040002'),
+            ('00000000-0000-0000-0000-000000000312','00000000-0000-0000-0000-000000000005','00000000-0000-0000-0000-000000000104','00000000-0000-0000-0000-000000000204','SUBJ-D03','diana.cov3@delta.org',   '1976-07-04','A040040040003'),
+            -- Epsilon Lupus Trial
+            ('00000000-0000-0000-0000-000000000313','00000000-0000-0000-0000-000000000006','00000000-0000-0000-0000-000000000105','00000000-0000-0000-0000-000000000205','SUBJ-E01','evan.lup1@epsilon.org',  '1978-06-15','A050050050001'),
+            ('00000000-0000-0000-0000-000000000314','00000000-0000-0000-0000-000000000006','00000000-0000-0000-0000-000000000105','00000000-0000-0000-0000-000000000205','SUBJ-E02','evan.lup2@epsilon.org',  '1991-04-23','A050050050002'),
+            ('00000000-0000-0000-0000-000000000315','00000000-0000-0000-0000-000000000006','00000000-0000-0000-0000-000000000105','00000000-0000-0000-0000-000000000205','SUBJ-E03','evan.lup3@epsilon.org',  '1965-12-08','A050050050003'),
+            -- Zeta Asthma Initiative
+            ('00000000-0000-0000-0000-000000000316','00000000-0000-0000-0000-000000000007','00000000-0000-0000-0000-000000000106','00000000-0000-0000-0000-000000000206','SUBJ-F01','fiona.ast1@zeta.org',    '1985-10-24','A060060060001'),
+            ('00000000-0000-0000-0000-000000000317','00000000-0000-0000-0000-000000000007','00000000-0000-0000-0000-000000000106','00000000-0000-0000-0000-000000000206','SUBJ-F02','fiona.ast2@zeta.org',    '1999-03-11','A060060060002'),
+            ('00000000-0000-0000-0000-000000000318','00000000-0000-0000-0000-000000000007','00000000-0000-0000-0000-000000000106','00000000-0000-0000-0000-000000000206','SUBJ-F03','fiona.ast3@zeta.org',    '1973-08-18','A060060060003'),
+            -- Eta Parkinson Survey
+            ('00000000-0000-0000-0000-000000000319','00000000-0000-0000-0000-000000000008','00000000-0000-0000-0000-000000000107','00000000-0000-0000-0000-000000000207','SUBJ-G01','george.park1@eta.org',   '1960-02-14','A070070070001'),
+            ('00000000-0000-0000-0000-000000000320','00000000-0000-0000-0000-000000000008','00000000-0000-0000-0000-000000000107','00000000-0000-0000-0000-000000000207','SUBJ-G02','george.park2@eta.org',   '1953-05-29','A070070070002'),
+            ('00000000-0000-0000-0000-000000000321','00000000-0000-0000-0000-000000000008','00000000-0000-0000-0000-000000000107','00000000-0000-0000-0000-000000000207','SUBJ-G03','george.park3@eta.org',   '1967-09-02','A070070070003'),
+            -- Theta Lymphoma Phase II
+            ('00000000-0000-0000-0000-000000000322','00000000-0000-0000-0000-000000000009','00000000-0000-0000-0000-000000000108','00000000-0000-0000-0000-000000000208','SUBJ-H01','helen.lymp1@theta.org',  '1955-09-08','A080080080001'),
+            ('00000000-0000-0000-0000-000000000323','00000000-0000-0000-0000-000000000009','00000000-0000-0000-0000-000000000108','00000000-0000-0000-0000-000000000208','SUBJ-H02','helen.lymp2@theta.org',  '1968-01-25','A080080080002'),
+            ('00000000-0000-0000-0000-000000000324','00000000-0000-0000-0000-000000000009','00000000-0000-0000-0000-000000000108','00000000-0000-0000-0000-000000000208','SUBJ-H03','helen.lymp3@theta.org',  '1944-11-14','A080080080003'),
+            -- Iota Alzheimer Project
+            ('00000000-0000-0000-0000-000000000325','00000000-0000-0000-0000-000000000010','00000000-0000-0000-0000-000000000109','00000000-0000-0000-0000-000000000209','SUBJ-I01','ian.alz1@iota.org',      '1995-12-12','A090090090001'),
+            ('00000000-0000-0000-0000-000000000326','00000000-0000-0000-0000-000000000010','00000000-0000-0000-0000-000000000109','00000000-0000-0000-0000-000000000209','SUBJ-I02','ian.alz2@iota.org',      '1949-03-27','A090090090002'),
+            ('00000000-0000-0000-0000-000000000327','00000000-0000-0000-0000-000000000010','00000000-0000-0000-0000-000000000109','00000000-0000-0000-0000-000000000209','SUBJ-I03','ian.alz3@iota.org',      '1938-07-06','A090090090003'),
+            -- Kappa Rheumatoid Study
+            ('00000000-0000-0000-0000-000000000328','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000210','SUBJ-J01','julia.rhe1@kappa.org',   '1972-07-07','A0A00A00A0001'),
+            ('00000000-0000-0000-0000-000000000329','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000210','SUBJ-J02','julia.rhe2@kappa.org',   '1980-10-19','A0A00A00A0002'),
+            ('00000000-0000-0000-0000-000000000330','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000110','00000000-0000-0000-0000-000000000210','SUBJ-J03','julia.rhe3@kappa.org',   '1963-02-28','A0A00A00A0003')
+        "#, &[]).await?;
+
+        // ── 6. Providers (12) ─────────────────────────────────────────────────
+        tx.execute(r#"
+            INSERT INTO providers (id, organization_id, name, title, referral_source, hex_code) VALUES
+            ('00000000-0000-0000-0000-000000000401','00000000-0000-0000-0000-000000000002','Dr. Alice Vance',       'Principal Investigator',  'Internal',  'A01401'),
+            ('00000000-0000-0000-0000-000000000402','00000000-0000-0000-0000-000000000002','Dr. Tom Finch',         'Co-Investigator',          'Referral',  'A01402'),
+            ('00000000-0000-0000-0000-000000000403','00000000-0000-0000-0000-000000000003','Dr. Bob Miller',        'Principal Investigator',  'Internal',  'A02401'),
+            ('00000000-0000-0000-0000-000000000404','00000000-0000-0000-0000-000000000004','Dr. Charlie Song',      'Principal Investigator',  'Internal',  'A03401'),
+            ('00000000-0000-0000-0000-000000000405','00000000-0000-0000-0000-000000000004','Dr. Maya Patel',        'Research Nurse',           'Hospital',  'A03402'),
+            ('00000000-0000-0000-0000-000000000406','00000000-0000-0000-0000-000000000005','Dr. Diana Prince',      'Principal Investigator',  'Internal',  'A04401'),
+            ('00000000-0000-0000-0000-000000000407','00000000-0000-0000-0000-000000000006','Dr. Evan Wright',       'Principal Investigator',  'Internal',  'A05401'),
+            ('00000000-0000-0000-0000-000000000408','00000000-0000-0000-0000-000000000007','Dr. Fiona Gallagher',   'Principal Investigator',  'Internal',  'A06401'),
+            ('00000000-0000-0000-0000-000000000409','00000000-0000-0000-0000-000000000008','Dr. George Harrison',   'Principal Investigator',  'Internal',  'A07401'),
+            ('00000000-0000-0000-0000-000000000410','00000000-0000-0000-0000-000000000009','Dr. Helen Cho',         'Principal Investigator',  'Internal',  'A08401'),
+            ('00000000-0000-0000-0000-000000000411','00000000-0000-0000-0000-000000000010','Dr. Ian McKellen',      'Principal Investigator',  'Internal',  'A09401'),
+            ('00000000-0000-0000-0000-000000000412','00000000-0000-0000-0000-000000000011','Dr. Julia Roberts',     'Principal Investigator',  'Internal',  'A0A401')
+        "#, &[]).await?;
+
+        // ── 7. Encounters (30 — 3 per first 10 patients) ──────────────────────
+        tx.execute(r#"
+            INSERT INTO encounters (id, patient_id, provider_id, encounter_type, notes, hex_code) VALUES
+            -- Patient 301 (SUBJ-A01) — Stroke  (hex: 16 chars A-F0-9)
+            ('00000000-0000-0000-0000-000000000501','00000000-0000-0000-0000-000000000301','00000000-0000-0000-0000-000000000401','outpatient',  'Baseline neurological assessment. NIHSS score 8. CT clear.', 'A01001001001A001'),
+            ('00000000-0000-0000-0000-000000000502','00000000-0000-0000-0000-000000000301','00000000-0000-0000-0000-000000000401','imaging',     'MRI brain — confirmed left MCA territory infarct 12 mm.', 'A01001001001B001'),
+            ('00000000-0000-0000-0000-000000000503','00000000-0000-0000-0000-000000000301','00000000-0000-0000-0000-000000000401','imaging',     'Follow-up MRI Day 7 — stable infarct, no haemorrhagic change.', 'A01001001001B002'),
+            -- Patient 304 (SUBJ-B01) — Diabetes
+            ('00000000-0000-0000-0000-000000000504','00000000-0000-0000-0000-000000000304','00000000-0000-0000-0000-000000000403','outpatient',  'Baseline HbA1c 8.2%. CGM device fitted. Dietary counselling given.', 'A02002001001A001'),
+            ('00000000-0000-0000-0000-000000000505','00000000-0000-0000-0000-000000000304','00000000-0000-0000-0000-000000000403','labs',        'Fasting glucose panel, lipids, renal function — within protocol range.', 'A02002001001C001'),
+            ('00000000-0000-0000-0000-000000000506','00000000-0000-0000-0000-000000000304','00000000-0000-0000-0000-000000000403','outpatient',  '3-month review: HbA1c 7.4%. CGM time-in-range improved to 68%.', 'A02002001001A002'),
+            -- Patient 307 (SUBJ-C01) — Cardiac
+            ('00000000-0000-0000-0000-000000000507','00000000-0000-0000-0000-000000000307','00000000-0000-0000-0000-000000000404','outpatient',  'Post-STEMI Day 30 review. EF 45%. Started ARNI therapy.', 'A03003001001A001'),
+            ('00000000-0000-0000-0000-000000000508','00000000-0000-0000-0000-000000000307','00000000-0000-0000-0000-000000000404','imaging',     'Echocardiogram: EF 48%, moderate MR, no pericardial effusion.', 'A03003001001B001'),
+            ('00000000-0000-0000-0000-000000000509','00000000-0000-0000-0000-000000000307','00000000-0000-0000-0000-000000000404','procedures',  'Right-heart catheterisation — PCWP 18 mmHg, CO 4.1 L/min.', 'A03003001001D001'),
+            -- Patient 310 (SUBJ-D01) — Covid
+            ('00000000-0000-0000-0000-000000000510','00000000-0000-0000-0000-000000000310','00000000-0000-0000-0000-000000000406','outpatient',  'Persistent dyspnoea 6 months post-COVID. SpO2 94% on exertion.', 'A04004001001A001'),
+            ('00000000-0000-0000-0000-000000000511','00000000-0000-0000-0000-000000000310','00000000-0000-0000-0000-000000000406','imaging',     'CT thorax: bilateral ground-glass opacities (5%), mild bronchiectasis.', 'A04004001001B001'),
+            ('00000000-0000-0000-0000-000000000512','00000000-0000-0000-0000-000000000310','00000000-0000-0000-0000-000000000406','labs',        'PFTs: FVC 78% predicted, DLCO 65% predicted — mild restriction.', 'A04004001001C001'),
+            -- Patient 313 (SUBJ-E01) — Lupus
+            ('00000000-0000-0000-0000-000000000513','00000000-0000-0000-0000-000000000313','00000000-0000-0000-0000-000000000407','outpatient',  'Belimumab dose step-down to 200 mg/month. SLEDAI-2K score 4.', 'A05005001001A001'),
+            ('00000000-0000-0000-0000-000000000514','00000000-0000-0000-0000-000000000313','00000000-0000-0000-0000-000000000407','labs',        'Complement C3/C4 normal. Anti-dsDNA weakly positive. eGFR 88.', 'A05005001001C001'),
+            ('00000000-0000-0000-0000-000000000515','00000000-0000-0000-0000-000000000313','00000000-0000-0000-0000-000000000407','outpatient',  '6-month flare assessment: Arthritis flare. Dose reinstated.', 'A05005001001A002'),
+            -- Patient 316 (SUBJ-F01) — Asthma
+            ('00000000-0000-0000-0000-000000000516','00000000-0000-0000-0000-000000000316','00000000-0000-0000-0000-000000000408','outpatient',  'Baseline spirometry: FEV1/FVC 0.64. Dupilumab 300 mg SC initiated.', 'A06006001001A001'),
+            ('00000000-0000-0000-0000-000000000517','00000000-0000-0000-0000-000000000316','00000000-0000-0000-0000-000000000408','labs',        'FeNO 42 ppb, blood eosinophils 0.45×10^9/L — T2-high phenotype.', 'A06006001001C001'),
+            ('00000000-0000-0000-0000-000000000518','00000000-0000-0000-0000-000000000316','00000000-0000-0000-0000-000000000408','outpatient',  '12-week review: FEV1 improved +18%, zero OCS courses.', 'A06006001001A002'),
+            -- Patient 319 (SUBJ-G01) — Parkinson
+            ('00000000-0000-0000-0000-000000000519','00000000-0000-0000-0000-000000000319','00000000-0000-0000-0000-000000000409','outpatient',  'Gait sensor belt fitted. Baseline MDS-UPDRS part III = 24.', 'A07007001001A001'),
+            ('00000000-0000-0000-0000-000000000520','00000000-0000-0000-0000-000000000319','00000000-0000-0000-0000-000000000409','imaging',     'DaT-SCAN: bilateral nigrostriatal deficit, L>R asymmetry confirmed.', 'A07007001001B001'),
+            ('00000000-0000-0000-0000-000000000521','00000000-0000-0000-0000-000000000319','00000000-0000-0000-0000-000000000409','procedures',  'Gait lab digital biomarker extraction — 4 min walk, dual-task.', 'A07007001001D001'),
+            -- Patient 322 (SUBJ-H01) — Lymphoma
+            ('00000000-0000-0000-0000-000000000522','00000000-0000-0000-0000-000000000322','00000000-0000-0000-0000-000000000410','inpatient',   'CAR-T infusion Day 0. Pre-infusion lymphodepleting chemo completed.', 'A08008001001E001'),
+            ('00000000-0000-0000-0000-000000000523','00000000-0000-0000-0000-000000000322','00000000-0000-0000-0000-000000000410','labs',        'Day 7 cytokine panel: IL-6 42 pg/mL, ferritin 1200 ng/mL — CRS Grade 1.', 'A08008001001C001'),
+            ('00000000-0000-0000-0000-000000000524','00000000-0000-0000-0000-000000000322','00000000-0000-0000-0000-000000000410','imaging',     'PET-CT Day 30: CMR in 4/5 target lesions — Deauville 2.', 'A08008001001B001'),
+            -- Patient 325 (SUBJ-I01) — Alzheimer
+            ('00000000-0000-0000-0000-000000000525','00000000-0000-0000-0000-000000000325','00000000-0000-0000-0000-000000000411','outpatient',  'Baseline CDR 0.5. Plasma Ab42/40 ratio 0.061 — amyloid positive.', 'A09009001001A001'),
+            ('00000000-0000-0000-0000-000000000526','00000000-0000-0000-0000-000000000325','00000000-0000-0000-0000-000000000411','imaging',     'MRI volumetrics: hippocampal volume 3.1 cm3 (78th percentile).', 'A09009001001B001'),
+            ('00000000-0000-0000-0000-000000000527','00000000-0000-0000-0000-000000000325','00000000-0000-0000-0000-000000000411','labs',        'CSF Ab42 620 pg/mL, p-tau181 32 pg/mL — AD biomarker profile.', 'A09009001001C001'),
+            -- Patient 328 (SUBJ-J01) — Rheumatoid
+            ('00000000-0000-0000-0000-000000000528','00000000-0000-0000-0000-000000000328','00000000-0000-0000-0000-000000000412','outpatient',  'DMARD-naive. DAS28-CRP 5.4. Upadacitinib 15 mg OD initiated.', 'A0A00A001001A001'),
+            ('00000000-0000-0000-0000-000000000529','00000000-0000-0000-0000-000000000328','00000000-0000-0000-0000-000000000412','labs',        'Anti-CCP 180 IU/mL, RF 85 IU/mL, CRP 22 mg/L — high disease activity.', 'A0A00A001001C001'),
+            ('00000000-0000-0000-0000-000000000530','00000000-0000-0000-0000-000000000328','00000000-0000-0000-0000-000000000412','outpatient',  '12-week EULAR: DAS28-CRP 2.8 — low disease activity achieved.', 'A0A00A001001A002')
+        "#, &[]).await?;
+
+        // ── 8. Media Upload Tickets (20 — across all entity types) ───────────
+        // We insert with entity_type + entity_id; upload URLs are demo stubs
+        let _ = tx.execute(r#"
+            INSERT INTO media_upload_tickets (id, organization_id, project_id, patient_id, mime_type, upload_url, expires_at, entity_type, entity_id, file_name, description) VALUES
+            -- Organization-level documents
+            ('00000000-0000-0000-0000-000000000601','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','system','application/pdf',
+             'https://upload.virivu.example/v1/media/601?content_type=application%2Fpdf',NOW()+INTERVAL '10 minutes',
+             'organization','00000000-0000-0000-0000-000000000002','IRB_Approval_AlphaHealth_2026.pdf','Institutional Review Board approval letter'),
+            ('00000000-0000-0000-0000-000000000602','00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000102','system','application/pdf',
+             'https://upload.virivu.example/v1/media/602?content_type=application%2Fpdf',NOW()+INTERVAL '10 minutes',
+             'organization','00000000-0000-0000-0000-000000000003','SponsorAgreement_BetaMedical.pdf','Sponsor agreement and indemnity'),
+            -- Study-level documents
+            ('00000000-0000-0000-0000-000000000603','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','system','application/pdf',
+             'https://upload.virivu.example/v1/media/603?content_type=application%2Fpdf',NOW()+INTERVAL '10 minutes',
+             'study','00000000-0000-0000-0000-000000000101','Protocol_AlphaStroke_v2.1.pdf','Study protocol version 2.1'),
+            ('00000000-0000-0000-0000-000000000604','00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000102','system','application/pdf',
+             'https://upload.virivu.example/v1/media/604?content_type=application%2Fpdf',NOW()+INTERVAL '10 minutes',
+             'study','00000000-0000-0000-0000-000000000102','ImagingManual_BetaDiabetes.pdf','Imaging acquisition and reading manual'),
+            -- Site-level documents
+            ('00000000-0000-0000-0000-000000000605','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','system','application/pdf',
+             'https://upload.virivu.example/v1/media/605?content_type=application%2Fpdf',NOW()+INTERVAL '10 minutes',
+             'site','00000000-0000-0000-0000-000000000201','SiteActivation_AlphaNeuro.pdf','Site qualification and activation checklist'),
+            ('00000000-0000-0000-0000-000000000606','00000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-000000000103','system','application/pdf',
+             'https://upload.virivu.example/v1/media/606?content_type=application%2Fpdf',NOW()+INTERVAL '10 minutes',
+             'site','00000000-0000-0000-0000-000000000203','CVandLicence_DrCharlieSong.pdf','PI curriculum vitae and medical licence'),
+            -- Patient-level: video
+            ('00000000-0000-0000-0000-000000000607','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','SUBJ-A01','video/mp4',
+             'https://upload.virivu.example/v1/media/607?content_type=video%2Fmp4',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000301','SUBJ-A01_gait_baseline.mp4','Baseline gait video assessment'),
+            ('00000000-0000-0000-0000-000000000608','00000000-0000-0000-0000-000000000008','00000000-0000-0000-0000-000000000107','SUBJ-G01','video/mp4',
+             'https://upload.virivu.example/v1/media/608?content_type=video%2Fmp4',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000319','SUBJ-G01_tremor_video_month3.mp4','Month 3 tremor assessment video'),
+            -- Patient-level: audio
+            ('00000000-0000-0000-0000-000000000609','00000000-0000-0000-0000-000000000008','00000000-0000-0000-0000-000000000107','SUBJ-G02','audio/wav',
+             'https://upload.virivu.example/v1/media/609?content_type=audio%2Fwav',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000320','SUBJ-G02_speech_recording_baseline.wav','Baseline speech fluency recording'),
+            ('00000000-0000-0000-0000-000000000610','00000000-0000-0000-0000-000000000007','00000000-0000-0000-0000-000000000106','SUBJ-F01','audio/wav',
+             'https://upload.virivu.example/v1/media/610?content_type=audio%2Fwav',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000316','SUBJ-F01_breath_sounds_before.wav','Pre-treatment auscultation recording'),
+            -- Patient-level: DICOM
+            ('00000000-0000-0000-0000-000000000611','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','SUBJ-A01','application/dicom',
+             'https://upload.virivu.example/v1/media/611?content_type=application%2Fdicom',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000301','SUBJ-A01_MRI_brain_day0.dcm','Baseline brain MRI DICOM series'),
+            ('00000000-0000-0000-0000-000000000612','00000000-0000-0000-0000-000000000010','00000000-0000-0000-0000-000000000109','SUBJ-I01','application/dicom',
+             'https://upload.virivu.example/v1/media/612?content_type=application%2Fdicom',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000325','SUBJ-I01_MRI_hippocampus_month0.dcm','Hippocampal volumetric MRI baseline'),
+            -- Patient-level: images
+            ('00000000-0000-0000-0000-000000000613','00000000-0000-0000-0000-000000000006','00000000-0000-0000-0000-000000000105','SUBJ-E01','image/jpeg',
+             'https://upload.virivu.example/v1/media/613?content_type=image%2Fjpeg',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000313','SUBJ-E01_rash_photo_day0.jpg','Malar rash clinical photograph at baseline'),
+            ('00000000-0000-0000-0000-000000000614','00000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-000000000103','SUBJ-C01','image/jpeg',
+             'https://upload.virivu.example/v1/media/614?content_type=image%2Fjpeg',NOW()+INTERVAL '10 minutes',
+             'patient','00000000-0000-0000-0000-000000000307','SUBJ-C01_echo_screenshot.jpg','Echocardiogram parasternal long axis screenshot'),
+            -- Encounter-level media
+            ('00000000-0000-0000-0000-000000000615','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','SUBJ-A01','video/mp4',
+             'https://upload.virivu.example/v1/media/615?content_type=video%2Fmp4',NOW()+INTERVAL '10 minutes',
+             'encounter','00000000-0000-0000-0000-000000000501','Enc501_consultation_recording.mp4','Consultation recording for audit'),
+            ('00000000-0000-0000-0000-000000000616','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000101','SUBJ-A01','application/dicom',
+             'https://upload.virivu.example/v1/media/616?content_type=application%2Fdicom',NOW()+INTERVAL '10 minutes',
+             'encounter','00000000-0000-0000-0000-000000000502','Enc502_MRI_series.dcm','MRI series from encounter 502'),
+            ('00000000-0000-0000-0000-000000000617','00000000-0000-0000-0000-000000000009','00000000-0000-0000-0000-000000000108','SUBJ-H01','video/mp4',
+             'https://upload.virivu.example/v1/media/617?content_type=video%2Fmp4',NOW()+INTERVAL '10 minutes',
+             'encounter','00000000-0000-0000-0000-000000000522','Enc522_infusion_monitoring.mp4','CAR-T infusion day monitoring video'),
+            ('00000000-0000-0000-0000-000000000618','00000000-0000-0000-0000-000000000008','00000000-0000-0000-0000-000000000107','SUBJ-G01','audio/wav',
+             'https://upload.virivu.example/v1/media/618?content_type=audio%2Fwav',NOW()+INTERVAL '10 minutes',
+             'encounter','00000000-0000-0000-0000-000000000519','Enc519_motor_exam_audio.wav','Motor examination verbal notes'),
+            ('00000000-0000-0000-0000-000000000619','00000000-0000-0000-0000-000000000011','00000000-0000-0000-0000-000000000110','SUBJ-J01','image/jpeg',
+             'https://upload.virivu.example/v1/media/619?content_type=image%2Fjpeg',NOW()+INTERVAL '10 minutes',
+             'encounter','00000000-0000-0000-0000-000000000528','Enc528_joint_xray.jpg','Bilateral hand X-ray at baseline visit'),
+            ('00000000-0000-0000-0000-000000000620','00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000102','SUBJ-B01','application/pdf',
+             'https://upload.virivu.example/v1/media/620?content_type=application%2Fpdf',NOW()+INTERVAL '10 minutes',
+             'encounter','00000000-0000-0000-0000-000000000504','Enc504_lab_report.pdf','Signed laboratory report for baseline encounter')
+        "#, &[]).await;
+        // Note: entity_type columns may fail if migration didn't apply cleanly — that's OK for the seed
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+
+    pub async fn list_all_projects(&self) -> anyhow::Result<Vec<Project>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id, organization_id, name, therapeutic_area, protocol_code, lifecycle_phase, planned_enrollment, clinicaltrials_gov_id, study_summary, phase_changed_at, hex_code, status, last_activity_at, created_at
+                FROM projects
+                ORDER BY name ASC
+                "#,
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_project).collect())
+    }
+
+    pub async fn list_all_sites(&self) -> anyhow::Result<Vec<Site>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
+                FROM sites
+                ORDER BY name ASC
+                "#,
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_site).collect())
+    }
+
+    pub async fn list_all_patients(&self) -> anyhow::Result<Vec<Patient>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, organization_id, project_id, site_id, external_subject_id, email, date_of_birth, hex_code, created_at
+                FROM patients
+                ORDER BY hex_code ASC
+                "#,
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_patient).collect())
+    }
+
+
 
     pub async fn set_site_status(&self, site_id: Uuid, status: &str) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
@@ -2138,7 +2448,337 @@ impl Db {
             mime_type: row.get("mime_type"),
             upload_url: row.get("upload_url"),
             expires_at: row.get("expires_at"),
+            entity_type: None,
+            entity_id: None,
+            file_name: None,
+            description: None,
+            upload_status: Some("pending".to_string()),
         })
+    }
+
+    /// Create a media ticket scoped to a specific entity (org/study/site/patient/encounter)
+    pub async fn create_media_upload_ticket_for_entity(
+        &self,
+        organization_id: Uuid,
+        project_id: Uuid,
+        patient_id: &str,
+        mime_type: &str,
+        entity_type: &str,
+        entity_id: Option<Uuid>,
+        file_name: Option<&str>,
+        description: Option<&str>,
+    ) -> anyhow::Result<MediaUploadTicket> {
+        let id = Uuid::new_v4();
+        let expires_at = Utc::now() + Duration::minutes(60);
+        let upload_url = format!(
+            "https://upload.virivu.example/v1/media/{id}?content_type={}&entity={entity_type}",
+            mime_type
+        );
+
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO media_upload_tickets
+                    (id, organization_id, project_id, patient_id, mime_type, upload_url, expires_at,
+                     entity_type, entity_id, file_name, description, upload_status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+                RETURNING id, organization_id, project_id, patient_id, mime_type, upload_url, expires_at,
+                          entity_type, entity_id, file_name, description, upload_status
+                "#,
+                &[
+                    &id, &organization_id, &project_id, &patient_id,
+                    &mime_type, &upload_url, &expires_at,
+                    &entity_type, &entity_id, &file_name, &description,
+                ],
+            )
+            .await?;
+        Ok(MediaUploadTicket {
+            id: row.get("id"),
+            organization_id: row.get("organization_id"),
+            project_id: row.get("project_id"),
+            patient_id: row.get("patient_id"),
+            mime_type: row.get("mime_type"),
+            upload_url: row.get("upload_url"),
+            expires_at: row.get("expires_at"),
+            entity_type: row.get("entity_type"),
+            entity_id: row.get("entity_id"),
+            file_name: row.get("file_name"),
+            description: row.get("description"),
+            upload_status: row.get("upload_status"),
+        })
+    }
+
+    /// Get all media tickets for a specific entity
+    pub async fn list_media_tickets_for_entity(
+        &self,
+        entity_type: &str,
+        entity_id: Uuid,
+    ) -> anyhow::Result<Vec<MediaUploadTicket>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, organization_id, project_id, patient_id, mime_type, upload_url, expires_at,
+                       entity_type, entity_id, file_name, description, upload_status
+                FROM media_upload_tickets
+                WHERE entity_type = $1 AND entity_id = $2
+                ORDER BY expires_at DESC
+                LIMIT 50
+                "#,
+                &[&entity_type, &entity_id],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| MediaUploadTicket {
+                id: row.get("id"),
+                organization_id: row.get("organization_id"),
+                project_id: row.get("project_id"),
+                patient_id: row.get("patient_id"),
+                mime_type: row.get("mime_type"),
+                upload_url: row.get("upload_url"),
+                expires_at: row.get("expires_at"),
+                entity_type: row.get("entity_type"),
+                entity_id: row.get("entity_id"),
+                file_name: row.get("file_name"),
+                description: row.get("description"),
+                upload_status: row.get("upload_status"),
+            })
+            .collect())
+    }
+
+    /// Get a patient by their ID with associated org, project, site names
+    pub async fn get_patient_with_context(
+        &self,
+        patient_id: Uuid,
+    ) -> anyhow::Result<Option<(Patient, String, String, String)>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT
+                    p.id, p.organization_id, p.project_id, p.site_id,
+                    p.external_subject_id, p.email, p.date_of_birth, p.hex_code, p.created_at,
+                    o.name as org_name,
+                    proj.name as study_name,
+                    COALESCE(s.name, 'Unknown Site') as site_name
+                FROM patients p
+                JOIN organizations o ON o.id = p.organization_id
+                JOIN projects proj ON proj.id = p.project_id
+                LEFT JOIN sites s ON s.id = p.site_id
+                WHERE p.id = $1
+                "#,
+                &[&patient_id],
+            )
+            .await?;
+        Ok(row.map(|r| {
+            let patient = Patient {
+                id: r.get("id"),
+                organization_id: r.get("organization_id"),
+                project_id: r.get("project_id"),
+                site_id: r.get("site_id"),
+                external_subject_id: r.get("external_subject_id"),
+                email: r.get("email"),
+                date_of_birth: r.get("date_of_birth"),
+                hex_code: r.get("hex_code"),
+                created_at: r.get("created_at"),
+            };
+            let org_name: String = r.get("org_name");
+            let study_name: String = r.get("study_name");
+            let site_name: String = r.get("site_name");
+            (patient, org_name, study_name, site_name)
+        }))
+    }
+
+    /// Get all encounters for a patient
+    pub async fn list_encounters_for_patient(
+        &self,
+        patient_id: Uuid,
+    ) -> anyhow::Result<Vec<Encounter>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, patient_id, provider_id, encounter_type, notes, hex_code, created_at
+                FROM encounters
+                WHERE patient_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&patient_id],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Encounter {
+                id: row.get("id"),
+                patient_id: row.get("patient_id"),
+                provider_id: row.get("provider_id"),
+                encounter_type: row.get("encounter_type"),
+                notes: row.get("notes"),
+                hex_code: row.get("hex_code"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    /// Create a patient portal magic-link session
+    pub async fn create_patient_session(
+        &self,
+        patient_id: Uuid,
+    ) -> anyhow::Result<PatientSession> {
+        // Use two UUIDs concatenated (no dashes) as a 256-bit secure token
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let expires_at = Utc::now() + Duration::days(7);
+
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO patient_sessions (patient_id, token, expires_at)
+                VALUES ($1, $2, $3)
+                RETURNING id, patient_id, token, expires_at, used_at, created_at
+                "#,
+                &[&patient_id, &token, &expires_at],
+            )
+            .await?;
+        Ok(PatientSession {
+            id: row.get("id"),
+            patient_id: row.get("patient_id"),
+            token: row.get("token"),
+            expires_at: row.get("expires_at"),
+            used_at: row.get("used_at"),
+            created_at: row.get("created_at"),
+        })
+    }
+
+    /// Look up a patient by their portal token
+    pub async fn get_patient_by_portal_token(
+        &self,
+        token: &str,
+    ) -> anyhow::Result<Option<Patient>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT p.id, p.organization_id, p.project_id, p.site_id,
+                       p.external_subject_id, p.email, p.date_of_birth, p.hex_code, p.created_at
+                FROM patients p
+                JOIN patient_sessions ps ON ps.patient_id = p.id
+                WHERE ps.token = $1
+                  AND ps.expires_at > NOW()
+                  AND ps.used_at IS NULL
+                "#,
+                &[&token],
+            )
+            .await?;
+        Ok(row.map(|r| Patient {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            site_id: r.get("site_id"),
+            external_subject_id: r.get("external_subject_id"),
+            email: r.get("email"),
+            date_of_birth: r.get("date_of_birth"),
+            hex_code: r.get("hex_code"),
+            created_at: r.get("created_at"),
+        }))
+    }
+
+    /// Submit a PRO form from patient portal
+    pub async fn create_pro_submission(
+        &self,
+        patient_id: Uuid,
+        form_type: &str,
+        answers_json: &str,
+        total_score: Option<i32>,
+    ) -> anyhow::Result<ProSubmission> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_one(
+                r#"
+                INSERT INTO pro_submissions (patient_id, form_type, answers, total_score, submitted_at)
+                VALUES ($1, $2, $3::jsonb, $4, NOW())
+                RETURNING id, patient_id, form_type, answers::text as answers_text, total_score, submitted_at, created_at
+                "#,
+                &[&patient_id, &form_type, &answers_json, &total_score],
+            )
+            .await?;
+        let answers_str: String = row.get("answers_text");
+        Ok(ProSubmission {
+            id: row.get("id"),
+            patient_id: row.get("patient_id"),
+            form_type: row.get("form_type"),
+            answers: serde_json::from_str(&answers_str).unwrap_or(serde_json::Value::Null),
+            total_score: row.get("total_score"),
+            submitted_at: row.get("submitted_at"),
+            created_at: row.get("created_at"),
+        })
+    }
+
+    /// List PRO submissions for a patient
+    pub async fn list_pro_submissions(
+        &self,
+        patient_id: Uuid,
+    ) -> anyhow::Result<Vec<ProSubmission>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, patient_id, form_type, answers::text as answers_text, total_score, submitted_at, created_at
+                FROM pro_submissions
+                WHERE patient_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&patient_id],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let answers_str: String = row.get("answers_text");
+                ProSubmission {
+                    id: row.get("id"),
+                    patient_id: row.get("patient_id"),
+                    form_type: row.get("form_type"),
+                    answers: serde_json::from_str(&answers_str).unwrap_or(serde_json::Value::Null),
+                    total_score: row.get("total_score"),
+                    submitted_at: row.get("submitted_at"),
+                    created_at: row.get("created_at"),
+                }
+            })
+            .collect())
+    }
+
+    /// Find a patient by email for portal login
+    pub async fn get_patient_by_email(
+        &self,
+        email: &str,
+    ) -> anyhow::Result<Option<Patient>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT id, organization_id, project_id, site_id,
+                       external_subject_id, email, date_of_birth, hex_code, created_at
+                FROM patients
+                WHERE LOWER(email) = LOWER($1)
+                LIMIT 1
+                "#,
+                &[&email],
+            )
+            .await?;
+        Ok(row.map(|r| Patient {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            site_id: r.get("site_id"),
+            external_subject_id: r.get("external_subject_id"),
+            email: r.get("email"),
+            date_of_birth: r.get("date_of_birth"),
+            hex_code: r.get("hex_code"),
+            created_at: r.get("created_at"),
+        }))
     }
 
     pub async fn get_project(&self, project_id: Uuid) -> anyhow::Result<Option<Project>> {
@@ -3573,6 +4213,7 @@ impl Db {
             .await?;
         Ok(())
     }
+    #[allow(dead_code)]
     pub async fn insert_audit_log(
         &self,
         entity_table: &str,
@@ -3734,6 +4375,7 @@ fn random_hex_segment(len: usize, min_letters: usize) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn row_to_audit_log(row: &Row) -> AuditLog {
     AuditLog {
         id: row.get("id"),
@@ -4016,3 +4658,19 @@ fn row_to_encounter(row: &Row) -> Encounter {
         created_at: row.get("created_at"),
     }
 }
+
+fn row_to_site(row: &Row) -> Site {
+    Site {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        name: row.get("name"),
+        principal_investigator: row.get("principal_investigator"),
+        co_principal_investigator: row.get("co_principal_investigator"),
+        sub_investigator: row.get("sub_investigator"),
+        hex_code: row.get("hex_code"),
+        status: row.get("status"),
+        last_activity_at: row.get("last_activity_at"),
+        created_at: row.get("created_at"),
+    }
+}
+

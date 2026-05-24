@@ -1,5 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +192,7 @@ pub struct StudyDataQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct AuditLog {
     pub id: Uuid,
     pub entity_table: String,
@@ -277,6 +279,11 @@ pub struct MediaUploadTicket {
     pub mime_type: String,
     pub upload_url: String,
     pub expires_at: DateTime<Utc>,
+    pub entity_type: Option<String>,
+    pub entity_id: Option<Uuid>,
+    pub file_name: Option<String>,
+    pub description: Option<String>,
+    pub upload_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,5 +362,26 @@ pub struct OutboundEmail {
     pub body: String,
     pub status: String,
     pub requested_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientSession {
+    pub id: Uuid,
+    pub patient_id: Uuid,
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProSubmission {
+    pub id: Uuid,
+    pub patient_id: Uuid,
+    pub form_type: String,
+    pub answers: serde_json::Value,
+    pub total_score: Option<i32>,
+    pub submitted_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }

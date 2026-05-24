@@ -45,11 +45,26 @@ pub struct AppContext {
     pub db: Db,
 }
 
+
+async fn render_portal_placeholder() -> Result<Html<String>, ApiError> {
+    let body = r#"
+<section style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; background:#f7fafc;">
+  <div style="background:white; padding:3rem; border-radius:12px; box-shadow:0 10px 15px -3px rgba(0,0,0,0.1); text-align:center;">
+    <h1 style="color:#02182b;">Patient Portal</h1>
+    <p style="color:#718096;">The Patient Portal routes were reset during the layout rollback.<br/>They will be restored in a future update.</p>
+    <a href="/ui?admin_email=arcot@cingulum.org" style="display:inline-block; margin-top:1.5rem; background:#f05708; color:white; padding:0.75rem 1.5rem; border-radius:6px; text-decoration:none; font-weight:bold;">Return to Admin Dashboard</a>
+  </div>
+</section>
+"#;
+    Ok(Html(body.to_string()))
+}
+
 pub fn router(ctx: AppContext) -> Router {
     let public_router = Router::new()
         .route("/health", get(health))
         .route("/favicon.ico", get(favicon))
         .route("/ui", get(render_ui_home))
+        .route("/portal", get(render_portal_placeholder))
         .route("/ui/foundation", get(render_foundation_command_center))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
@@ -155,10 +170,6 @@ pub fn router(ctx: AppContext) -> Router {
             "/ui/app/create-organization",
             post(submit_app_create_organization),
         )
-        .route(
-            "/ui/app/delete-organization",
-            post(submit_app_delete_organization),
-        )
         .route("/ui/app/create-project", post(submit_app_create_project))
         .route("/ui/app/create-site", post(submit_app_create_site))
         .route("/ui/app/create-patient", post(submit_app_create_patient))
@@ -180,10 +191,6 @@ pub fn router(ctx: AppContext) -> Router {
         .route(
             "/ui/dua/create-organization",
             post(submit_create_organization_from_ui),
-        )
-        .route(
-            "/ui/dua/delete-organization",
-            post(submit_dua_delete_organization),
         )
         .route("/ui/dua/open-agreement", post(open_dua_agreement_workspace))
         .route("/ui/dua/draft", post(render_create_dua_from_form))
@@ -1542,12 +1549,6 @@ struct AppCreateOrganizationForm {
 }
 
 #[derive(Debug, Deserialize)]
-struct AppDeleteOrganizationForm {
-    admin_email: String,
-    organization_id: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct AppCreateProjectForm {
     admin_email: String,
     organization_id: String,
@@ -1619,7 +1620,6 @@ struct StudyWorkbenchQuery {
     submission_id: Option<String>,
     notice: Option<String>,
     view: Option<String>,
-    tab: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1950,7 +1950,7 @@ async fn render_foundation_command_center(
                     c1, c2, c3, c4
                 );
                 format!(
-                    r#"<div class="action-card" style="display:flex; flex-direction:column; gap:0.55rem; padding:0.85rem;">
+                    r#"<div class="action-card" onclick="window.location.href='/ui/app?admin_email={}&organization_id={}'" style="display:flex; flex-direction:column; gap:0.55rem; padding:0.85rem; cursor:pointer;">
   <div style="display:flex; align-items:center; gap:0.7rem;">
     {}
     <div>
@@ -1962,11 +1962,12 @@ async fn render_foundation_command_center(
     </div>
   </div>
   <div style="display:flex; gap:0.8rem; margin-top:0.3rem; font-size:0.88rem; font-weight:700;">
-    <a href="/ui/app?admin_email={}&organization_id={}">Operations</a>
-    <a href="/ui/studies?admin_email={}&organization_id={}">Studies</a>
-    <a href="/ui/dua?admin_email={}&organization_id={}">DUA</a>
+    <a href="/ui/app?admin_email={}&organization_id={}" onclick="event.stopPropagation();">Operations</a>
+    <a href="/ui/studies?admin_email={}&organization_id={}" onclick="event.stopPropagation();">Studies</a>
+    <a href="/ui/dua?admin_email={}&organization_id={}" onclick="event.stopPropagation();">DUA</a>
   </div>
 </div>"#,
+                    admin_email_q, org.id,
                     logo_svg,
                     html_escape(&org.name),
                     html_escape(&org.organization_kind),
@@ -2020,31 +2021,32 @@ async fn render_foundation_command_center(
 
     let body = format!(
         r#"
+<div style="background: rgba(40, 62, 40, 0.08); border: 1px solid rgba(40, 62, 40, 0.3); color: var(--cg-forest); padding: 0.85rem 1.1rem; border-radius: 8px; font-weight: 700; font-size: 0.95rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">
+  <span style="font-size: 1.2rem;">👋</span> Welcome to the Virivu Research Cloud! This is your starting dashboard.
+</div>
+
 <h1>Cingulum Foundation Command Center</h1>
 <p class="muted">Administer all partner sites, coordinate legal and operational workflows, and accelerate research delivery through a single digital control plane.</p>
 {}
 
 <section class="card">
-  <h2>Foundation workspace context</h2>
-  <form method="get" action="/ui/foundation">
-    <label>Foundation admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Workspace to administer</label>
-    <select name="organization_id" onchange="this.form.submit()">
-      {}
-    </select>
-    <button type="submit">Load Workspace</button>
-  </form>
-  <a href="{}" class="action-card is-informative" style="margin-top:1.1rem; display:block;">
-    <div class="action-title">Active workspace context</div>
-    <div class="action-desc" style="margin-bottom:0.5rem; font-size:1rem; color:#02182b;">
-      <strong>{}</strong>
-    </div>
-    <div class="action-desc" style="font-size:0.8rem; line-height:1.35; margin-bottom:0.6rem; color:#2d3748;">
-      Tenant-isolated controls remain in effect. All actions are scoped to the selected organization and its managed sites.
-    </div>
-    <span class="action-tag">Isolated Scope</span>
-  </a>
+  <h2>Recommended next actions</h2>
+  <div class="action-grid">{}</div>
+</section>
+
+<section class="card">
+  <h2>Guided execution path</h2>
+  <div class="action-grid">
+    <a href="{}" class="action-card"><div class="action-title">1. Onboard institutions</div><div class="action-desc">Setup organizations and site structure in Operations Workspace.</div></a>
+    <a href="{}" class="action-card"><div class="action-title">2. Launch & monitor studies</div><div class="action-desc">Manage startup, CRF templates, visits, and queries in Study Workbench.</div></a>
+    <a href="{}" class="action-card"><div class="action-title">3. Close legal bottlenecks</div><div class="action-desc">Draft and finalize agreements in DUA Console.</div></a>
+    <div class="action-card is-ready"><div class="action-title">4. Accelerate with digital tools</div><div class="action-desc">Standardize data capture, reduce manual handoffs, and maintain real-time program visibility.</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Managed organizations</h2>
+  <div class="action-grid">{}</div>
 </section>
 
 <section class="card">
@@ -2070,30 +2072,34 @@ async fn render_foundation_command_center(
 </section>
 
 <section class="card">
-  <h2>Guided execution path</h2>
-  <div class="action-grid">
-    <a href="{}" class="action-card"><div class="action-title">1. Onboard institutions</div><div class="action-desc">Setup organizations and site structure in Operations Workspace.</div></a>
-    <a href="{}" class="action-card"><div class="action-title">2. Launch & monitor studies</div><div class="action-desc">Manage startup, CRF templates, visits, and queries in Study Workbench.</div></a>
-    <a href="{}" class="action-card"><div class="action-title">3. Close legal bottlenecks</div><div class="action-desc">Draft and finalize agreements in DUA Console.</div></a>
-    <div class="action-card is-ready"><div class="action-title">4. Accelerate with digital tools</div><div class="action-desc">Standardize data capture, reduce manual handoffs, and maintain real-time program visibility.</div></div>
-  </div>
-</section>
-
-<section class="card">
-  <h2>Recommended next actions</h2>
-  <div class="action-grid">{}</div>
-</section>
-
-<section class="card">
-  <h2>Managed organizations</h2>
-  <div class="action-grid">{}</div>
+  <h2>Foundation workspace context</h2>
+  <form method="get" action="/ui/foundation">
+    <label>Foundation admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Workspace to administer</label>
+    <select name="organization_id" onchange="this.form.submit()">
+      {}
+    </select>
+    <button type="submit">Load Workspace</button>
+  </form>
+  <a href="{}" class="action-card is-informative" style="margin-top:1.1rem; display:block;">
+    <div class="action-title">Active workspace context</div>
+    <div class="action-desc" style="margin-bottom:0.5rem; font-size:1rem; color:#02182b;">
+      <strong>{}</strong>
+    </div>
+    <div class="action-desc" style="font-size:0.8rem; line-height:1.35; margin-bottom:0.6rem; color:#2d3748;">
+      Tenant-isolated controls remain in effect. All actions are scoped to the selected organization and its managed sites.
+    </div>
+    <span class="action-tag">Isolated Scope</span>
+  </a>
 </section>
 "#,
         notice_html,
-        html_escape(admin_email.trim()),
-        organization_options_html,
+        next_actions_html,
         app_workspace_url.clone(),
-        selected_workspace_label,
+        study_workspace_url,
+        dua_workspace_url,
+        managed_organizations_html,
         child_organizations.len(),
         research_network_count,
         hospital_count,
@@ -2104,11 +2110,10 @@ async fn render_foundation_command_center(
         total_sites,
         total_duas,
         pending_duas,
+        html_escape(admin_email.trim()),
+        organization_options_html,
         app_workspace_url,
-        study_workspace_url,
-        dua_workspace_url,
-        next_actions_html,
-        managed_organizations_html
+        selected_workspace_label
     );
 
     Ok(Html(render_cingulum_page(
@@ -2298,19 +2303,12 @@ async fn render_app_dashboard(
                     .unwrap_or_else(|| "none".to_string());
 
                 format!(
-                    r#"<a href="/ui/app?admin_email={}&organization_id={}" class="dashboard-card" style="text-decoration:none; color:inherit; position:relative;">
+                    r#"<a href="/ui/app?admin_email={}&organization_id={}" class="dashboard-card" style="text-decoration:none; color:inherit;">
   <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:0.75rem;">
     <div>
       {}
     </div>
-    <div style="display:flex; gap:0.5rem; align-items:center;">
-      <span class="status-chip" style="background:#02182b; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">{}</span>
-      <form method="post" action="/ui/app/delete-organization" style="display:inline; margin:0;" onsubmit="return confirm('Are you sure you want to delete this organization? This will delete all associated projects, sites, patients, and DUA agreements.');">
-        <input type="hidden" name="organization_id" value="{}" />
-        <input type="hidden" name="admin_email" value="{}" />
-        <button type="submit" style="background:#e53e3e; color:white; border:none; padding:0.2rem 0.45rem; border-radius:6px; font-size:0.7rem; font-weight:bold; cursor:pointer; box-shadow:none; margin:0;" onclick="event.stopPropagation();">Delete</button>
-      </form>
-    </div>
+    <span class="status-chip" style="background:#02182b; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">{}</span>
   </div>
   
   <div>
@@ -2331,8 +2329,6 @@ async fn render_app_dashboard(
                     org.id,
                     logo_svg,
                     html_escape(&org.organization_kind),
-                    org.id,
-                    admin_email_q,
                     html_escape(&org.name),
                     org.id,
                     html_escape(hex),
@@ -3382,6 +3378,15 @@ async fn render_app_dashboard(
 </section>"#,
             org_summary_html, project_summary_html
         ),
+                "media" => format!(
+            r#"<section class="card">
+  <h2>8) Media Vault</h2>
+  <div style="background:#f7fafc; padding:2rem; text-align:center; border-radius:8px; border:2px dashed #cbd5e0;">
+    <h3 style="color:#02182b; margin-top:0;">Feature under construction</h3>
+    <p style="color:#718096; margin-bottom:0;">The Media Vault was reset during the rollback and will be restored shortly.</p>
+  </div>
+</section>"#
+        ),
         "legal" => format!(
             r#"<section class="card">
   <h2>7) Legal / DUA</h2>
@@ -3546,32 +3551,191 @@ async fn render_app_dashboard(
         html_escape(admin_email.trim())
     );
 
+    let selected_org_name = organizations
+        .iter()
+        .find(|org| Some(org.id) == selected_org_id)
+        .map(|org| html_escape(&org.name))
+        .unwrap_or_else(|| "— Select Org —".to_string());
+
+    let sidebar_org_options = organizations
+        .iter()
+        .map(|org| {
+            let is_selected = selected_org_id.map(|id| id == org.id).unwrap_or(false);
+            let selected_class = if is_selected { "selected" } else { "" };
+            format!(
+                r#"<a href="/ui/app?admin_email={}&view={}&organization_id={}" class="custom-dropdown-item {}">{}</a>"#,
+                query_escape(admin_email.trim()),
+                query_escape(view),
+                org.id,
+                selected_class,
+                html_escape(&org.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let selected_proj_name = projects
+        .iter()
+        .find(|proj| Some(proj.id) == selected_project_id)
+        .map(|proj| html_escape(&proj.name))
+        .unwrap_or_else(|| "— Select Study —".to_string());
+
+    let sidebar_proj_options = projects
+        .iter()
+        .map(|proj| {
+            let is_selected = selected_project_id.map(|id| id == proj.id).unwrap_or(false);
+            let selected_class = if is_selected { "selected" } else { "" };
+            let org_param = selected_org_id.map(|id| format!("&organization_id={}", id)).unwrap_or_default();
+            format!(
+                r#"<a href="/ui/app?admin_email={}&view={}{}&project_id={}" class="custom-dropdown-item {}">{}</a>"#,
+                query_escape(admin_email.trim()),
+                query_escape(view),
+                org_param,
+                proj.id,
+                selected_class,
+                html_escape(&proj.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let sidebar_html = format!(
+        r#"<script>
+window.addEventListener('click', () => {{
+  document.querySelectorAll('.custom-dropdown-menu').forEach(m => m.classList.remove('show'));
+}});
+</script>
+<aside class="sidebar" id="app-sidebar">
+  <div class="sidebar-logo">
+    <a href="/ui?admin_email={admin}" class="sidebar-brand-link">
+      <div class="sidebar-brand">Virivu</div>
+      <div class="sidebar-brand-sub">Research Cloud</div>
+    </a>
+  </div>
+
+  <div class="sidebar-org-select">
+    <label class="sidebar-label">Active Organization</label>
+    <div class="custom-dropdown">
+      <button type="button" class="custom-dropdown-btn" onclick="document.querySelectorAll('.custom-dropdown-menu').forEach(m => {{ if (m !== this.nextElementSibling) m.classList.remove('show'); }}); this.nextElementSibling.classList.toggle('show'); event.stopPropagation();">
+        {selected_org_name}
+      </button>
+      <div class="custom-dropdown-menu">
+        <a href="/ui/app?admin_email={admin}&view={current_view}&organization_id=" class="custom-dropdown-item">— Select Org —</a>
+        {org_options}
+      </div>
+    </div>
+  </div>
+
+  <div class="sidebar-org-select">
+    <label class="sidebar-label">Active Study</label>
+    <div class="custom-dropdown">
+      <button type="button" class="custom-dropdown-btn" onclick="document.querySelectorAll('.custom-dropdown-menu').forEach(m => {{ if (m !== this.nextElementSibling) m.classList.remove('show'); }}); this.nextElementSibling.classList.toggle('show'); event.stopPropagation();">
+        {selected_proj_name}
+      </button>
+      <div class="custom-dropdown-menu">
+        <a href="/ui/app?admin_email={admin}&organization_id={org}&view={current_view}&project_id=" class="custom-dropdown-item">— Select Study —</a>
+        {proj_options}
+      </div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="sidebar-section-label">Workspace</div>
+    <a class="sidebar-item {active_overview}" href="?view=overview&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">⬡</span> Overview
+    </a>
+    <a class="sidebar-item {active_analytics}" href="?view=analytics&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">📊</span> Analytics
+    </a>
+
+    <div class="sidebar-section-label">Clinical</div>
+    <a class="sidebar-item {active_projects}" href="?view=projects&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">🔬</span> Organizations &amp; Studies
+    </a>
+    <a class="sidebar-item {active_sites}" href="?view=sites&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">🏥</span> Sites
+    </a>
+    <a class="sidebar-item {active_patients}" href="?view=patients&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">👤</span> Patients
+    </a>
+    <a class="sidebar-item {active_providers}" href="?view=providers&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">🩺</span> Providers &amp; Encounters
+    </a>
+
+    <div class="sidebar-section-label">Research</div>
+    <a class="sidebar-item" href="/ui/studies?admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">📋</span> Study Workbench
+    </a>
+    <a class="sidebar-item {active_media}" href="?view=media&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">📁</span> Media Vault
+    </a>
+
+    <div class="sidebar-section-label">Compliance</div>
+    <a class="sidebar-item {active_legal}" href="?view=legal&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">📜</span> Legal / DUA
+    </a>
+    <a class="sidebar-item" href="/ui/foundation?admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">⚙️</span> Foundation Hub
+    </a>
+
+    <div class="sidebar-section-label">System</div>
+    <a class="sidebar-item" href="/portal" target="_blank">
+      <span class="sidebar-icon">🔗</span> Patient Portal ↗
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-user">{admin_display}</div>
+  </div>
+</aside>"#,
+        admin = admin_email_q,
+        org = selected_org_value,
+        selected_org_name = selected_org_name,
+        selected_proj_name = selected_proj_name,
+        org_options = sidebar_org_options,
+        proj_options = sidebar_proj_options,
+        current_view = html_escape(view),
+        active_overview = is_active("overview"),
+        active_analytics = is_active("analytics"),
+        active_projects = is_active("projects"),
+        active_sites = is_active("sites"),
+        active_patients = is_active("patients"),
+        active_providers = is_active("providers"),
+        active_media = is_active("media"),
+        active_legal = is_active("legal"),
+        admin_display = html_escape(admin_email.trim())
+    );
+
     let body = format!(
         r#"
-{}
-<h1>Organization Command Center</h1>
-<p class="muted">Unified operations workspace: institutions, trial setup, patient workflows, legal agreements, and analytics.</p>
-{}
-{}
-{}
-{}
-
-<datalist id="app-organization-options">{}</datalist>
-<datalist id="app-project-options">{}</datalist>
-<datalist id="app-site-options">{}</datalist>
-<datalist id="app-patient-options">{}</datalist>
-<datalist id="app-provider-options">{}</datalist>
+{sidebar}
+<div class="main-with-sidebar">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+    <div>
+      <h1 class="page-title">Organization Command Center</h1>
+      <p class="muted" style="margin-top:-0.5rem; margin-bottom:1.5rem;">Unified operations workspace: institutions, trial setup, patient workflows, legal agreements, and analytics.</p>
+    </div>
+    <button class="mobile-menu-btn" style="display:none;">☰</button>
+  </div>
+  {notice}
+  {panel}
+  {auto_archive}
+</div>
+<datalist id="app-organization-options">{org_list}</datalist>
+<datalist id="app-project-options">{proj_list}</datalist>
+<datalist id="app-site-options">{site_list}</datalist>
+<datalist id="app-patient-options">{pat_list}</datalist>
+<datalist id="app-provider-options">{prov_list}</datalist>
 "#,
-        global_nav,
-        notice_html,
-        auto_archive_banner,
-        tab_bar,
-        panel_content,
-        organization_options_html,
-        project_options_html,
-        site_options_html,
-        patient_options_html_app,
-        provider_options_html_app
+        sidebar = sidebar_html,
+        notice = notice_html,
+        auto_archive = auto_archive_banner,
+        panel = panel_content,
+        org_list = organization_options_html,
+        proj_list = project_options_html,
+        site_list = site_options_html,
+        pat_list = patient_options_html_app,
+        prov_list = provider_options_html_app
     );
 
     Ok(Html(render_cingulum_page("Organization Command Center", body)))
@@ -3623,58 +3787,6 @@ async fn submit_app_create_organization(
         query_escape(form.admin_email.trim()),
         organization.id,
         query_escape("Organization created")
-    )))
-}
-
-async fn submit_app_delete_organization(
-    State(ctx): State<AppContext>,
-    Form(form): Form<AppDeleteOrganizationForm>,
-) -> Result<Redirect, ApiError> {
-    let is_platform_admin = ctx
-        .db
-        .email_has_platform_admin_role(form.admin_email.trim())
-        .await
-        .map_err(ApiError::internal)?;
-    if !is_platform_admin {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email is not a platform_admin".to_string(),
-        )));
-    }
-    let org_uuid = parse_uuid_field(&form.organization_id, "organization_id")?;
-    ctx.db
-        .delete_organization(org_uuid)
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(Redirect::to(&format!(
-        "/ui/app?admin_email={}&notice={}",
-        query_escape(form.admin_email.trim()),
-        query_escape("Organization deleted successfully")
-    )))
-}
-
-async fn submit_dua_delete_organization(
-    State(ctx): State<AppContext>,
-    Form(form): Form<AppDeleteOrganizationForm>,
-) -> Result<Redirect, ApiError> {
-    let is_platform_admin = ctx
-        .db
-        .email_has_platform_admin_role(form.admin_email.trim())
-        .await
-        .map_err(ApiError::internal)?;
-    if !is_platform_admin {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email is not a platform_admin".to_string(),
-        )));
-    }
-    let org_uuid = parse_uuid_field(&form.organization_id, "organization_id")?;
-    ctx.db
-        .delete_organization(org_uuid)
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(Redirect::to(&format!(
-        "/ui/dua?admin_email={}&notice={}",
-        query_escape(form.admin_email.trim()),
-        query_escape("Organization deleted successfully")
     )))
 }
 
@@ -4343,60 +4455,24 @@ async fn render_study_workbench(
         })
         .unwrap_or_else(|| "<span class=\"muted\">none selected</span>".to_string());
 
-    let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
-
-    let study_cards_html = if projects.is_empty() {
-        "<p style=\"color:#718096;font-style:italic;grid-column:1/-1;\">No studies configured yet for this organization.</p>".to_string()
+    let study_rows_html = if projects.is_empty() {
+        "<li>No studies yet for this organization.</li>".to_string()
     } else {
         projects
             .iter()
             .map(|project| {
-                let phase = project.lifecycle_phase.trim().to_ascii_lowercase();
-                let (border_color, badge_bg, badge_color) = match phase.as_str() {
-                    "pre_study" => ("#718096", "#edf2f7", "#4a5568"),
-                    "initiated" => ("#4299e1", "#ebf8ff", "#2b6cb0"),
-                    "active" => ("#48bb78", "#f0fff4", "#2f855a"),
-                    "monitoring" => ("#ed8936", "#fffaf0", "#dd6b20"),
-                    "closeout" => ("#ecc94b", "#fffff0", "#b7791f"),
-                    "archived" => ("#e53e3e", "#fff5f5", "#c53030"),
-                    _ => ("#718096", "#edf2f7", "#4a5568"),
-                };
-                let summary_escaped = &project.study_summary;
-                let summary_preview = if summary_escaped.len() > 80 {
-                    format!("{}...", &summary_escaped[..80])
-                } else {
-                    summary_escaped.to_string()
-                };
-                
+                let selected_org = selected_org_id
+                    .map(|org_id| format!("&organization_id={org_id}"))
+                    .unwrap_or_default();
                 format!(
-                    r#"<a href="/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=overview" class="dashboard-card" style="text-decoration:none; color:inherit; padding:1.25rem; min-height:unset; display:flex; flex-direction:column; gap:0.75rem; transition:all 0.2s; position:relative; overflow:hidden; border-top: 4px solid {};">
-  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem;">
-    <div>
-      <h4 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">{}</h4>
-      <div style="font-size:0.75rem; color:#718096; font-family:monospace; margin-top:0.15rem;">Protocol: {}</div>
-    </div>
-    <span class="status-chip" style="background:{}; color:{}; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-transform:uppercase;">{}</span>
-  </div>
-  <p style="font-size:0.85rem; color:#4a5568; line-height:1.4; margin:0 0 0.5rem 0;">
-    {}
-  </p>
-  <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:#718096; margin-top:auto; padding-top:0.5rem; border-top:1px solid #edf2f7;">
-    <span>Target: <strong>{} patients</strong></span>
-    <span>Area: <strong>{}</strong></span>
-  </div>
-</a>"#,
+                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&tab=overview">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
                     admin_email_q,
-                    selected_org_value,
+                    selected_org,
                     project.id,
-                    border_color,
                     html_escape(&project.name),
-                    html_escape(project.protocol_code.as_deref().unwrap_or("")),
-                    badge_bg,
-                    badge_color,
                     html_escape(&project.lifecycle_phase),
-                    html_escape(&summary_preview),
-                    project.planned_enrollment,
-                    html_escape(&project.therapeutic_area)
+                    html_escape(project.hex_code.as_deref().unwrap_or("pending")),
+                    project.planned_enrollment
                 )
             })
             .collect::<Vec<_>>()
@@ -5250,7 +5326,7 @@ async fn render_study_workbench(
         .map(|id| format!("/ui/studies/{id}/close-checklist"))
         .unwrap_or_else(|| "#".to_string());
 
-    let view = query.view.as_deref().or(query.tab.as_deref()).unwrap_or("overview");
+    let view = query.view.as_deref().unwrap_or("overview");
     let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
     let foundation_hub_url = selected_org_id
@@ -5302,57 +5378,33 @@ async fn render_study_workbench(
 
     let panel_content = match view {
         "setup" => format!(
-            r#"<section class="card" style="padding: 1.5rem; border-radius: 16px;">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
-    <h2 style="margin:0; font-size:1.4rem; color:var(--cg-navy); font-weight:800;">Study Portfolio Management</h2>
-  </div>
-  
-  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-bottom:2rem;">
-    {}
-    <div id="add-study-card" class="dashboard-card" style="background:#f8fafc; border:2px dashed #cbd5e0; border-radius:12px; padding:1.25rem; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:180px; cursor:pointer; transition:all 0.2s;" onclick="document.getElementById('study-create-modal').showModal()">
-      <span style="font-size:3rem; color:#a0aec0; font-weight:300; line-height:1; margin-bottom:0.5rem;">+</span>
-      <span style="font-size:0.9rem; font-weight:700; color:#718096;">Create New Study</span>
-    </div>
-  </div>
-
-  <!-- Create Study Modal -->
-  <dialog id="study-create-modal" style="border:none; border-radius:16px; padding:2rem; width:100%; max-width:540px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.15), 0 10px 10px -5px rgba(0,0,0,0.05); background:#fff; border-top:4px solid var(--cg-orange);">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid #edf2f7; padding-bottom:0.75rem;">
-      <h3 style="margin:0; color:#02182b; font-size:1.25rem; font-weight:700;">Create New Study</h3>
-      <button onclick="document.getElementById('study-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer; box-shadow:none; padding:0; margin:0;">&times;</button>
-    </div>
-    <form method="post" action="/ui/studies/create" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
-      <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
-
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Organization ID</label>
-      <input name="organization_id" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
-
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Study name</label>
-      <input name="study_name" placeholder="Acute Stroke Registry 2026" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
-
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Therapeutic area</label>
-      <input name="therapeutic_area" placeholder="Neurology" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
-
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Protocol code</label>
-      <input name="protocol_code" placeholder="VIR-STR-26-01" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
-
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Planned enrollment</label>
-      <input type="number" name="planned_enrollment" value="250" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
-
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">ClinicalTrials.gov ID (optional)</label>
-      <input name="clinicaltrials_gov_id" placeholder="NCT01234567" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
-
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Study summary</label>
-      <textarea name="study_summary" placeholder="Primary objective, key endpoints, and operational plan" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; min-height:80px; font-family:inherit;"></textarea>
-
-      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:8px; font-weight:600; cursor:pointer; width:100%; margin-top:1rem; transition:background 0.2s;">Create Study in Pre-Study Phase</button>
-    </form>
-  </dialog>
+            r#"<section class="card">
+  <h2>1) Create Study (clinicaltrials.gov-style metadata + internal ops)</h2>
+  <form method="post" action="/ui/studies/create">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Organization ID</label>
+    <input name="organization_id" value="{}" required />
+    <label>Study name</label>
+    <input name="study_name" placeholder="Acute Stroke Registry 2026" required />
+    <label>Therapeutic area</label>
+    <input name="therapeutic_area" placeholder="Neurology" required />
+    <label>Protocol code</label>
+    <input name="protocol_code" placeholder="VIR-STR-26-01" />
+    <label>Planned enrollment</label>
+    <input name="planned_enrollment" value="250" />
+    <label>ClinicalTrials.gov ID (optional)</label>
+    <input name="clinicaltrials_gov_id" placeholder="NCT01234567" />
+    <label>Study summary</label>
+    <textarea name="study_summary" placeholder="Primary objective, key endpoints, and operational plan"></textarea>
+    <button type="submit">Create Study in Pre-Study Phase</button>
+  </form>
+  <h3 style="margin-top:1rem;">Study portfolio</h3>
+  <ul>{}</ul>
 </section>"#,
-            study_cards_html,
             html_escape(admin_email.trim()),
-            selected_org_value.clone()
+            selected_org_value.clone(),
+            study_rows_html
         ),
         "lifecycle" => format!(
             r#"<section class="card">
@@ -7251,14 +7303,7 @@ async fn render_dua_admin_page(
       {}
       <h4 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">{}</h4>
     </div>
-    <div style="display:flex; gap:0.5rem; align-items:center;">
-      {}
-      <form method="post" action="/ui/dua/delete-organization" style="display:inline; margin:0;" onsubmit="return confirm('Are you sure you want to delete this organization? This will delete all associated projects, sites, patients, and DUA agreements.');">
-        <input type="hidden" name="organization_id" value="{}" />
-        <input type="hidden" name="admin_email" value="{}" />
-        <button type="submit" style="background:#e53e3e; color:white; border:none; padding:0.2rem 0.45rem; border-radius:6px; font-size:0.7rem; font-weight:bold; cursor:pointer; box-shadow:none; margin:0;" onclick="event.stopPropagation();">Delete</button>
-      </form>
-    </div>
+    {}
   </div>
   <div style="font-size:0.8rem; color:#4a5568; font-family:monospace; word-break:break-all; margin-top:0.25rem;">
     <strong>ID:</strong> {}
@@ -7274,8 +7319,6 @@ async fn render_dua_admin_page(
                 logo_svg,
                 html_escape(&org.name),
                 active_badge,
-                org.id,
-                query_escape(admin_email.trim()),
                 org.id,
                 html_escape(&org.organization_kind),
                 org.parent_organization_id
@@ -7387,9 +7430,72 @@ async fn render_dua_admin_page(
   </div>
 </div>
 
-<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:1.5rem; margin-bottom:2rem; align-items:start;">
+<div style="display:flex; flex-direction:column; gap:2rem; margin-bottom:2rem;">
+  
+  <!-- Step 2: Draft DUA Section -->
+  <div class="card" style="margin:0; padding:2rem; background: linear-gradient(145deg, #ffffff 0%, #f8f9fa 100%); border: 1px solid #e2e8f0; box-shadow: 0 12px 24px -8px rgba(0,0,0,0.08); border-radius: 12px;">
+    <div style="display:flex; gap:0.75rem; align-items:center; margin-bottom:1.5rem; border-bottom:1px solid #edf2f7; padding-bottom:1rem;">
+      <svg width="28" height="28" viewBox="0 0 32 32" style="border-radius:6px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <rect x="0" y="0" width="16" height="16" fill="#f05708" />
+        <rect x="16" y="0" width="16" height="16" fill="#e7e5da" />
+        <rect x="0" y="16" width="16" height="16" fill="#02182b" />
+        <rect x="16" y="16" width="16" height="16" fill="#283e28" />
+      </svg>
+      <h2 style="margin:0; font-size:1.4rem; color: #02182b;">Step 2: Draft Data Use Agreement</h2>
+    </div>
+    <p style="color:#4a5568; font-size:0.95rem; margin-bottom:1.5rem; line-height: 1.5;">
+      Draft a new Data Use Agreement for the selected organization and seamlessly queue the entity legal signing process.
+    </p>
+    <form method="post" action="/ui/dua/draft" style="margin:0; background:none; border:none; padding:0; box-shadow:none; max-width:none;">
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:2rem; align-items:start;">
+        <div>
+          <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Admin email (must be org manager or platform admin)</label>
+          <input name="admin_email" value="{}" required style="background:#edf2f7; border: 1px solid #cbd5e0; color: #4a5568; border-radius: 6px; padding: 0.6rem;" readonly />
+
+          <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Organization ID (UUID)</label>
+          <input name="organization_id" list="organization-options" value="{}" placeholder="organization-uuid" required style="border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.6rem;" />
+          <datalist id="organization-options">
+            {}
+          </datalist>
+
+          <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Entity legal name</label>
+          <input name="hospital_name" placeholder="E.g., General Hospital / XYZ Corp" required style="border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.6rem;" />
+
+          <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Entity contact name</label>
+          <input name="hospital_contact_name" placeholder="E.g., Jane Doe" required style="border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.6rem;" />
+
+          <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Entity contact email</label>
+          <input type="email" name="hospital_contact_email" placeholder="legal@entity.org" required style="border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.6rem;" />
+        </div>
+        <div>
+          <div style="display:flex; gap: 1rem;">
+            <div style="flex:1;">
+              <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Agreement version</label>
+              <input name="agreement_version" value="1.0" required style="border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.6rem;" />
+            </div>
+            <div style="flex:1;">
+              <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Effective date</label>
+              <input name="effective_date" placeholder="YYYY-MM-DD" style="border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.6rem;" />
+            </div>
+            <div style="flex:1;">
+              <label style="font-weight:600; color:#2d3748; margin-bottom:0.25rem;">Expiration date</label>
+              <input name="expiration_date" placeholder="YYYY-MM-DD" style="border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.6rem;" />
+            </div>
+          </div>
+
+          <label style="font-weight:600; color:#2d3748; margin-top:0.75rem; margin-bottom:0.25rem;">Agreement text</label>
+          <textarea name="agreement_text" required style="height:280px; font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size:0.85rem; border: 1px solid #cbd5e0; border-radius: 6px; padding: 0.75rem; line-height: 1.4; background: #fbfbfc;">{}</textarea>
+        </div>
+      </div>
+
+      <button type="submit" style="background: linear-gradient(135deg, #02182b 0%, #052b4d 100%); color:white; border:none; padding:1rem; border-radius:8px; font-weight:700; cursor:pointer; width:100%; margin-top:2rem; transition:transform 0.1s, box-shadow 0.2s; box-shadow: 0 4px 6px rgba(2, 24, 43, 0.2); font-size:1.05rem;">
+        Create DUA & Queue Entity Signing Link
+      </button>
+    </form>
+  </div>
+
   <!-- Return to Existing Workspace Card -->
-  <div class="card" style="margin:0; padding:1.5rem; height:100%; display:flex; flex-direction:column;">
+  <div class="card" style="margin:0; padding:1.5rem; max-width: 500px;">
     <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
       <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15);">
         <rect x="0" y="0" width="16" height="16" fill="#283e28" />
@@ -7397,70 +7503,14 @@ async fn render_dua_admin_page(
         <rect x="0" y="16" width="16" height="16" fill="#02182b" />
         <rect x="16" y="16" width="16" height="16" fill="#283e28" />
       </svg>
-      <h2 style="margin:0; font-size:1.25rem;">Return to existing agreement workspace</h2>
+      <h2 style="margin:0; font-size:1.15rem; color:#4a5568;">Return to existing agreement workspace</h2>
     </div>
-    <form method="post" action="/ui/dua/open-agreement" style="margin:0; background:none; border:none; padding:0; box-shadow:none; max-width:none; display:flex; flex-direction:column; flex:1; justify-content:space-between;">
-      <div>
-        <label>Admin email</label>
-        <input name="admin_email" value="{}" required style="background:#f7fafc;" readonly />
-        <label>Agreement ID (UUID)</label>
-        <input name="agreement_id" placeholder="agreement-uuid" required />
-      </div>
-      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:8px; font-weight:600; cursor:pointer; width:100%; margin-top:1.5rem; transition:background 0.2s;">Open Agreement Workspace</button>
-    </form>
-  </div>
-
-  <!-- Step 2: Draft DUA Section -->
-  <div class="card" style="margin:0; padding:1.5rem;">
-    <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
-      <svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15);">
-        <rect x="0" y="0" width="16" height="16" fill="#f05708" />
-        <rect x="16" y="0" width="16" height="16" fill="#e7e5da" />
-        <rect x="0" y="16" width="16" height="16" fill="#02182b" />
-        <rect x="16" y="16" width="16" height="16" fill="#283e28" />
-      </svg>
-      <h2 style="margin:0; font-size:1.25rem;">Step 2: Draft DUA</h2>
-    </div>
-    <p style="color:#718096; font-size:0.85rem; margin-bottom:1.25rem;">
-      Draft a new Data Use Agreement for the selected organization and queue the hospital legal signing process.
-    </p>
-    <form method="post" action="/ui/dua/draft" style="margin:0; background:none; border:none; padding:0; box-shadow:none; max-width:none;">
-      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1.25rem; align-items:start;">
-        <div>
-          <label>Admin email (must be org manager or platform admin)</label>
-          <input name="admin_email" value="{}" required style="background:#f7fafc;" readonly />
-
-          <label>Organization ID (UUID)</label>
-          <input name="organization_id" list="organization-options" value="{}" placeholder="organization-uuid" required />
-          <datalist id="organization-options">
-            {}
-          </datalist>
-
-          <label>Hospital legal name</label>
-          <input name="hospital_name" placeholder="Hospital Name" required />
-
-          <label>Hospital contact name</label>
-          <input name="hospital_contact_name" placeholder="Contact Name" required />
-
-          <label>Hospital contact email</label>
-          <input type="email" name="hospital_contact_email" placeholder="legal@hospital.org" required />
-        </div>
-        <div>
-          <label>Agreement version</label>
-          <input name="agreement_version" value="1.0" required />
-
-          <label>Effective date (YYYY-MM-DD)</label>
-          <input name="effective_date" placeholder="2026-06-01" />
-
-          <label>Expiration date (YYYY-MM-DD)</label>
-          <input name="expiration_date" placeholder="2027-06-01" />
-
-          <label>Agreement text</label>
-          <textarea name="agreement_text" required style="height:210px; font-family:monospace; font-size:0.85rem;">{}</textarea>
-        </div>
-      </div>
-
-      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.9rem; border-radius:8px; font-weight:700; cursor:pointer; width:100%; margin-top:1.5rem; transition:background 0.2s; font-size:1rem;">Create DUA + Queue Hospital Signing Link</button>
+    <form method="post" action="/ui/dua/open-agreement" style="margin:0; background:none; border:none; padding:0; box-shadow:none; max-width:none; display:flex; flex-direction:column; gap: 0.5rem;">
+      <label style="font-size: 0.85rem; color: #4a5568; margin-bottom: 0;">Admin email</label>
+      <input name="admin_email" value="{}" required style="background:#edf2f7; border: 1px solid #e2e8f0; padding: 0.5rem;" readonly />
+      <label style="font-size: 0.85rem; color: #4a5568; margin-bottom: 0;">Agreement ID (UUID)</label>
+      <input name="agreement_id" placeholder="agreement-uuid" required style="border: 1px solid #e2e8f0; padding: 0.5rem;" />
+      <button type="submit" style="background:#cbd5e0; color:#2d3748; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; width:100%; margin-top:0.5rem; transition:background 0.2s;">Open Agreement Workspace</button>
     </form>
   </div>
 </div>
@@ -7497,10 +7547,10 @@ async fn render_dua_admin_page(
         managed_orgs_html,
         org_duas_html,
         html_escape(&admin_email),
-        html_escape(&admin_email),
         html_escape(&selected_organization_id),
         organization_options,
         html_escape(default_dua_text()),
+        html_escape(&admin_email),
         html_escape(&admin_email),
         html_escape(&selected_organization_id)
     );
@@ -9779,7 +9829,102 @@ fn query_escape(input: &str) -> String {
 }
 
 fn default_dua_text() -> &'static str {
-    "This Data Use Agreement is entered into between [HOSPITAL LEGAL NAME] and Cingulum Foundation Inc. for approved medical research data workflows. The parties agree to HIPAA-aligned safeguards, role-based access controls, minimum necessary use, and auditable electronic signatures."
+    r#"# Comprehensive International Data Transfer and Use Agreement (“Agreement”)
+
+**Effective Date:** [Date]
+
+This Data Transfer and Use Agreement (hereinafter “Agreement”), effective as of the date of the last signature below (hereinafter “Effective Date”), is by and between **Cingulum Foundation Inc.**, a New York not-for-profit corporation located at [Provider Address] (hereinafter “Provider”) and **[Recipient Name]** located at [Recipient Address] (hereinafter “Recipient”). Provider and Recipient shall be referred to hereinafter individually as a “Party” and collectively as the “Parties.”
+
+---
+
+## Master Terms and Conditions
+
+### 1. Provision of Data and Permitted Use
+1.1 **Data Definition:** Provider shall provide the Data set described in Attachment 1 (the “Data”) to Recipient for the research purpose set forth in Attachment 1 (the “Project”). 
+1.2 **Ownership:** Provider shall retain ownership of any rights it may have in the Data and Recipient does not obtain any rights in the Data other than as set forth herein.
+1.3 **Authorized Use:** Recipient shall not use the Data except as authorized under this Agreement. The Data will be used solely to conduct the Project and solely by Recipient Scientist and Recipient’s faculty, employees, fellows, students, and agents (“Recipient Personnel”) and Third-Party Personnel (as defined in Attachment 3) that have a need to use, or provide a service in respect of, the Data in connection with the Project and whose obligations of use are consistent with the terms of this Agreement (collectively, “Authorized Persons”).
+
+### 2. Control, Security, and Safeguards
+2.1 **Control of Data:** Except as authorized under this Agreement or otherwise required by law, Recipient agrees to retain control over the Data and shall not disclose, release, sell, rent, lease, loan, or otherwise grant access to the Data to any third party, except Authorized Persons, without the prior written consent of Provider. 
+2.2 **Safeguards:** Recipient agrees to establish appropriate administrative, technical, and physical safeguards to prevent unauthorized use of or access to the Data and comply with any other special requirements relating to safeguarding of the Data as set forth in Attachment 2 and the applicable jurisdictional Addendums (Exhibits A and B).
+
+### 3. Compliance with Laws and Professional Standards
+3.1 Recipient agrees to use the Data in compliance with all applicable local, national, and international laws, rules, and regulations, as well as all professional standards applicable to such research.
+3.2 **De-Identification & Re-Identification:** If the Data is provided as de-identified or pseudonymized, Recipient will not use the Data, either alone or in concert with any other information, to make any effort to identify or contact individuals who are or may be the sources of Data without specific written approval from Provider and appropriate Institutional Review Board (IRB) or Ethics Committee approval.
+
+### 4. Publication and Intellectual Property
+4.1 **Right to Publish:** Recipient is encouraged to make publicly available the results of the Project. Before Recipient submits a paper or abstract for publication or otherwise intends to publicly disclose information about the results of the Project, the Recipient will submit the proposed publication, or a written version of such other disclosure, to Provider for review and comment.
+4.2 **Review Period:** The Provider will have forty-five (45) days from receipt to review proposed manuscripts and fifteen (15) days to review proposed abstracts to ensure that the Data is appropriately protected and proprietary information is not inadvertently disclosed.
+4.3 **Attribution:** Recipient agrees to recognize the contribution of the Provider as the source of the Data in all written, visual, or oral public disclosures concerning Recipient’s research, as appropriate in accordance with scholarly standards.
+
+### 5. Term, Termination, and Disposition
+5.1 **Term:** Unless terminated earlier, this Agreement shall expire as of the End Date set forth in Attachment 1. 
+5.2 **Termination:** Either Party may terminate this Agreement with thirty (30) days prior written notice to the other Party.
+5.3 **Disposition:** Upon expiration or early termination of this Agreement, Recipient shall delete or destroy all copies of the Data transferred pursuant to NIST Standard SP-800-88 (Guidelines for Media Sanitization) or equivalent international standard, unless both Parties extend the agreement prior to expiration or applicable law mandates retention.
+
+### 6. Representations, Warranties, and Liability
+6.1 **"AS IS" Delivery:** Except as prohibited by law, any Data delivered pursuant to this Agreement is understood to be provided “AS IS.” PROVIDER MAKES NO REPRESENTATIONS AND EXTENDS NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+6.2 **Liability:** Except to the extent prohibited by law, the Recipient assumes all liability for damages which may arise from its use, storage, disclosure, or disposal of the Data. The Provider will not be liable to the Recipient for any loss, claim, or demand made by the Recipient, or made against the Recipient by any other party, due to or arising from the use of the Data by the Recipient, except to the extent permitted by law when caused by the gross negligence or willful misconduct of the Provider.
+
+---
+
+## Exhibit A: European Economic Area (EEA) / GDPR Addendum
+
+If the Data transferred includes Personal Data (as defined by the EU General Data Protection Regulation 2016/679 - "GDPR") of data subjects located within the EEA, or if the Recipient is established in the EEA, the following terms shall apply:
+
+1. **Standard Contractual Clauses (SCCs):** The Parties agree that the transfer of Personal Data from the Provider (acting as Data Exporter) to the Recipient (acting as Data Importer) shall be governed by the standard contractual clauses for the transfer of personal data to third countries pursuant to Regulation (EU) 2016/679 of the European Parliament and of the Council, as approved by the European Commission Implementing Decision (EU) 2021/914.
+2. **Roles:** Unless otherwise specified in Attachment 1, Provider acts as the "Data Controller" and Recipient acts as the "Data Processor." 
+3. **Data Subject Rights:** Recipient shall assist the Provider, by appropriate technical and organizational measures, for the fulfillment of the Provider's obligation to respond to requests for exercising the data subject's rights laid down in Chapter III of the GDPR (e.g., right to access, right to erasure).
+4. **Sub-processing:** Recipient shall not engage another processor (sub-processor) without prior specific or general written authorization of the Provider. 
+5. **Breach Notification:** In the case of a personal data breach, Recipient shall without undue delay and, where feasible, not later than 48 hours after having become aware of it, notify the personal data breach to the Provider, to allow the Provider to meet its 72-hour regulatory notification obligation to the competent supervisory authority.
+
+---
+
+## Exhibit B: India DPDP Act (2023) Addendum
+
+If the Data transferred includes Digital Personal Data (as defined by the Digital Personal Data Protection Act, 2023 - "DPDP Act") of data principals located within India, or if the data is processed within India, the following terms shall apply:
+
+1. **Valid Contract Requirement:** This Agreement fulfills the requirement under Section 8(2) of the DPDP Act, which mandates a valid contract between a Data Fiduciary and a Data Processor.
+2. **Roles and Liability:** Provider acts as the "Data Fiduciary" and Recipient acts as the "Data Processor." Recipient acknowledges that under the DPDP Act, the Data Fiduciary retains sole regulatory liability for the processing of personal data. Recipient agrees to strictly indemnify the Provider against any penalties, fines, or damages arising from Recipient's failure to adhere to the terms of this Addendum or the DPDP Act.
+3. **Purpose Limitation:** Recipient shall process the personal data strictly and solely for the purposes defined in Attachment 1, which must align with the consent obtained from the Data Principal by the Provider, or a legitimate use as defined by the DPDP Act.
+4. **Security Safeguards:** Recipient shall implement reasonable security safeguards to prevent any personal data breach as required by Section 8(4) of the DPDP Act. 
+5. **Breach Reporting:** In the event of a personal data breach, Recipient shall immediately (and in no event later than 24 hours) notify the Provider to enable the Provider to fulfill its mandatory obligation to report the breach to the Data Protection Board of India and the affected Data Principals.
+
+---
+
+## Attachments
+
+### Attachment 1: Project Specific Information
+- **Description of Data:** [Insert detailed description, e.g., De-identified MRI scans, Pseudonymized clinical trial outcomes]
+- **Description of Project / Permitted Purpose:** [Insert exact scope of the research project]
+- **Term:** Start Date: [Date], End Date: [Date]
+- **Reimbursement of Costs:** [None / As set forth here: ...]
+
+### Attachment 2: Data-Specific Terms and Technical Security Standards
+- Recipient and its employees, agents, subcontractors, and any other individual permitted by Recipient to access the data will use all reasonable security practices and take all reasonable security measures necessary to protect the security and privacy of the data.
+- **Standards Framework:** Recipient agrees to adhere to security standards generally consistent with ISO/IEC 27001, SOC 2 Type II, or NIST Special Publication 800-53.
+- If Provider is a Covered Entity under US Law, the Data will be de-identified data, as defined by the Health Insurance Portability and Accountability Act of 1996 (“HIPAA”).
+
+### Attachment 3: Identification of Permitted Third-Party Collaborators
+- [ ] None. No collaborators are permitted on the Project.
+- [ ] The following third parties are permitted: [Insert Names and Institutional Affiliations]
+
+---
+
+**IN WITNESS WHEREOF**, the Parties have caused this Agreement to be executed by their duly authorized representatives.
+
+**Provider: Cingulum Foundation Inc.**
+By: ___________________________
+Name: 
+Title: 
+Date: 
+
+**Recipient: [Recipient Institution]**
+By: ___________________________
+Name: 
+Title: 
+Date: 
+"#
 }
 
 fn html_escape(input: &str) -> String {
@@ -9921,6 +10066,10 @@ fn cingulum_theme_css() -> &'static str {
       max-width: 1180px;
       margin: 1.5rem auto;
       padding: 0 1rem 2.2rem;
+    }
+    .page:has(.sidebar) {
+      padding-left: 260px;
+      max-width: 1420px;
     }
     .brand-wrap {
       display: flex;
@@ -10342,14 +10491,189 @@ fn cingulum_theme_css() -> &'static str {
       from { opacity: 0; transform: translateY(4px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    dialog::backdrop {
-      background: rgba(2, 24, 43, 0.45);
-      backdrop-filter: blur(4px);
-    }
     @media (max-width: 740px) {
       .brand-wrap { flex-direction: column; align-items: flex-start; gap: 0.35rem; }
       .tab-bar { position: static; }
     }
+.sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 240px;
+      height: 100vh;
+      background: linear-gradient(180deg, #02182b 0%, #051f36 60%, #0a2640 100%);
+      color: #c8d8e8;
+      display: flex;
+      flex-direction: column;
+      z-index: 100;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+      box-shadow: 4px 0 20px rgba(2,24,43,0.35);
+    }
+    .sidebar-logo {
+      padding: 1.25rem 1rem 0.75rem;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .sidebar-brand-link { text-decoration: none; }
+    .sidebar-brand {
+      color: #fff;
+      font-size: 1.2rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+    .sidebar-brand-sub {
+      color: rgba(200,216,232,0.65);
+      font-size: 0.72rem;
+      font-weight: 600;
+      margin-top: 0.15rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .sidebar-org-select {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .sidebar-label {
+      display: block;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(200,216,232,0.5);
+      margin-bottom: 0.4rem;
+    }
+    .custom-dropdown {
+      position: relative;
+    }
+    .custom-dropdown-btn {
+      width: 100%;
+      background: linear-gradient(135deg, #02182b 0%, #f05708 100%);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px;
+      color: #ffffff;
+      padding: 0.6rem 0.8rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      transition: all 0.2s;
+    }
+    .custom-dropdown-btn:hover {
+      border-color: rgba(255,255,255,0.4);
+    }
+    .custom-dropdown-btn::after {
+      content: "";
+      display: inline-block;
+      width: 1em;
+      height: 1em;
+      background: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e") no-repeat center;
+      background-size: contain;
+    }
+    .custom-dropdown-menu {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      margin-top: 0.2rem;
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 1000;
+      max-height: 300px;
+      overflow-y: auto;
+      display: none;
+    }
+    .custom-dropdown-menu.show {
+      display: block;
+    }
+    .custom-dropdown-item {
+      display: block;
+      padding: 0.5rem 0.8rem;
+      color: #2d3748;
+      text-decoration: none;
+      font-size: 0.85rem;
+      border-bottom: 1px solid #edf2f7;
+    }
+    .custom-dropdown-item:hover {
+      background: #f7fafc;
+    }
+    .custom-dropdown-item.selected {
+      background: #ebf8ff;
+      color: #2b6cb0;
+      font-weight: 600;
+    }
+    .sidebar-nav {
+      flex: 1;
+      padding: 0.5rem 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+    .sidebar-section-label {
+      font-size: 0.65rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: rgba(200,216,232,0.35);
+      padding: 0.8rem 0.6rem 0.3rem;
+    }
+    .sidebar-item {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.55rem 0.75rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: rgba(200,216,232,0.8);
+      text-decoration: none;
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+    .sidebar-item:hover {
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+    }
+    .sidebar-item.is-active {
+      background: linear-gradient(135deg, rgba(240,87,8,0.25) 0%, rgba(240,87,8,0.15) 100%);
+      color: #fff;
+      border-left: 3px solid #f05708;
+    }
+    .sidebar-icon { font-size: 1rem; min-width: 1.2rem; }
+    .sidebar-footer {
+      padding: 0.75rem 1rem;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      font-size: 0.78rem;
+      color: rgba(200,216,232,0.5);
+    }
+    .sidebar-user {
+      font-weight: 600;
+      color: rgba(200,216,232,0.7);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ── Main content shifted right for sidebar ─────────────────────────── */
+    .main-with-sidebar {
+      margin-left: 240px;
+      padding: 1.5rem 1.5rem 2rem;
+      min-height: 100vh;
+    }
+    .page-title {
+      font-size: 1.6rem;
+      font-weight: 800;
+      color: var(--cg-navy);
+      margin: 0.5rem 0 1rem;
+    }
+
+    
+
     "#
 }
 
@@ -10578,9 +10902,8 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
       <a href="/ui" id="brand-link" style="text-decoration:none; color:inherit; font-weight:inherit; display:flex; flex-direction:column; align-items:flex-start;">
         <div class="brand">Cingulum Foundation Inc.</div>
       </a>
-      <div class="brand-sub">Virivu Research Cloud · UI Refresh v3</div>
+      <div class="brand-sub">Virivu Research Cloud</div>
     </div>
-    <div class="surface-glow"><span class="pulse-dot"></span>Tenant-isolated workspace mode is active</div>
     {}
   </main>
   <script>
@@ -10602,7 +10925,7 @@ fn cingulum_global_js() -> &'static str {
       if (brandLink) {
         const adminEmail = new URLSearchParams(window.location.search).get('admin_email');
         if (adminEmail) {
-          brandLink.href = `/ui/foundation?admin_email=${encodeURIComponent(adminEmail)}`;
+          brandLink.href = `/ui?admin_email=${encodeURIComponent(adminEmail)}`;
         }
       }
       const bars = document.querySelectorAll('.tab-bar[data-tab-group]');
@@ -10714,7 +11037,28 @@ fn cingulum_global_js() -> &'static str {
         fieldTypeSelect.addEventListener('change', syncFieldOptionsVisibility);
         syncFieldOptionsVisibility();
       });
+  
+      const mobileBtn = document.querySelector('.mobile-menu-btn');
+      const sidebar = document.getElementById('app-sidebar');
+      if (mobileBtn && sidebar) {
+        mobileBtn.addEventListener('click', () => {
+          sidebar.classList.toggle('open');
+        });
+        document.addEventListener('click', (e) => {
+          if (!sidebar.contains(e.target) && !mobileBtn.contains(e.target)) {
+            sidebar.classList.remove('open');
+          }
+        });
+        document.addEventListener('click', (e) => {
+          if (!e.target.closest('.custom-dropdown')) {
+            document.querySelectorAll('.custom-dropdown-menu').forEach(m => m.classList.remove('show'));
+          }
+        });
+
+      }
+
       const hashId = window.location.hash ? window.location.hash.slice(1) : '';
+
       if (hashId) {
         const target = document.getElementById(hashId);
         if (target) {
@@ -10728,7 +11072,7 @@ fn cingulum_global_js() -> &'static str {
         const formControls = document.querySelectorAll(
           'form:not([style*="display:inline"]):not([style*="display:inline-block"]) input:not([type="submit"]):not([type="button"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), ' +
           'form:not([style*="display:inline"]):not([style*="display:inline-block"]) textarea, ' +
-          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) select'
+          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) select:not(.sidebar-org-picker)'
         );
         
         formControls.forEach((control) => {
