@@ -1347,6 +1347,11 @@ struct CreateProviderRequest {
     name: String,
     title: Option<String>,
     referral_source: Option<String>,
+    email: Option<String>,
+    phone_number: Option<String>,
+    npi_number: Option<String>,
+    address: Option<String>,
+    notes: Option<String>,
 }
 
 async fn create_provider(
@@ -1367,6 +1372,11 @@ async fn create_provider(
             payload.name.trim(),
             payload.title.as_deref().unwrap_or("").trim(),
             payload.referral_source.as_deref().unwrap_or("").trim(),
+            payload.email.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            payload.phone_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            payload.npi_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            payload.address.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            payload.notes.as_deref().map(str::trim).filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -1582,6 +1592,11 @@ struct AppCreateProviderForm {
     provider_name: String,
     provider_title: String,
     referral_source: String,
+    email: Option<String>,
+    phone_number: Option<String>,
+    npi_number: Option<String>,
+    address: Option<String>,
+    notes: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1619,13 +1634,14 @@ struct StudyWorkbenchQuery {
     template_id: Option<String>,
     submission_id: Option<String>,
     notice: Option<String>,
+    error: Option<String>,
     view: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct StudyCreateForm {
     admin_email: String,
-    organization_id: String,
+    organization_hex: String,
     study_name: String,
     therapeutic_area: String,
     protocol_code: String,
@@ -2321,7 +2337,7 @@ async fn render_app_dashboard(
   </div>
 
   <div style="border-top:1px solid #edf2f7; padding-top:0.75rem; margin-top:0.75rem; display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:#718096;">
-    <span>Hex: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code></span>
+    <span>ID: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code></span>
     <span>Parent: <span style="font-style:italic;">{}</span></span>
   </div>
 </a>"#,
@@ -2409,7 +2425,7 @@ async fn render_app_dashboard(
       <a href="/ui/app?admin_email={}{}&project_id={}" style="{}">{}</a>
     </h4>
     <div style="font-size:0.8rem; color:#718096; margin-bottom:0.5rem;">
-      Area: <strong>{}</strong> · Hex: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code>
+      Area: <strong>{}</strong> · ID: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code>
     </div>
   </div>
 
@@ -2568,7 +2584,7 @@ async fn render_app_dashboard(
       {}
       <div>
         <h4 style="margin:0; font-size:1.1rem; font-weight:700; color:#02182b;">{}</h4>
-        <small style="color:#718096; font-size:0.75rem;">PI: <strong>{}</strong> · Hex: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.25rem; border-radius:3px; font-weight:bold;">{}</code> · ID: <code style="font-size:0.7rem;">{}</code></small>
+        <small style="color:#718096; font-size:0.75rem;">PI: <strong>{}</strong> · ID: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.25rem; border-radius:3px; font-weight:bold;">{}</code> · UUID: <code style="font-size:0.7rem;">{}</code></small>
       </div>
     </div>
     <div>
@@ -2831,7 +2847,9 @@ async fn render_app_dashboard(
     <tr style="background:#02182b; color:white; text-align:left;">
       <th style="padding:0.75rem 1rem;">Provider Name</th>
       <th style="padding:0.75rem 1rem;">Title / Specialty</th>
-      <th style="padding:0.75rem 1rem;">Cryptographic Hex Block</th>
+      <th style="padding:0.75rem 1rem;">Email</th>
+      <th style="padding:0.75rem 1rem;">Phone</th>
+      <th style="padding:0.75rem 1rem;">ID</th>
     </tr>
   </thead>
   <tbody>"#);
@@ -2866,11 +2884,15 @@ async fn render_app_dashboard(
         </div>
       </td>
       <td style="padding:0.75rem 1rem; color:#4a5568;">{}</td>
+      <td style="padding:0.75rem 1rem; color:#4a5568;">{}</td>
+      <td style="padding:0.75rem 1rem; color:#4a5568;">{}</td>
       <td style="padding:0.75rem 1rem;"><code style="background:#e7e5da; color:#02182b; padding:0.2rem 0.4rem; border-radius:4px; font-weight:bold;">{}</code></td>
     </tr>"#,
                 logo_svg,
                 html_escape(&provider.name),
                 html_escape(&provider.title),
+                html_escape(provider.email.as_deref().unwrap_or("-")),
+                html_escape(provider.phone_number.as_deref().unwrap_or("-")),
                 html_escape(&provider.hex_code)
             ));
         }
@@ -2885,7 +2907,7 @@ async fn render_app_dashboard(
         html.push_str(r#"<table style="width:100%; border-collapse:collapse; margin-top:0.5rem; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
   <thead>
     <tr style="background:#02182b; color:white; text-align:left;">
-      <th style="padding:0.75rem 1rem;">Range-Aware Encounter Hex</th>
+      <th style="padding:0.75rem 1rem;">Encounter ID</th>
       <th style="padding:0.75rem 1rem;">Encounter Type</th>
       <th style="padding:0.75rem 1rem;">Associated Provider ID</th>
       <th style="padding:0.75rem 1rem;">Clinical Notes</th>
@@ -3069,7 +3091,7 @@ async fn render_app_dashboard(
     );
 
     let panel_content = match view {
-        "projects" => format!(
+        "orgs" => format!(
             r#"<section class="card">
   <h2>1) Organizations</h2>
   <p style="color:#718096; margin-bottom:1rem; font-size:0.9rem;">
@@ -3110,9 +3132,13 @@ async fn render_app_dashboard(
       <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Organization</button>
     </form>
   </dialog>
-</section>
-
-<section class="card" style="margin-top: 1rem;">
+</section>"#,
+            organizations_html,
+            html_escape(admin_email.trim()),
+            selected_org_value.clone()
+        ),
+        "projects" => format!(
+            r#"<section class="card">
   <h2>2) Project Setup</h2>
   <p style="color:#718096; margin-bottom:1rem; font-size:0.9rem;">
     Project Setup configures an individual clinical trial, medical study, or registry under the umbrella of a specific organization.
@@ -3131,9 +3157,6 @@ async fn render_app_dashboard(
   <h3 style="margin-top:1.5rem; color:#02182b;">Projects</h3>
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">{}</div>
 </section>"#,
-            organizations_html,
-            html_escape(admin_email.trim()),
-            selected_org_value.clone(),
             html_escape(admin_email.trim()),
             selected_org_value.clone(),
             projects_html
@@ -3264,7 +3287,7 @@ async fn render_app_dashboard(
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Date of birth (optional, YYYY-MM-DD)</label>
       <input name="date_of_birth" placeholder="1980-01-01" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
       
-      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Patient + Cascading Hex ID</button>
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Patient + ID</button>
     </form>
   </dialog>
 </section>"#,
@@ -3279,12 +3302,12 @@ async fn render_app_dashboard(
         ),
         "providers" => format!(
             r##"<section class="card">
-  <h2>5) Providers + Encounters</h2>
+  <h2>5) Providers</h2>
   <p style="color:#718096; margin-bottom:1.5rem; font-size:0.9rem;">
-    Register medical providers and log range-aware clinical encounters under cryptographic hex protection.
+    Register medical providers.
   </p>
 
-  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:1.5rem; margin-bottom:2rem;">
+  <div style="display:grid; grid-template-columns: 1fr; gap:1.5rem; margin-bottom:2rem;">
     <!-- Register Provider Card -->
     <div class="dashboard-card" style="padding:1.5rem; min-height:unset; position:relative; overflow:hidden;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
@@ -3298,25 +3321,75 @@ async fn render_app_dashboard(
           <h3 style="margin:0; color:#02182b; font-size:1.1rem; font-weight:700;">Register Provider</h3>
         </div>
       </div>
-      <form method="post" action="/ui/app/create-provider" style="display:flex; flex-direction:column; gap:0.75rem; margin:0;">
-        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
-        <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc;" readonly />
+      <form method="post" action="/ui/app/create-provider" style="display:grid; grid-template-columns: 1fr 1fr; gap:0.75rem 1.5rem; margin:0;">
+        <div style="grid-column: 1 / -1;">
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
+          <input name="admin_email" value="{}" required style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:#f7fafc; box-sizing:border-box;" readonly />
+          <input type="hidden" name="organization_id" value="{}" />
+        </div>
         
-        <input type="hidden" name="organization_id" value="{}" />
+        <div>
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Provider name</label>
+          <input name="provider_name" placeholder="Dr. Jane Doe" required style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box;" />
+        </div>
+        
+        <div>
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Provider title / Specialty</label>
+          <input name="provider_title" placeholder="Cardiology" style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box;" />
+        </div>
 
-        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Provider name</label>
-        <input name="provider_name" placeholder="Dr. Jane Doe" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        <div>
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Email</label>
+          <input name="email" type="email" placeholder="jane@example.com" style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box;" />
+        </div>
         
-        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Provider title / Specialty</label>
-        <input name="provider_title" placeholder="Cardiology" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        <div>
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Phone Number</label>
+          <input name="phone_number" placeholder="(555) 123-4567" style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box;" />
+        </div>
+
+        <div>
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">NPI Number</label>
+          <input name="npi_number" placeholder="1234567890" style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box;" />
+        </div>
         
-        <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Referral source</label>
-        <input name="referral_source" placeholder="External referral network" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        <div>
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Referral source</label>
+          <input name="referral_source" placeholder="External referral network" style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box;" />
+        </div>
         
-        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Register Provider + Hex Block</button>
+        <div style="grid-column: 1 / -1;">
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Address</label>
+          <input name="address" placeholder="123 Medical Plaza" style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box;" />
+        </div>
+
+        <div style="grid-column: 1 / -1;">
+          <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Notes</label>
+          <textarea name="notes" placeholder="Additional details..." rows="2" style="width:100%; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; box-sizing:border-box; font-family:inherit; resize:vertical;"></textarea>
+        </div>
+        
+        <div style="grid-column: 1 / -1; margin-top:0.5rem;">
+          <button type="submit" style="width:100%; background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; transition:background 0.2s;">Register Provider + ID</button>
+        </div>
       </form>
     </div>
+  </div>
 
+  <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700; font-size:1.25rem;">Registered Providers</h3>
+  <div style="margin-bottom:2rem;">{}</div>
+</section>"##,
+            html_escape(admin_email.trim()),
+            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+            providers_html
+        ),
+        "encounters" => format!(
+            r##"<section class="card">
+  <h2>Encounters</h2>
+  <p style="color:#718096; margin-bottom:1.5rem; font-size:0.9rem;">
+    Log clinical encounters.
+  </p>
+
+  <div style="display:grid; grid-template-columns: 1fr; gap:1.5rem; margin-bottom:2rem;">
     <!-- Create Encounter Card -->
     <div class="dashboard-card" style="padding:1.5rem; min-height:unset; position:relative; overflow:hidden;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; border-bottom:1px solid #edf2f7; padding-bottom:0.5rem;">
@@ -3353,21 +3426,16 @@ async fn render_app_dashboard(
         <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Notes (optional)</label>
         <input name="notes" placeholder="Encounter notes" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
         
-        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Create Encounter + Range-Aware Hex</button>
+        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Create Encounter + ID</button>
       </form>
     </div>
   </div>
 
-  <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700; font-size:1.25rem;">Registered Providers</h3>
-  <div style="margin-bottom:2rem;">{}</div>
   <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700; font-size:1.25rem;">Encounters for Selected Patient</h3>
   <div>{}</div>
 </section>"##,
             html_escape(admin_email.trim()),
-            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
-            html_escape(admin_email.trim()),
             selected_patient_value,
-            providers_html,
             encounters_html
         ),
         "analytics" => format!(
@@ -3648,8 +3716,11 @@ window.addEventListener('click', () => {{
     </a>
 
     <div class="sidebar-section-label">Clinical</div>
+    <a class="sidebar-item {active_orgs}" href="?view=orgs&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">🏢</span> Organizations
+    </a>
     <a class="sidebar-item {active_projects}" href="?view=projects&admin_email={admin}&organization_id={org}">
-      <span class="sidebar-icon">🔬</span> Organizations &amp; Studies
+      <span class="sidebar-icon">🔬</span> Studies
     </a>
     <a class="sidebar-item {active_sites}" href="?view=sites&admin_email={admin}&organization_id={org}">
       <span class="sidebar-icon">🏥</span> Sites
@@ -3658,7 +3729,10 @@ window.addEventListener('click', () => {{
       <span class="sidebar-icon">👤</span> Patients
     </a>
     <a class="sidebar-item {active_providers}" href="?view=providers&admin_email={admin}&organization_id={org}">
-      <span class="sidebar-icon">🩺</span> Providers &amp; Encounters
+      <span class="sidebar-icon">🩺</span> Providers
+    </a>
+    <a class="sidebar-item {active_encounters}" href="?view=encounters&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">📝</span> Encounters
     </a>
 
     <div class="sidebar-section-label">Research</div>
@@ -3698,10 +3772,12 @@ window.addEventListener('click', () => {{
         current_view = html_escape(view),
         active_overview = is_active("overview"),
         active_analytics = is_active("analytics"),
+        active_orgs = is_active("orgs"),
         active_projects = is_active("projects"),
         active_sites = is_active("sites"),
         active_patients = is_active("patients"),
         active_providers = is_active("providers"),
+        active_encounters = is_active("encounters"),
         active_media = is_active("media"),
         active_legal = is_active("legal"),
         admin_display = html_escape(admin_email.trim()),
@@ -4074,7 +4150,7 @@ async fn submit_app_create_patient(
         project.organization_id,
         project.id,
         patient.id,
-        query_escape("Patient created with cascading hex identifier")
+        query_escape("Patient created successfully")
     )))
 }
 
@@ -4104,6 +4180,11 @@ async fn submit_app_create_provider(
             form.provider_name.trim(),
             form.provider_title.trim(),
             form.referral_source.trim(),
+            form.email.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            form.phone_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            form.npi_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            form.address.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            form.notes.as_deref().map(str::trim).filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -4111,7 +4192,7 @@ async fn submit_app_create_provider(
         "/ui/app?admin_email={}&organization_id={}&notice={}",
         query_escape(form.admin_email.trim()),
         organization_id,
-        query_escape("Provider created with reserved hex block")
+        query_escape("Provider created successfully")
     )))
 }
 
@@ -4156,7 +4237,7 @@ async fn submit_app_create_encounter(
         patient.organization_id,
         patient.project_id,
         patient.id,
-        query_escape("Encounter created with range-based hex identifier")
+        query_escape("Encounter created successfully")
     )))
 }
 
@@ -4406,6 +4487,10 @@ async fn render_study_workbench(
         .notice
         .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
         .unwrap_or_default();
+    let error_html = query
+        .error
+        .map(|error| format!(r#"<p class="error" style="background:#fff5f5; border:1px solid #fc8181; color:#c53030; border-radius:8px; padding:1rem; margin-bottom:1rem;"><strong>Error:</strong> {}</p>"#, html_escape(error.trim())))
+        .unwrap_or_default();
     let selected_org_q = selected_org_id
         .map(|org_id| format!("&organization_id={org_id}"))
         .unwrap_or_default();
@@ -4465,7 +4550,7 @@ async fn render_study_workbench(
                     .map(|org_id| format!("&organization_id={org_id}"))
                     .unwrap_or_default();
                 format!(
-                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&view=overview">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
+                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&view=overview">{}</a> <small>(phase: {} · ID: {} · target: {})</small></li>"#,
                     admin_email_q,
                     selected_org,
                     project.id,
@@ -5469,8 +5554,8 @@ async fn render_study_workbench(
       <input name="admin_email" value="{}" placeholder="name@example.com" required style="width:100%;" />
     </label>
     <label class="field-card" style="display:block; cursor:text;">
-      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Organization ID</div>
-      <input name="organization_id" value="{}" placeholder="00000000-0000-0000-0000-000000000000" required style="width:100%;" />
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Organization ID Code</div>
+      <input name="organization_hex" placeholder="e.g. ABC" required style="width:100%;" />
     </label>
     <label class="field-card" style="display:block; cursor:text;">
       <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Study name</div>
@@ -5502,7 +5587,6 @@ async fn render_study_workbench(
   <ul>{}</ul>
 </section>"#,
             html_escape(admin_email.trim()),
-            selected_org_value.clone(),
             study_rows_html
         ),
         "lifecycle" => format!(
@@ -5878,6 +5962,7 @@ async fn render_study_workbench(
     <h1>Study Dashboard</h1>
     <p class="muted" style="margin-top:0.25rem;">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
   </div>
+  {error_html}
   {notice_html}
   {panel_content}
 </div>
@@ -5889,6 +5974,7 @@ async fn render_study_workbench(
 <datalist id="study-submission-options">{submission_options_html}</datalist>
 "#,
         tab_bar = tab_bar,
+        error_html = error_html,
         notice_html = notice_html,
         panel_content = panel_content,
         patient_options_html = patient_options_html,
@@ -5904,19 +5990,43 @@ async fn submit_create_study_from_ui(
     State(ctx): State<AppContext>,
     Form(form): Form<StudyCreateForm>,
 ) -> Result<Redirect, ApiError> {
-    let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
+    let admin_email_q = query_escape(form.admin_email.trim());
+    let organization_id = match ctx
+        .db
+        .get_organization_id_by_hex(form.organization_hex.trim())
+        .await
+    {
+        Ok(id) => id,
+        Err(_) => {
+            return Ok(Redirect::to(&format!(
+                "/ui/studies?admin_email={}&error={}",
+                admin_email_q,
+                query_escape(&format!(
+                    "Invalid Organization ID Code: '{}' not found.",
+                    form.organization_hex.trim()
+                ))
+            )));
+        }
+    };
+    
     let allowed = ctx
         .db
         .email_has_org_manager_role(form.admin_email.trim(), organization_id)
         .await
         .map_err(ApiError::internal)?;
     if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&error={}",
+            admin_email_q,
+            query_escape("You do not have manager access to this organization.")
         )));
     }
     if form.study_name.trim().is_empty() {
-        return Err(ApiError::Validation("study_name is required".to_string()));
+        return Ok(Redirect::to(&format!(
+            "/ui/studies?admin_email={}&error={}",
+            admin_email_q,
+            query_escape("Study name is required.")
+        )));
     }
     let planned_enrollment = form
         .planned_enrollment

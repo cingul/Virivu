@@ -67,6 +67,11 @@ pub struct Provider {
     pub title: String,
     pub referral_source: String,
     pub hex_code: String,
+    pub email: Option<String>,
+    pub phone_number: Option<String>,
+    pub npi_number: Option<String>,
+    pub address: Option<String>,
+    pub notes: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

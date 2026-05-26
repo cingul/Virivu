@@ -221,6 +221,74 @@ impl Db {
             .collect())
     }
 
+    pub async fn get_organization_id_by_hex(
+        &self,
+        hex_code: &str,
+    ) -> anyhow::Result<Uuid> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT id FROM organizations WHERE hex_code = $1",
+                &[&hex_code.to_uppercase()],
+            )
+            .await?;
+        match row {
+            Some(r) => Ok(r.get("id")),
+            None => Err(anyhow::anyhow!("organization not found with hex code: {}", hex_code)),
+        }
+    }
+
+    pub async fn get_project_id_by_hex(
+        &self,
+        hex_code: &str,
+    ) -> anyhow::Result<Uuid> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT id FROM projects WHERE hex_code = $1",
+                &[&hex_code.to_uppercase()],
+            )
+            .await?;
+        match row {
+            Some(r) => Ok(r.get("id")),
+            None => Err(anyhow::anyhow!("project not found with hex code: {}", hex_code)),
+        }
+    }
+
+    pub async fn get_site_id_by_hex(
+        &self,
+        hex_code: &str,
+    ) -> anyhow::Result<Uuid> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT id FROM sites WHERE hex_code = $1",
+                &[&hex_code.to_uppercase()],
+            )
+            .await?;
+        match row {
+            Some(r) => Ok(r.get("id")),
+            None => Err(anyhow::anyhow!("site not found with hex code: {}", hex_code)),
+        }
+    }
+
+    pub async fn get_patient_id_by_hex(
+        &self,
+        hex_code: &str,
+    ) -> anyhow::Result<Uuid> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                "SELECT id FROM patients WHERE hex_code = $1",
+                &[&hex_code.to_uppercase()],
+            )
+            .await?;
+        match row {
+            Some(r) => Ok(r.get("id")),
+            None => Err(anyhow::anyhow!("patient not found with hex code: {}", hex_code)),
+        }
+    }
+
     pub async fn list_sites_by_project(&self, project_id: Uuid) -> anyhow::Result<Vec<Site>> {
         let client = self.pool.get().await?;
         let rows = client
@@ -3252,6 +3320,11 @@ impl Db {
         name: &str,
         title: &str,
         referral_source: &str,
+        email: Option<&str>,
+        phone_number: Option<&str>,
+        npi_number: Option<&str>,
+        address: Option<&str>,
+        notes: Option<&str>,
     ) -> anyhow::Result<Provider> {
         let client = self.pool.get().await?;
         let org_hex = self
@@ -3261,11 +3334,11 @@ impl Db {
         let row = client
             .query_one(
                 r#"
-                INSERT INTO providers (organization_id, name, title, referral_source, hex_code)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING id, organization_id, name, title, referral_source, hex_code, created_at
+                INSERT INTO providers (organization_id, name, title, referral_source, hex_code, email, phone_number, npi_number, address, notes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING id, organization_id, name, title, referral_source, hex_code, email, phone_number, npi_number, address, notes, created_at
                 "#,
-                &[&organization_id, &name, &title, &referral_source, &hex_code],
+                &[&organization_id, &name, &title, &referral_source, &hex_code, &email, &phone_number, &npi_number, &address, &notes],
             )
             .await?;
         Ok(row_to_provider(&row))
@@ -3279,7 +3352,7 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT id, organization_id, name, title, referral_source, hex_code, created_at
+                SELECT id, organization_id, name, title, referral_source, hex_code, email, phone_number, npi_number, address, notes, created_at
                 FROM providers
                 WHERE organization_id = $1
                 ORDER BY created_at DESC
@@ -4643,6 +4716,11 @@ fn row_to_provider(row: &Row) -> Provider {
         title: row.get("title"),
         referral_source: row.get("referral_source"),
         hex_code: row.get("hex_code"),
+        email: row.get("email"),
+        phone_number: row.get("phone_number"),
+        npi_number: row.get("npi_number"),
+        address: row.get("address"),
+        notes: row.get("notes"),
         created_at: row.get("created_at"),
     }
 }
