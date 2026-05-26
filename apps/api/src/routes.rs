@@ -3493,7 +3493,7 @@ async fn render_app_dashboard(
     </div>
 
     <!-- Active Project Card -->
-    <div style="background:white; border-radius:12px; border:1px solid #e2e8f0; padding:1.25rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05); display:flex; flex-direction:column; justify-content:space-between; min-height:140px;">
+    <a href="/ui/studies?admin_email={}&organization_id={}&project_id={}" style="text-decoration:none; background:white; border-radius:12px; border:1px solid #e2e8f0; padding:1.25rem; box-shadow:0 4px 6px -1px rgba(0,0,0,0.05); display:flex; flex-direction:column; justify-content:space-between; min-height:140px; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 12px -2px rgba(0,0,0,0.1)'" onmouseout="this.style.transform='none'; this.style.boxShadow='0 4px 6px -1px rgba(0,0,0,0.05)'">
       <div style="display:flex; justify-content:space-between; align-items:start;">
         <div>{}</div>
         <span style="background:#f05708; color:white; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-transform:uppercase;">Active Project</span>
@@ -3502,7 +3502,7 @@ async fn render_app_dashboard(
         <h4 style="margin:0; font-size:1rem; font-weight:700; color:#2d3748;">Clinical Trial Registry</h4>
         <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#718096; font-weight:600;">{}</p>
       </div>
-    </div>
+    </a>
   </div>
 
   <!-- Child Organizations Card -->
@@ -3524,6 +3524,9 @@ async fn render_app_dashboard(
                 html_escape(admin_val),
                 org_logo,
                 html_escape(&org_val),
+                html_escape(admin_val), // for admin_email in href
+                html_escape(&selected_org_value), // for organization_id in href
+                html_escape(&selected_project_value), // for project_id in href
                 proj_logo,
                 html_escape(&proj_val),
                 child_organizations_html,
@@ -3535,17 +3538,13 @@ async fn render_app_dashboard(
     };
 
     let auto_archive_banner = format!(
-        r#"<div style="background:#edf2f7; border: 1px solid #e2e8f0; padding:1rem; border-radius:6px; margin-bottom:1.5rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
-  <div>
-    <h3 style="margin:0; font-size:1.1rem; color:#2d3748; display:flex; align-items:center; gap:0.5rem;">
-      <span style="background:#3182ce; color:white; padding:0.1rem 0.4rem; border-radius:3px; font-size:0.75rem; font-weight:bold;">SYSTEM AUDIT</span>
-      Clinical Inactivity & Dormancy Audit
-    </h3>
-    <p style="margin:0.25rem 0 0 0; font-size:0.85rem; color:#4a5568;">Scans and transitions clinical sites and studies inactive for 3+ years (1,095 days) to dormant status.</p>
-  </div>
+        r#"<div style="margin: 1rem 0.8rem; padding: 0.75rem; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;">
+  <div style="font-size: 0.65rem; font-weight: 700; color: #f05708; margin-bottom: 0.25rem; letter-spacing: 0.5px; text-transform: uppercase;">System Audit</div>
+  <div style="font-size: 0.8rem; font-weight: 600; color: #fff; margin-bottom: 0.4rem;">Inactivity Scan</div>
+  <p style="font-size: 0.7rem; color: #a0aec0; margin: 0 0 0.75rem 0; line-height: 1.3;">Archives sites/studies inactive 3+ yrs.</p>
   <form method="post" action="/ui/app/auto-archive" style="margin:0;">
     <input type="hidden" name="admin_email" value="{}" />
-    <button type="submit" style="background:#3182ce; color:white; padding:0.5rem 1rem; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">Run Inactivity Scan (3 Year Rule)</button>
+    <button type="submit" style="width: 100%; background: #f05708; color: white; padding: 0.4rem; border: none; border-radius: 4px; font-size: 0.75rem; font-weight: bold; cursor: pointer;">Run Scan</button>
   </form>
 </div>"#,
         html_escape(admin_email.trim())
@@ -3684,6 +3683,8 @@ window.addEventListener('click', () => {{
     </a>
   </nav>
 
+  {auto_archive}
+
   <div class="sidebar-footer">
     <div class="sidebar-user">{admin_display}</div>
   </div>
@@ -3703,7 +3704,8 @@ window.addEventListener('click', () => {{
         active_providers = is_active("providers"),
         active_media = is_active("media"),
         active_legal = is_active("legal"),
-        admin_display = html_escape(admin_email.trim())
+        admin_display = html_escape(admin_email.trim()),
+        auto_archive = auto_archive_banner
     );
 
     let body = format!(
@@ -3719,7 +3721,6 @@ window.addEventListener('click', () => {{
   </div>
   {notice}
   {panel}
-  {auto_archive}
 </div>
 <datalist id="app-organization-options">{org_list}</datalist>
 <datalist id="app-project-options">{proj_list}</datalist>
@@ -3729,7 +3730,6 @@ window.addEventListener('click', () => {{
 "#,
         sidebar = sidebar_html,
         notice = notice_html,
-        auto_archive = auto_archive_banner,
         panel = panel_content,
         org_list = organization_options_html,
         proj_list = project_options_html,
@@ -4417,31 +4417,31 @@ async fn render_study_workbench(
         admin_email_q, selected_org_q, selected_project_q
     );
     let setup_tab_url = format!(
-        "/ui/studies?admin_email={}{}{}&tab=setup",
+        "/ui/studies?admin_email={}{}{}&view=setup",
         admin_email_q, selected_org_q, selected_project_q
     );
     let startup_tab_url = format!(
-        "/ui/studies?admin_email={}{}{}&tab=startup",
+        "/ui/studies?admin_email={}{}{}&view=startup",
         admin_email_q, selected_org_q, selected_project_q
     );
     let templates_tab_url = format!(
-        "/ui/studies?admin_email={}{}{}&tab=crf-templates",
+        "/ui/studies?admin_email={}{}{}&view=crf-templates",
         admin_email_q, selected_org_q, selected_project_q
     );
     let visits_tab_url = format!(
-        "/ui/studies?admin_email={}{}{}&tab=visits",
+        "/ui/studies?admin_email={}{}{}&view=visits",
         admin_email_q, selected_org_q, selected_project_q
     );
     let submissions_tab_url = format!(
-        "/ui/studies?admin_email={}{}{}&tab=submissions",
+        "/ui/studies?admin_email={}{}{}&view=submissions",
         admin_email_q, selected_org_q, selected_project_q
     );
     let queries_tab_url = format!(
-        "/ui/studies?admin_email={}{}{}&tab=queries",
+        "/ui/studies?admin_email={}{}{}&view=queries",
         admin_email_q, selected_org_q, selected_project_q
     );
     let close_tab_url = format!(
-        "/ui/studies?admin_email={}{}{}&tab=close",
+        "/ui/studies?admin_email={}{}{}&view=close",
         admin_email_q, selected_org_q, selected_project_q
     );
     let selected_study_label = selected_project_id
@@ -4465,7 +4465,7 @@ async fn render_study_workbench(
                     .map(|org_id| format!("&organization_id={org_id}"))
                     .unwrap_or_default();
                 format!(
-                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&tab=overview">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
+                    r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&view=overview">{}</a> <small>(phase: {} · hex: {} · target: {})</small></li>"#,
                     admin_email_q,
                     selected_org,
                     project.id,
@@ -4489,16 +4489,46 @@ async fn render_study_workbench(
             })
             .collect::<Vec<_>>();
         if active_studies.is_empty() {
-            "<li>No studies are in initiated/active/monitoring yet.</li>".to_string()
+            r#"<div style="padding:1rem; color:#718096; font-size:0.85rem;">No active studies found.</div>"#.to_string()
         } else {
             active_studies
                 .iter()
                 .map(|project| {
+                    let selected_org = selected_org_id
+                        .map(|org_id| format!("&organization_id={org_id}"))
+                        .unwrap_or_default();
+                    
+                    let name_bytes = project.name.as_bytes();
+                    let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+                    let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+                    let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+                    let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+                    let colors = ["#02182b", "#013a63", "#014f86", "#2a6f97", "#2c7da0"];
+                    let c1 = colors[b1 % 5];
+                    let c2 = colors[b2 % 5];
+                    let c3 = colors[b3 % 5];
+                    let c4 = colors[b4 % 5];
+                    let logo = format!(
+                        r#"<svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
+  <rect x="0" y="0" width="16" height="16" fill="{}" />
+  <rect x="16" y="0" width="16" height="16" fill="{}" />
+  <rect x="0" y="16" width="16" height="16" fill="{}" />
+  <rect x="16" y="16" width="16" height="16" fill="{}" />
+</svg>"#, c1, c2, c3, c4
+                    );
+
                     format!(
-                        r#"<li><a href="/ui/studies?admin_email={}{}&project_id={}&tab=overview">{}</a> <small>(phase: {} · enrollment target: {})</small></li>"#,
+                        r#"<a href="/ui/studies?admin_email={}{}&project_id={}&view=overview" style="text-decoration:none; display:flex; align-items:center; gap:0.75rem; background:white; padding:0.85rem; border-radius:8px; border:1px solid #e2e8f0; margin-bottom:0.5rem; transition:transform 0.15s, box-shadow 0.15s;" onmouseover="this.style.transform='translateY(-1px)'; this.style.boxShadow='0 2px 6px rgba(0,0,0,0.06)'" onmouseout="this.style.transform='none'; this.style.boxShadow='none'">
+  {}
+  <div>
+    <div style="font-size:0.95rem; font-weight:700; color:#2d3748;">{}</div>
+    <div style="font-size:0.75rem; color:#718096; margin-top:0.15rem; text-transform:uppercase; letter-spacing:0.5px;">Phase: {} &middot; Target: {}</div>
+  </div>
+</a>"#,
                         admin_email_q,
-                        selected_org_q,
+                        selected_org,
                         project.id,
+                        logo,
                         html_escape(&project.name),
                         html_escape(&project.lifecycle_phase),
                         project.planned_enrollment
@@ -4548,57 +4578,58 @@ async fn render_study_workbench(
         .count();
     let pending_actions_html = if selected_project_id.is_none() {
         format!(
-            r#"<li>Select an active study from the <a href="{}">Study Setup</a> tab to view targeted next steps.</li>"#,
+            r#"<div style="padding:1rem; color:#718096; font-size:0.85rem;">Select an active study from the <a href="{}" style="color:#2b6cb0; font-weight:600;">Study Setup</a> tab to view targeted next steps.</div>"#,
             setup_tab_url
         )
     } else {
         let mut actions = Vec::new();
+        let action_card_style = "display:flex; flex-direction:column; background:white; padding:0.85rem; border-radius:8px; border:1px solid #e2e8f0; border-left:4px solid #f05708; margin-bottom:0.5rem;";
         if startup_pending_count > 0 {
             actions.push(format!(
-                r#"<li><strong>{}</strong> startup checklist item(s) are incomplete. <a href="{}">Complete startup tasks</a>.</li>"#,
-                startup_pending_count, startup_tab_url
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> startup checklist item(s) are incomplete.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Complete startup tasks &rarr;</a></div>"#,
+                action_card_style, startup_pending_count, startup_tab_url
             ));
         }
         if unpublished_templates_count > 0 {
             actions.push(format!(
-                r#"<li><strong>{}</strong> CRF template(s) are still draft. <a href="{}">Publish templates</a> before broad data capture.</li>"#,
-                unpublished_templates_count, templates_tab_url
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> CRF template(s) are still draft.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Publish templates &rarr;</a></div>"#,
+                action_card_style, unpublished_templates_count, templates_tab_url
             ));
         }
+        let action_card_style = "display:flex; flex-direction:column; background:white; padding:0.85rem; border-radius:8px; border:1px solid #e2e8f0; border-left:4px solid #f05708; margin-bottom:0.5rem;";
         if overdue_visit_count > 0 {
             actions.push(format!(
-                r#"<li><strong>{}</strong> visit(s) appear overdue. <a href="{}">Review visit schedule</a>.</li>"#,
-                overdue_visit_count, visits_tab_url
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> visit(s) appear overdue.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Review visit schedule &rarr;</a></div>"#,
+                action_card_style, overdue_visit_count, visits_tab_url
             ));
         }
         if draft_submission_count > 0 {
             actions.push(format!(
-                r#"<li><strong>{}</strong> CRF submission(s) remain in draft. <a href="{}">Submit or complete drafts</a>.</li>"#,
-                draft_submission_count, submissions_tab_url
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> CRF submission(s) remain in draft.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Submit or complete drafts &rarr;</a></div>"#,
+                action_card_style, draft_submission_count, submissions_tab_url
             ));
         }
         if submitted_unlocked_count > 0 {
             actions.push(format!(
-                r#"<li><strong>{}</strong> submission(s) are submitted but not locked. <a href="{}">Lock finalized submissions</a>.</li>"#,
-                submitted_unlocked_count, submissions_tab_url
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> submission(s) are submitted but not locked.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Lock finalized submissions &rarr;</a></div>"#,
+                action_card_style, submitted_unlocked_count, submissions_tab_url
             ));
         }
         if open_query_count > 0 {
             actions.push(format!(
-                r#"<li><strong>{}</strong> monitor query(ies) are still open. <a href="{}">Respond to queries</a>.</li>"#,
-                open_query_count, queries_tab_url
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> monitor query(ies) are still open.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Respond to queries &rarr;</a></div>"#,
+                action_card_style, open_query_count, queries_tab_url
             ));
         }
         if close_pending_count > 0 {
             actions.push(format!(
-                r#"<li><strong>{}</strong> close checklist item(s) remain. <a href="{}">Prepare close-out</a> when study reaches closure phase.</li>"#,
-                close_pending_count, close_tab_url
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> close checklist item(s) remain.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Prepare close-out &rarr;</a></div>"#,
+                action_card_style, close_pending_count, close_tab_url
             ));
         }
         if actions.is_empty() {
             actions.push(
-                "<li>No blocking actions detected for the selected study right now.</li>"
-                    .to_string(),
+                r#"<div style="padding:1rem; color:#38a169; font-size:0.85rem; font-weight:600;">No blocking actions detected for the selected study right now.</div>"#.to_string(),
             );
         }
         actions.join("")
@@ -5106,17 +5137,23 @@ async fn render_study_workbench(
             .map(|id| format!("/ui/studies/{id}/startup-checklist"))
             .unwrap_or_else(|| "#".to_string());
         format!(
-            r#"<section id="startup-next-task" class="card" style="margin:0.7rem 0;">
-  <h3>Next required task</h3>
-  <p><strong>{}</strong></p>
-  <p class="muted">Complete this task first to unblock study initiation.</p>
-  <form method="post" action="{}" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.5rem;align-items:center;">
+            r#"<section id="startup-next-task" style="margin:1rem 0 2rem; padding:1.25rem; background:linear-gradient(to right, #fff5f0, #fff); border:1px solid #fbd38d; border-radius:12px; box-shadow:0 2px 10px rgba(237,137,54,0.1);">
+  <h3 style="margin:0 0 0.5rem; color:#c05621; font-size:1.1rem; display:flex; align-items:center; gap:0.5rem;">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10"></path></svg>
+    Next required task
+  </h3>
+  <p style="font-size:1.05rem; color:#2d3748; font-weight:700; margin-bottom:0.25rem;">{}</p>
+  <p style="color:#718096; font-size:0.9rem; margin-bottom:1rem;">Complete this task first to unblock study initiation.</p>
+  <form method="post" action="{}" style="display:flex; flex-direction:column; gap:0.5rem; background:white; padding:1rem; border-radius:8px; border:1px solid #e2e8f0; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
     <input type="hidden" name="admin_email" value="{}" />
     <input type="hidden" name="item_code" value="{}" />
     <input type="hidden" name="item_label" value="{}" />
     <input type="hidden" name="completed" value="true" />
-    <input name="notes" value="{}" placeholder="Completion note (optional)" />
-    <button type="submit">Mark complete and continue</button>
+    <input name="notes" value="{}" placeholder="Compliance verification comment (required)" style="padding:0.6rem; border:1px solid #cbd5e0; border-radius:6px; font-size:0.95rem; width:100%; box-sizing:border-box;" required />
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.25rem;">
+      <span style="font-size:0.85rem; color:#718096; display:flex; align-items:center; gap:0.25rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10"></path></svg> Complete</span>
+      <button type="submit" style="background:#dd6b20; color:white; border:none; padding:0.6rem 1rem; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.95rem; box-shadow:0 2px 4px rgba(221,107,32,0.3);">Mark complete and continue &rarr;</button>
+    </div>
   </form>
 </section>"#,
             html_escape(&next_item.item_label),
@@ -5128,9 +5165,9 @@ async fn render_study_workbench(
         )
     } else if selected_project_id.is_some() {
         format!(
-            r#"<p class="notice">Startup checklist is complete. Next: <a href="{}">open Lifecycle tab</a> and transition study phase.</p>"#,
+            r#"<p class="notice" style="background:#e6fffa; border-color:#38b2ac; color:#234e52; border-radius:8px; padding:1rem; margin-top:1rem;"><strong>Startup checklist is complete!</strong><br/>Next step: <a href="{}" style="color:#2c7a7b; font-weight:700;">Open the Lifecycle tab</a> to transition the study phase.</p>"#,
             format!(
-                "/ui/studies?admin_email={}{}{}&tab=lifecycle",
+                "/ui/studies?admin_email={}{}{}&view=lifecycle",
                 admin_email_q, selected_org_q, selected_project_q
             )
         )
@@ -5138,36 +5175,41 @@ async fn render_study_workbench(
         String::new()
     };
     let startup_checklist_html = if startup_checklist_items.is_empty() {
-        "<li>No startup checklist items yet. Add one in the advanced section below.</li>"
-            .to_string()
+        r#"<div style="padding:1rem; color:#718096; font-style:italic;">No startup checklist items yet. Add one in the advanced section below.</div>"#.to_string()
     } else {
         startup_checklist_items
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(index, item)| {
                 let status = if item.completed {
-                    "<span class=\"status-chip\">completed</span>"
+                    "<span style=\"background:#c6f6d5; color:#22543d; padding:0.15rem 0.5rem; border-radius:99px; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;\">completed</span>"
                 } else {
-                    "<span class=\"status-chip\">pending</span>"
+                    "<span style=\"background:#e2e8f0; color:#4a5568; padding:0.15rem 0.5rem; border-radius:99px; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;\">pending</span>"
                 };
                 let notes = if item.notes.trim().is_empty() {
                     String::new()
                 } else {
                     format!(
-                        "<small style=\"display:block;margin:0.25rem 0 0.5rem;\">Notes: {}</small>",
+                        "<div style=\"font-size:0.85rem; color:#718096; margin-top:0.25rem;\">📝 {}</div>",
                         html_escape(&item.notes)
                     )
                 };
+                let opacity = if item.completed { "0.6" } else { "1" };
+                
                 let completion_action = if item.completed {
                     let mark_pending_action = selected_project_id
                         .map(|id| format!("/ui/studies/{id}/startup-checklist"))
                         .unwrap_or_else(|| "#".to_string());
                     format!(
-                        r#"<form method="post" action="{}" style="margin-top:0.45rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.45rem;align-items:center;">
+                        r#"<form method="post" action="{}" style="margin-top:0.75rem; display:flex; flex-direction:column; gap:0.5rem; background:#f7fafc; padding:0.85rem; border-radius:8px; border:1px solid #e2e8f0;">
   <input type="hidden" name="admin_email" value="{}" />
   <input type="hidden" name="item_code" value="{}" />
   <input type="hidden" name="item_label" value="{}" />
-  <input name="notes" value="{}" placeholder="Optional note" />
-  <button type="submit">Undo complete</button>
+  <input name="notes" value="{}" placeholder="Optional note" style="padding:0.5rem; border:1px solid #cbd5e0; border-radius:6px; font-size:0.9rem; width:100%; box-sizing:border-box;" />
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.25rem;">
+    <span style="font-size:0.85rem; color:#48bb78; display:flex; align-items:center; gap:0.25rem; font-weight:600;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10"></path></svg> Completed</span>
+    <button type="submit" style="background:#e2e8f0; color:#4a5568; border:none; padding:0.4rem 0.8rem; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem;">Undo complete</button>
+  </div>
 </form>"#,
                         mark_pending_action,
                         html_escape(admin_email.trim()),
@@ -5180,13 +5222,16 @@ async fn render_study_workbench(
                         .map(|id| format!("/ui/studies/{id}/startup-checklist"))
                         .unwrap_or_else(|| "#".to_string());
                     format!(
-                        r#"<form method="post" action="{}" style="margin-top:0.45rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0.45rem;align-items:center;">
+                        r#"<form method="post" action="{}" style="margin-top:0.75rem; display:flex; flex-direction:column; gap:0.5rem; background:white; padding:0.85rem; border-radius:8px; border:1px solid #e2e8f0;">
   <input type="hidden" name="admin_email" value="{}" />
   <input type="hidden" name="item_code" value="{}" />
   <input type="hidden" name="item_label" value="{}" />
   <input type="hidden" name="completed" value="true" />
-  <input name="notes" value="{}" placeholder="Completion note (optional)" />
-  <button type="submit">Mark complete</button>
+  <input name="notes" value="{}" placeholder="Compliance verification comment (required)" style="padding:0.5rem; border:1px solid #cbd5e0; border-radius:6px; font-size:0.9rem; width:100%; box-sizing:border-box;" required />
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.25rem;">
+    <span style="font-size:0.85rem; color:#718096; display:flex; align-items:center; gap:0.25rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5l10 -10"></path></svg> Complete</span>
+    <button type="submit" style="background:#ed8936; color:white; border:none; padding:0.4rem 0.8rem; border-radius:6px; font-weight:600; cursor:pointer; font-size:0.85rem;">Mark complete</button>
+  </div>
 </form>"#,
                         mark_complete_action,
                         html_escape(admin_email.trim()),
@@ -5195,12 +5240,30 @@ async fn render_study_workbench(
                         html_escape(&item.notes)
                     )
                 };
+
+                let connection = if index < startup_checklist_items.len() - 1 {
+                    r#"<div style="width:2px; height:1rem; background:#cbd5e0; margin:0.25rem 0 0.25rem 1.15rem;"></div>"#
+                } else {
+                    ""
+                };
+
                 format!(
-                    "<li><strong>{}</strong> {}{}{} </li>",
+                    r#"<div style="opacity:{}; transition:opacity 0.2s;">
+  <div style="display:flex; align-items:center; gap:0.5rem; font-size:1.05rem; color:#2d3748; font-weight:700;">
+    <div style="width:6px; height:6px; border-radius:50%; background:#2b6cb0;"></div>
+    {} {}
+  </div>
+  <div style="padding-left:1.15rem;">
+    {}
+    {}
+  </div>
+</div>{}"#,
+                    opacity,
                     html_escape(&item.item_label),
                     status,
                     notes,
-                    completion_action
+                    completion_action,
+                    connection
                 )
             })
             .collect::<Vec<_>>()
@@ -5338,7 +5401,7 @@ async fn render_study_workbench(
         })
         .unwrap_or_else(|| format!("/ui/foundation?admin_email={}", html_escape(admin_email.trim())));
 
-    let global_nav = format!(
+    let _global_nav = format!(
         r#"<nav class="global-nav" style="margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; display: flex; gap: 1rem; font-size: 0.9rem;">
   <a href="{}">Foundation</a>
   <a href="/ui/app?admin_email={}&organization_id={}">Org Command Center</a>
@@ -5352,18 +5415,37 @@ async fn render_study_workbench(
     );
 
     let tab_bar = format!(
-        r#"<nav class="tab-bar" style="margin-bottom: 1rem;">
-  <a class="tab-button {}" href="?view=overview&admin_email={}&organization_id={}&project_id={}">Overview</a>
-  <a class="tab-button {}" href="?view=setup&admin_email={}&organization_id={}&project_id={}">Study Setup</a>
-  <a class="tab-button {}" href="?view=lifecycle&admin_email={}&organization_id={}&project_id={}">Lifecycle</a>
-  <a class="tab-button {}" href="?view=crf-templates&admin_email={}&organization_id={}&project_id={}">CRF Templates</a>
-  <a class="tab-button {}" href="?view=crf-fields&admin_email={}&organization_id={}&project_id={}">CRF Fields</a>
-  <a class="tab-button {}" href="?view=visits&admin_email={}&organization_id={}&project_id={}">Visits</a>
-  <a class="tab-button {}" href="?view=submissions&admin_email={}&organization_id={}&project_id={}">Submissions</a>
-  <a class="tab-button {}" href="?view=queries&admin_email={}&organization_id={}&project_id={}">Queries</a>
-  <a class="tab-button {}" href="?view=startup&admin_email={}&organization_id={}&project_id={}">Startup</a>
-  <a class="tab-button {}" href="?view=close&admin_email={}&organization_id={}&project_id={}">Close</a>
-</nav>"#,
+        r#"<aside class="sidebar blur-sidebar">
+  <div class="sidebar-logo">
+    <a href="{}" class="sidebar-brand-link">
+      <div class="sidebar-brand">Virivu Research Cloud</div>
+      <div class="sidebar-brand-sub">Study Workbench</div>
+    </a>
+  </div>
+  
+  <nav class="sidebar-nav" style="padding: 1rem 0.5rem; display: flex; flex-direction: column; gap: 0.25rem;">
+    <div class="sidebar-section-label" style="font-size:0.65rem; font-weight:800; text-transform:uppercase; letter-spacing:1px; margin:0.5rem 0.5rem 0.25rem;">Workspace</div>
+    <a class="sidebar-item {}" href="?view=overview&admin_email={}&organization_id={}&project_id={}">Overview</a>
+    <a class="sidebar-item {}" href="?view=setup&admin_email={}&organization_id={}&project_id={}">Study Setup</a>
+    <a class="sidebar-item {}" href="?view=lifecycle&admin_email={}&organization_id={}&project_id={}">Lifecycle</a>
+    
+    <div class="sidebar-section-label" style="font-size:0.65rem; font-weight:800; text-transform:uppercase; letter-spacing:1px; margin:1rem 0.5rem 0.25rem;">Operations</div>
+    <a class="sidebar-item {}" href="?view=crf-templates&admin_email={}&organization_id={}&project_id={}">CRF Templates</a>
+    <a class="sidebar-item {}" href="?view=crf-fields&admin_email={}&organization_id={}&project_id={}">CRF Fields</a>
+    <a class="sidebar-item {}" href="?view=visits&admin_email={}&organization_id={}&project_id={}">Visits</a>
+    <a class="sidebar-item {}" href="?view=submissions&admin_email={}&organization_id={}&project_id={}">Submissions</a>
+    <a class="sidebar-item {}" href="?view=queries&admin_email={}&organization_id={}&project_id={}">Queries</a>
+    
+    <div class="sidebar-section-label" style="font-size:0.65rem; font-weight:800; text-transform:uppercase; letter-spacing:1px; margin:1rem 0.5rem 0.25rem;">Regulatory</div>
+    <a class="sidebar-item {}" href="?view=startup&admin_email={}&organization_id={}&project_id={}">Startup</a>
+    <a class="sidebar-item {}" href="?view=close&admin_email={}&organization_id={}&project_id={}">Close</a>
+  </nav>
+
+  <div style="margin-top:auto; padding:1.25rem 1rem; border-top:1px solid rgba(197,183,171,0.4);">
+    <a href="{}" style="text-decoration:none; font-size:0.85rem; font-weight:700; display:flex; align-items:center; gap:0.4rem; color:#2b6cb0;">&larr; Command Center</a>
+  </div>
+</aside>"#,
+        app_dashboard_url,
         is_active("overview"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
         is_active("setup"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
         is_active("lifecycle"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
@@ -5374,30 +5456,47 @@ async fn render_study_workbench(
         is_active("queries"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
         is_active("startup"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
         is_active("close"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        app_dashboard_url
     );
 
     let panel_content = match view {
         "setup" => format!(
             r#"<section class="card">
   <h2>1) Create Study (clinicaltrials.gov-style metadata + internal ops)</h2>
-  <form method="post" action="/ui/studies/create">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Organization ID</label>
-    <input name="organization_id" value="{}" required />
-    <label>Study name</label>
-    <input name="study_name" placeholder="Acute Stroke Registry 2026" required />
-    <label>Therapeutic area</label>
-    <input name="therapeutic_area" placeholder="Neurology" required />
-    <label>Protocol code</label>
-    <input name="protocol_code" placeholder="VIR-STR-26-01" />
-    <label>Planned enrollment</label>
-    <input name="planned_enrollment" value="250" />
-    <label>ClinicalTrials.gov ID (optional)</label>
-    <input name="clinicaltrials_gov_id" placeholder="NCT01234567" />
-    <label>Study summary</label>
-    <textarea name="study_summary" placeholder="Primary objective, key endpoints, and operational plan"></textarea>
-    <button type="submit">Create Study in Pre-Study Phase</button>
+  <form class="no-auto-cards" method="post" action="/ui/studies/create" style="display:flex; flex-direction:column; gap:1rem; margin-top:1.5rem;">
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Admin email</div>
+      <input name="admin_email" value="{}" placeholder="name@example.com" required style="width:100%;" />
+    </label>
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Organization ID</div>
+      <input name="organization_id" value="{}" placeholder="00000000-0000-0000-0000-000000000000" required style="width:100%;" />
+    </label>
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Study name</div>
+      <input name="study_name" placeholder="Acute Stroke Registry 2026" required style="width:100%;" />
+    </label>
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Therapeutic area</div>
+      <input name="therapeutic_area" placeholder="Neurology" required style="width:100%;" />
+    </label>
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Protocol code</div>
+      <input name="protocol_code" placeholder="VIR-STR-26-01" style="width:100%;" />
+    </label>
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Planned enrollment</div>
+      <input name="planned_enrollment" value="250" placeholder="e.g. 250" style="width:100%;" />
+    </label>
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">ClinicalTrials.gov ID (optional)</div>
+      <input name="clinicaltrials_gov_id" placeholder="NCT01234567" style="width:100%;" />
+    </label>
+    <label class="field-card" style="display:block; cursor:text;">
+      <div style="font-weight:600; margin-bottom:0.5rem; color:inherit;">Study summary</div>
+      <textarea name="study_summary" placeholder="Primary objective, key endpoints, and operational plan" style="width:100%; height:120px;"></textarea>
+    </label>
+    <button type="submit" style="margin-top:0.5rem; align-self:flex-start; padding:0.75rem 1.5rem; background:#02182B; color:white; border-radius:6px; border:none; font-weight:600; cursor:pointer;">Create Study in Pre-Study Phase</button>
   </form>
   <h3 style="margin-top:1rem;">Study portfolio</h3>
   <ul>{}</ul>
@@ -5692,7 +5791,7 @@ async fn render_study_workbench(
   {}
   {}
   {}
-  <ul>{}</ul>
+  <div style="display:flex; flex-direction:column;">{}</div>
   <details style="margin-top:0.9rem;">
     <summary><strong>Add or edit startup item (advanced)</strong></summary>
     <form method="post" action="{}" style="margin-top:0.6rem;">
@@ -5747,13 +5846,13 @@ async fn render_study_workbench(
   <p><strong>Organization:</strong> {}</p>
   <p><strong>Selected study:</strong> {}</p>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.8rem;margin-top:0.7rem;">
-    <section class="card" style="margin:0;">
-      <h3>Active studies</h3>
-      <ul>{}</ul>
+    <section class="card" style="margin:0; padding:1.25rem;">
+      <h3 style="margin-top:0; margin-bottom:1rem; font-size:1.1rem; color:#02182b;">Active studies</h3>
+      <div style="display:flex; flex-direction:column;">{}</div>
     </section>
-    <section class="card" style="margin:0;">
-      <h3>Pending actions</h3>
-      <ul>{}</ul>
+    <section class="card" style="margin:0; padding:1.25rem;">
+      <h3 style="margin-top:0; margin-bottom:1rem; font-size:1.1rem; color:#02182b;">Pending actions</h3>
+      <div style="display:flex; flex-direction:column;">{}</div>
     </section>
   </div>
   <p style="margin-top:0.8rem;"><a href="{}">Back to unified app dashboard</a></p>
@@ -5773,28 +5872,30 @@ async fn render_study_workbench(
 
     let body = format!(
         r#"
-{}
-<h1>Study Dashboard</h1>
-<p class="muted">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
-{}
-{}
-{}
+{tab_bar}
+<div class="main-with-sidebar">
+  <div style="margin-bottom:1.5rem;">
+    <h1>Study Dashboard</h1>
+    <p class="muted" style="margin-top:0.25rem;">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
+  </div>
+  {notice_html}
+  {panel_content}
+</div>
 
-<datalist id="study-patient-options">{}</datalist>
-<datalist id="study-template-options">{}</datalist>
-<datalist id="study-visit-template-options">{}</datalist>
-<datalist id="study-visit-options">{}</datalist>
-<datalist id="study-submission-options">{}</datalist>
+<datalist id="study-patient-options">{patient_options_html}</datalist>
+<datalist id="study-template-options">{template_options_html}</datalist>
+<datalist id="study-visit-template-options">{visit_template_options_html}</datalist>
+<datalist id="study-visit-options">{visit_options_html}</datalist>
+<datalist id="study-submission-options">{submission_options_html}</datalist>
 "#,
-        global_nav,
-        notice_html,
-        tab_bar,
-        panel_content,
-        patient_options_html,
-        template_options_html,
-        visit_template_options_html,
-        visit_options_html,
-        submission_options_html
+        tab_bar = tab_bar,
+        notice_html = notice_html,
+        panel_content = panel_content,
+        patient_options_html = patient_options_html,
+        template_options_html = template_options_html,
+        visit_template_options_html = visit_template_options_html,
+        visit_options_html = visit_options_html,
+        submission_options_html = submission_options_html
     );
     Ok(Html(render_cingulum_page("Study Dashboard", body)))
 }
@@ -5919,7 +6020,7 @@ async fn perform_study_phase_transition(
         let error_text = err.to_string();
         if let Some(user_notice) = map_study_phase_transition_error_to_notice(&error_text) {
             return Ok(Redirect::to(&format!(
-                "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=lifecycle&notice={}",
+                "/ui/studies?admin_email={}&organization_id={}&project_id={}&view=lifecycle&notice={}",
                 query_escape(form.admin_email.trim()),
                 project.organization_id,
                 project_id,
@@ -5929,7 +6030,7 @@ async fn perform_study_phase_transition(
         return Err(ApiError::internal(err));
     }
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=lifecycle&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&view=lifecycle&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
@@ -6082,7 +6183,7 @@ async fn submit_add_study_crf_field(
         .await
     {
         return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
             query_escape(form.admin_email.trim()),
             project.organization_id,
             project.id,
@@ -6094,7 +6195,7 @@ async fn submit_add_study_crf_field(
         )));
     }
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project.id,
@@ -6132,7 +6233,7 @@ async fn submit_bulk_delete_study_crf_fields(
     }
     if form.confirmation_text.trim() != "DELETE" {
         return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
             query_escape(form.admin_email.trim()),
             project.organization_id,
             project.id,
@@ -6146,7 +6247,7 @@ async fn submit_bulk_delete_study_crf_fields(
         .await
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project.id,
@@ -6187,7 +6288,7 @@ async fn submit_bulk_delete_corrupted_study_crf_fields(
     }
     if form.confirmation_text.trim() != "DELETE CORRUPTED" {
         return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
             query_escape(form.admin_email.trim()),
             project.organization_id,
             project.id,
@@ -6211,7 +6312,7 @@ async fn submit_bulk_delete_corrupted_study_crf_fields(
         .await
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project.id,
@@ -6289,7 +6390,7 @@ async fn submit_import_study_crf_fields_html(
 
     if html_markup.trim().is_empty() && uploaded_file_bytes.is_empty() {
         return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
             query_escape(admin_email.trim()),
             project.organization_id,
             project.id,
@@ -6322,7 +6423,7 @@ async fn submit_import_study_crf_fields_html(
     };
     if let Some(error_notice) = parse_notice {
         return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
             query_escape(admin_email.trim()),
             project.organization_id,
             project.id,
@@ -6332,7 +6433,7 @@ async fn submit_import_study_crf_fields_html(
     }
     if imported_fields.is_empty() {
         return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
             query_escape(admin_email.trim()),
             project.organization_id,
             project.id,
@@ -6413,7 +6514,7 @@ async fn submit_import_study_crf_fields_html(
     };
 
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
         query_escape(admin_email.trim()),
         project.organization_id,
         project.id,
@@ -6489,7 +6590,7 @@ async fn submit_update_study_crf_field(
         .await
     {
         return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+            "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
             query_escape(form.admin_email.trim()),
             project.organization_id,
             project.id,
@@ -6501,7 +6602,7 @@ async fn submit_update_study_crf_field(
         )));
     }
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&tab=crf-fields&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project.id,
@@ -6822,7 +6923,7 @@ async fn submit_update_study_crf_submission_sdv(
         .await
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&tab=submissions&notice={}",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&view=submissions&notice={}",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project.id,
@@ -7020,7 +7121,7 @@ async fn submit_set_study_startup_checklist_item(
         "Startup task marked pending"
     };
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=startup&notice={}#startup-next-task",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&view=startup&notice={}#startup-next-task",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
@@ -7143,7 +7244,7 @@ async fn submit_set_study_close_checklist_item(
         "Close checklist task marked pending"
     };
     Ok(Redirect::to(&format!(
-        "/ui/studies?admin_email={}&organization_id={}&project_id={}&tab=close&notice={}#close-checklist-panel",
+        "/ui/studies?admin_email={}&organization_id={}&project_id={}&view=close&notice={}#close-checklist-panel",
         query_escape(form.admin_email.trim()),
         project.organization_id,
         project_id,
@@ -10046,6 +10147,7 @@ fn cingulum_theme_css() -> &'static str {
       --cg-orange: #F05708;
       --cg-paper: #FFFDF8;
     }
+    html { scroll-behavior: smooth; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -10061,6 +10163,56 @@ fn cingulum_theme_css() -> &'static str {
     @keyframes page-shift {
       from { background-position: 0% 0%; }
       to { background-position: 100% 8%; }
+    }
+    .field-card {
+      background: #FFFDF8;
+      border: 1px solid #fbd38d;
+      border-left: 4px solid #F05708;
+      padding: 1.25rem;
+      border-radius: 8px;
+      transition: all 0.3s ease;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      position: relative;
+    }
+    .field-card:focus-within {
+      border-color: #F05708;
+      box-shadow: 0 0 0 3px rgba(240, 87, 8, 0.15);
+    }
+    .field-card:has(input:valid:not(:placeholder-shown)),
+    .field-card:has(textarea:valid:not(:placeholder-shown)) {
+      border-color: #bee3f8;
+      border-left-color: #3182ce;
+      background: #ebf8ff;
+      color: #2a4365;
+    }
+    .field-card:has(input:valid:not(:placeholder-shown))::after,
+    .field-card:has(textarea:valid:not(:placeholder-shown))::after {
+      content: '✓ Complete';
+      position: absolute;
+      right: 1.25rem;
+      top: 1.25rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #3182ce;
+    }
+    .field-card input, .field-card textarea, .field-card select {
+      border: 1px solid rgba(47, 88, 120, 0.2) !important;
+      background: #ffffff !important;
+      box-shadow: inset 0 1px 2px rgba(15, 45, 72, 0.05) !important;
+      border-radius: 6px !important;
+      outline: none !important;
+      padding: 0.6rem 0.75rem !important;
+      font-family: Inter, Arial, sans-serif;
+      font-size: 1rem;
+      width: 100% !important;
+      margin-top: 0.25rem;
+      color: var(--cg-navy);
+      resize: none;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .field-card input:focus, .field-card textarea:focus, .field-card select:focus {
+      border-color: #F05708 !important;
+      box-shadow: 0 0 0 3px rgba(240, 87, 8, 0.1) !important;
     }
     .page {
       max-width: 1180px;
@@ -10353,6 +10505,8 @@ fn cingulum_theme_css() -> &'static str {
       background: #ffffff;
       color: var(--cg-navy);
       box-shadow: inset 0 1px 2px rgba(15, 45, 72, 0.08);
+      font-family: inherit;
+      font-size: inherit;
     }
     input[type="checkbox"], input[type="radio"] {
       width: auto;
@@ -10511,6 +10665,22 @@ fn cingulum_theme_css() -> &'static str {
       scrollbar-color: rgba(255,255,255,0.1) transparent;
       box-shadow: 4px 0 20px rgba(2,24,43,0.35);
     }
+    .sidebar.blur-sidebar {
+      background: rgba(245, 242, 235, 0.85);
+      backdrop-filter: blur(16px) saturate(160%);
+      -webkit-backdrop-filter: blur(16px) saturate(160%);
+      border-right: 1px solid rgba(197, 183, 171, 0.6);
+      box-shadow: 4px 0 24px rgba(0,0,0,0.03);
+      color: #30475f;
+    }
+    .blur-sidebar .sidebar-logo { border-bottom: 1px solid rgba(197, 183, 171, 0.4); }
+    .blur-sidebar .sidebar-brand { color: #02182b; }
+    .blur-sidebar .sidebar-brand-sub { color: #718096; }
+    .blur-sidebar .sidebar-item { color: #4a5568; }
+    .blur-sidebar .sidebar-item:hover { background: rgba(0,0,0,0.05); color: #02182b; }
+    .blur-sidebar .sidebar-item.is-active { background: var(--cg-navy); color: #fff; box-shadow: 0 4px 8px rgba(2,24,43,0.15); }
+    .blur-sidebar .sidebar-section-label { color: #8a9ba8; }
+
     .sidebar-logo {
       padding: 1.25rem 1rem 0.75rem;
       border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -10661,8 +10831,7 @@ fn cingulum_theme_css() -> &'static str {
 
     /* ── Main content shifted right for sidebar ─────────────────────────── */
     .main-with-sidebar {
-      margin-left: 240px;
-      padding: 1.5rem 1.5rem 2rem;
+      padding: 1.5rem 0rem 2rem;
       min-height: 100vh;
     }
     .page-title {
@@ -10796,7 +10965,7 @@ fn cingulum_home_css() -> &'static str {
       width: 6px;
     }
     .form-group-card.is-complete::before {
-      background: var(--cg-forest);
+      background: #3182ce;
       opacity: 1;
       width: 6px;
     }
@@ -10814,7 +10983,7 @@ fn cingulum_home_css() -> &'static str {
       color: var(--cg-orange) !important;
     }
     .form-group-card.is-complete label {
-      color: var(--cg-forest) !important;
+      color: #3182ce !important;
     }
     .form-group-card input:not([type="checkbox"]):not([type="radio"]), 
     .form-group-card textarea, 
@@ -10837,8 +11006,8 @@ fn cingulum_home_css() -> &'static str {
       right: 1.15rem;
       font-size: 0.7rem;
       font-weight: 800;
-      color: var(--cg-forest);
-      background: #edfbf1;
+      color: #3182ce;
+      background: #ebf8ff;
       border: 1px solid #c2ebd0;
       padding: 0.15rem 0.45rem;
       border-radius: 4px;
@@ -11070,9 +11239,9 @@ fn cingulum_global_js() -> &'static str {
       // Dynamic Form Card Overhaul Engine
       const overhaulFormsToCards = () => {
         const formControls = document.querySelectorAll(
-          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) input:not([type="submit"]):not([type="button"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), ' +
-          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) textarea, ' +
-          'form:not([style*="display:inline"]):not([style*="display:inline-block"]) select:not(.sidebar-org-picker)'
+          'form:not(.no-auto-cards):not([style*="display:inline"]):not([style*="display:inline-block"]) input:not([type="submit"]):not([type="button"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), ' +
+          'form:not(.no-auto-cards):not([style*="display:inline"]):not([style*="display:inline-block"]) textarea, ' +
+          'form:not(.no-auto-cards):not([style*="display:inline"]):not([style*="display:inline-block"]) select:not(.sidebar-org-picker)'
         );
         
         formControls.forEach((control) => {
