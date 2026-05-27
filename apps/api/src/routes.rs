@@ -7561,6 +7561,12 @@ async fn submit_update_study_crf_submission_sdv(
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
+    if submission.status == "draft" {
+        return Err(ApiError::Validation(
+            "Cannot perform SDV on a draft submission. Submit it first.".to_string(),
+        ));
+    }
+
     ctx.db
         .update_study_crf_submission_sdv_status(submission_id, form.sdv_status.trim())
         .await
