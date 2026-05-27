@@ -5233,6 +5233,13 @@ async fn render_study_workbench(
     } else {
         Vec::new()
     };
+
+    // Patient-entered data signal for operational snapshot
+    let patient_entered_count = submissions
+        .iter()
+        .filter(|s| s.entered_by_user_id.is_none())
+        .count();
+
     let selected_submission_id = query
         .submission_id
         .as_deref()
@@ -6789,6 +6796,7 @@ async fn render_study_workbench(
   <div style="background:#fefce8; border:1px solid #fde047; border-radius:6px; padding:12px 16px; margin-bottom:1rem; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
     <strong style="color:#854d0e;">Operational Snapshot:</strong>
     <span style="background:#fef08c; color:#713f12; padding:2px 8px; border-radius:4px; font-weight:600;">{open_query_count} open queries</span>
+    <span style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_entered_count} patient reports</span>
     <span style="color:#854d0e;">{pending_actions_html}</span>
     <span style="font-size:0.8rem; color:#a16207;">• Lock finalized submissions to freeze answers + generate provenance</span>
   </div>
@@ -6814,7 +6822,8 @@ async fn render_study_workbench(
         visit_template_options_html = visit_template_options_html,
         visit_options_html = visit_options_html,
         submission_options_html = submission_options_html,
-        open_query_count = open_query_count
+        open_query_count = open_query_count,
+        patient_entered_count = patient_entered_count
     );
 
     let script = r#"
