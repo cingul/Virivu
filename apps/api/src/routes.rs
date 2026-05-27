@@ -5438,6 +5438,52 @@ async fn render_study_workbench(
     } else {
         Vec::new()
     };
+
+    // Query aging signals (critical for monitoring backlog)
+    let now = Utc::now();
+    let open_queries = data_queries
+        .iter()
+        .filter(|q| q.status.trim().to_ascii_lowercase() != "closed")
+        .collect::<Vec<_>>();
+
+    let stale_queries_count = open_queries
+        .iter()
+        .filter(|q| (now - q.created_at).num_days() > 30)
+        .count();
+
+    let aging_queries_count = open_queries
+        .iter()
+        .filter(|q| {
+            let age = (now - q.created_at).num_days();
+            age > 7 && age <= 30
+        })
+        .count();
+
+    let patient_related_open_queries = open_queries
+        .iter()
+        .filter(|q| {
+            // Check if the submission this query is on is patient-entered
+            submissions
+                .iter()
+                .any(|s| s.id == q.submission_id && s.entered_by_user_id.is_none())
+        })
+        .count();
+
+    let query_aging_html = {
+        let mut parts = Vec::new();
+        if stale_queries_count > 0 {
+            parts.push(format!(r#"<span style="background:#fed7d7; color:#c53030; padding:2px 8px; border-radius:4px; font-weight:600;">{}</span>"#, stale_queries_count));
+        }
+        if aging_queries_count > 0 {
+            parts.push(format!(r#"<span style="background:#fefcbf; color:#b7791f; padding:2px 8px; border-radius:4px; font-weight:600;">{}</span>"#, aging_queries_count));
+        }
+        if !parts.is_empty() {
+            format!(r#"<span style="font-size:0.8rem;">aging: {}</span>"#, parts.join(" "))
+        } else {
+            "".to_string()
+        }
+    };
+
     let checklist_items = if let Some(project_id) = selected_project_id {
         ctx.db
             .list_study_close_checklist_items(project_id)
@@ -5712,6 +5758,24 @@ async fn render_study_workbench(
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> monitor query(ies) are still open.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Respond to queries &rarr;</a></div>"#,
                 action_card_style, open_query_count, queries_tab_url
+            ));
+        }
+        if stale_queries_count > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#c53030; margin-bottom:0.35rem;"><strong>{}</strong> stale monitor query(ies) (>30 days old).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#c53030; text-decoration:none;">Address stale queries &rarr;</a></div>"#,
+                action_card_style, stale_queries_count, queries_tab_url
+            ));
+        }
+        if aging_queries_count > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#d69e2e; margin-bottom:0.35rem;"><strong>{}</strong> aging monitor query(ies) (7-30 days).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#b7791f; text-decoration:none;">Triage aging queries &rarr;</a></div>"#,
+                action_card_style, aging_queries_count, queries_tab_url
+            ));
+        }
+        if patient_related_open_queries > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2b6cb0; margin-bottom:0.35rem;"><strong>{}</strong> open queries on patient portal submissions.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Review patient queries &rarr;</a></div>"#,
+                action_card_style, patient_related_open_queries, queries_tab_url
             ));
         }
         if close_pending_count > 0 {
@@ -7078,6 +7142,7 @@ async fn render_study_workbench(
   <div style="background:#fefce8; border:1px solid #fde047; border-radius:6px; padding:12px 16px; margin-bottom:1rem; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
     <strong style="color:#854d0e;">Operational Snapshot:</strong>
     <span style="background:#fef08c; color:#713f12; padding:2px 8px; border-radius:4px; font-weight:600;">{open_query_count} open queries</span>
+    {query_aging_html}
     <span style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_entered_count} patient reports</span>
     <span style="background:#fef3c7; color:#854d0e; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_pending_sdv_count} patient reports need SDV</span>
     <span style="color:#854d0e;">{pending_actions_html}</span>
@@ -7107,7 +7172,8 @@ async fn render_study_workbench(
         submission_options_html = submission_options_html,
         open_query_count = open_query_count,
         patient_entered_count = patient_entered_count,
-        patient_pending_sdv_count = patient_pending_sdv_count
+        patient_pending_sdv_count = patient_pending_sdv_count,
+        query_aging_html = query_aging_html
     );
 
     let script = r#"
