@@ -5251,6 +5251,23 @@ async fn render_study_workbench(
         .and_then(|raw| raw.parse::<Uuid>().ok())
         .filter(|sid| submissions.iter().any(|s| s.id == *sid))
         .or_else(|| submissions.first().map(|s| s.id));
+
+    // Rich provenance for selected submission (especially useful for patient-entered data)
+    let selected_submission_display = if let Some(sid) = selected_submission_id {
+        if let Some(sub) = submissions.iter().find(|s| s.id == sid) {
+            let source = if sub.entered_by_user_id.is_none() {
+                " <span style=\"background:#166534;color:white;font-size:0.7rem;padding:1px 6px;border-radius:3px;\">via Patient Portal</span>"
+            } else {
+                ""
+            };
+            format!("{} {}", sub.id, source)
+        } else {
+            "none selected".to_string()
+        }
+    } else {
+        "none selected".to_string()
+    };
+
     let data_queries = if let Some(project_id) = selected_project_id {
         ctx.db
             .list_study_data_queries(project_id)
@@ -6698,11 +6715,7 @@ async fn render_study_workbench(
             create_submission_action,
             html_escape(admin_email.trim()),
             selected_template_hex.clone(),
-            if selected_submission_value.is_empty() {
-                "<span class=\"muted\">none selected</span>".to_string()
-            } else {
-                selected_submission_value.clone()
-            },
+            selected_submission_display,
             submit_submission_action,
             html_escape(admin_email.trim()),
             lock_submission_action,
