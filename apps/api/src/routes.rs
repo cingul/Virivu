@@ -5506,6 +5506,12 @@ async fn render_study_workbench(
                 action_card_style, submitted_unlocked_count, submissions_tab_url
             ));
         }
+        if patient_entered_count > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> new patient portal report(s) to review.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Review patient reports &rarr;</a></div>"#,
+                action_card_style, patient_entered_count, submissions_tab_url
+            ));
+        }
         if open_query_count > 0 {
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> monitor query(ies) are still open.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Respond to queries &rarr;</a></div>"#,
