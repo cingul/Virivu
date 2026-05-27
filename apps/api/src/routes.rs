@@ -3108,8 +3108,11 @@ async fn render_app_dashboard(
             format!("({})", pending_intakes.len())
         };
         format!(
-            r#"<div style="margin-bottom:1rem; padding:8px; background:#fffbeb; border:1px solid #fde047; border-radius:6px;">
-               <div style="font-weight:600; color:#854d0e; margin-bottom:6px;">Pending Intakes from Patient Portal {}</div>
+            r#"<div style="margin-bottom:1.25rem; padding:12px; background:#fefce8; border:2px solid #fde047; border-radius:8px;">
+               <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                 <span style="font-size:1.1rem;">📥</span>
+                 <div style="font-weight:700; color:#854d0e; font-size:0.95rem;">Pending Intakes from Patient Portal {}</div>
+               </div>
                {}
              </div>"#,
             count_str,
@@ -8742,6 +8745,7 @@ async fn submit_dua_send_hospital_link_form(
 
 async fn submit_dua_cingulum_sign_form(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
     Form(form): Form<DuaCingulumSignForm>,
 ) -> Result<Html<String>, ApiError> {
@@ -8751,22 +8755,8 @@ async fn submit_dua_cingulum_sign_form(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), agreement.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks permission for this organization".to_string(),
-        )));
-    }
-    let user_id = ctx
-        .db
-        .get_user_by_email(form.admin_email.trim())
-        .await
-        .map_err(ApiError::internal)?
-        .map(|u| u.id);
+
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
 
     ctx.db
         .sign_data_use_agreement_as_cingulum(
@@ -8777,7 +8767,7 @@ async fn submit_dua_cingulum_sign_form(
             "typed",
             form.signature_text.trim(),
             None,
-            user_id,
+            Some(user.user_id),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -8790,7 +8780,7 @@ async fn submit_dua_cingulum_sign_form(
 </section>
 "#,
         agreement_id,
-        query_escape(form.admin_email.trim())
+        query_escape(user.email.as_str())
     );
     Ok(Html(render_cingulum_page(
         "Cingulum signature recorded",
