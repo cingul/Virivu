@@ -7818,6 +7818,7 @@ async fn submit_set_site_startup_checklist_item(
 
 async fn submit_set_study_close_checklist_item(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(project_id): Path<Uuid>,
     Form(form): Form<StudyChecklistItemForm>,
 ) -> Result<Redirect, ApiError> {
@@ -7827,16 +7828,8 @@ async fn submit_set_study_close_checklist_item(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
     let completed = form.completed.is_some();
     let completed_by_user_id = if completed {
         ctx.db
