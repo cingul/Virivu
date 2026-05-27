@@ -3443,18 +3443,23 @@ async fn render_app_dashboard(
                 );
 
                 format!(
-                    r#"<a href="/ui/app?admin_email={}{}{}&patient_id={}" class="dashboard-card-mini" style="text-decoration:none; color:inherit;">
-  <div>{}</div>
-  <div style="flex-grow:1; min-width:0;">
-    <strong style="color:#02182b; font-size:0.95rem; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-      {}
-    </strong>
-    <span style="font-size:0.75rem; color:#718096; display:block;">
-      ID: <code style="font-size:0.7rem; font-weight:bold;">{}</code>
-      <br/>Site ID: <code style="font-size:0.7rem;">{}</code>
-    </span>
-  </div>
-</a>"#,
+                    r#"<div class="dashboard-card-mini" style="text-decoration:none; color:inherit;">
+  <a href="/ui/app?admin_email={}{}{}&patient_id={}" style="display:flex; text-decoration:none; color:inherit; flex:1;">
+    <div>{}</div>
+    <div style="flex-grow:1; min-width:0;">
+      <strong style="color:#02182b; font-size:0.95rem; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+        {}
+      </strong>
+      <span style="font-size:0.75rem; color:#718096; display:block;">
+        ID: <code style="font-size:0.7rem; font-weight:bold;">{}</code>
+        <br/>Site ID: <code style="font-size:0.7rem;">{}</code>
+      </span>
+    </div>
+  </a>
+  <form method="post" action="/ui/patients/{}/portal-link" style="margin-top:4px; text-align:right;">
+    <button type="submit" style="font-size:0.65rem; padding:2px 8px; background:#166534; color:white; border:none; border-radius:3px; cursor:pointer; font-weight:600;">Portal Link</button>
+  </form>
+</div>"#,
                     admin_email_q,
                     selected_org,
                     selected_project,
@@ -3465,7 +3470,8 @@ async fn render_app_dashboard(
                     patient
                         .site_id
                         .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    patient.id
                 )
             })
             .collect::<Vec<_>>()
