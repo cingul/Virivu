@@ -282,6 +282,15 @@ async fn render_patient_portal_home(
 
     let now = Utc::now();
     let recent_submissions = ctx.db.list_pro_submissions(patient.id).await.unwrap_or_default();
+
+    // Patient's own structured CRF submissions (the visit-linked ones they submit via the advanced form)
+    let my_structured_submissions = if let Ok(all) = ctx.db.list_study_crf_submissions(patient.project_id).await {
+        all.into_iter()
+            .filter(|s| s.patient_id == patient.id && s.entered_by_user_id.is_none())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let recent_html = if recent_submissions.is_empty() {
         "<p style=\"color:#64748b;font-size:0.9rem;\">No prior reports submitted yet.</p>".to_string()
     } else {
@@ -305,6 +314,31 @@ async fn render_patient_portal_home(
                     html_escape(&s.submitted_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "recent".to_string())),
                     age_badge,
                     s.total_score.map(|sc| format!("score {}", sc)).unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let my_structured_html = if my_structured_submissions.is_empty() {
+        "<p style=\"color:#64748b;font-size:0.85rem;margin-top:0.25rem;\">No structured CRF reports submitted yet.</p>".to_string()
+    } else {
+        my_structured_submissions
+            .iter()
+            .take(3)
+            .map(|s| {
+                let (age_days, bucket) = patient_report_age(s.created_at, now);
+                let age_badge = if bucket == "stale" {
+                    format!(r#"<span style="background:#c53030;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;">STALE {}d</span>"#, age_days)
+                } else if bucket == "aging" {
+                    format!(r#"<span style="background:#b7791f;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;">AGING {}d</span>"#, age_days)
+                } else {
+                    format!(r#"<span style="background:#047857;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;">{}d</span>"#, age_days)
+                };
+                format!(
+                    "<li style=\"margin-bottom:4px;\"><strong>Structured CRF</strong> — {} {}</li>",
+                    html_escape(&s.status),
+                    age_badge
                 )
             })
             .collect::<Vec<_>>()
@@ -448,6 +482,9 @@ async fn render_patient_portal_home(
     <h3 style="margin-top:2rem;">Recent Reports</h3>
     <ul style="font-size:0.95rem;line-height:1.5;">{}</ul>
 
+    <h3 style="margin-top:1rem;">Structured CRF Reports</h3>
+    <ul style="font-size:0.9rem;line-height:1.5;">{}</ul>
+
     <div style="margin-top:2rem;padding-top:1rem;border-top:1px solid #e2e8f0;font-size:0.85rem;color:#64748b;">
       Your data is protected and only visible to the authorized study team. <br>
       Questions? Contact your coordinator using the information on your consent form.
@@ -464,7 +501,8 @@ async fn render_patient_portal_home(
         template_options_html,
         rendered_fields_html,
         html_escape(&sample_answers),
-        recent_html
+        recent_html,
+        my_structured_html
     );
 
     Ok(Html(body))
