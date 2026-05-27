@@ -6009,8 +6009,21 @@ async fn render_study_workbench(
                 let selected_project = selected_project_id
                     .map(|project_id| format!("&project_id={project_id}"))
                     .unwrap_or_default();
+                let visit_info = submission.patient_visit_id.and_then(|vid| {
+                    patient_visits.iter().find(|v| v.id == vid).map(|v| {
+                        let date = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "unscheduled".to_string());
+                        format!("visit {} ({})", date, v.status)
+                    })
+                }).unwrap_or_default();
+
+                let visit_text = if !visit_info.is_empty() {
+                    format!(" • {}", visit_info)
+                } else {
+                    String::new()
+                };
+
                 format!(
-                    r#"<li style="margin-bottom:4px;"><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(patient={} status={} SDV={})</small>
+                    r#"<li style="margin-bottom:4px;"><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(patient={} status={} SDV={}{})</small>
                     <form method="post" action="/ui/studies/queries" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="admin_email" value="{}" />
                       <input type="hidden" name="submission_id" value="{}" />
@@ -6033,6 +6046,7 @@ async fn render_study_workbench(
                     submission.patient_id,
                     html_escape(&submission.status),
                     html_escape(&submission.sdv_status),
+                    visit_text,
                     admin_email_q,
                     submission.id,
                     submission.id,
