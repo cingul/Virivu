@@ -5350,20 +5350,30 @@ async fn render_study_workbench(
         .filter(|sid| submissions.iter().any(|s| s.id == *sid))
         .or_else(|| submissions.first().map(|s| s.id));
 
-    // Rich provenance for selected submission (especially useful for patient-entered data)
-    let selected_submission_display = if let Some(sid) = selected_submission_id {
+    // Rich provenance + compact answers preview for selected submission (especially useful for patient-entered data)
+    let (selected_submission_display, answers_preview) = if let Some(sid) = selected_submission_id {
         if let Some(sub) = submissions.iter().find(|s| s.id == sid) {
             let source = if sub.entered_by_user_id.is_none() {
                 " <span style=\"background:#166534;color:white;font-size:0.7rem;padding:1px 6px;border-radius:3px;\">via Patient Portal</span>"
             } else {
                 ""
             };
-            format!("{} {}", sub.id, source)
+
+            let preview = if sub.entered_by_user_id.is_none() {
+                // For patient reports, show a compact view of the answers
+                let compact = sub.answers_json.chars().take(180).collect::<String>();
+                let truncated = if sub.answers_json.len() > 180 { "..." } else { "" };
+                format!("<div style=\"font-size:0.75rem;color:#166534;margin-top:2px;\"><strong>Patient answers:</strong> <code>{}{}</code></div>", html_escape(&compact), truncated)
+            } else {
+                "".to_string()
+            };
+
+            (format!("{} {}", sub.id, source), preview)
         } else {
-            "none selected".to_string()
+            ("none selected".to_string(), "".to_string())
         }
     } else {
-        "none selected".to_string()
+        ("none selected".to_string(), "".to_string())
     };
 
     let data_queries = if let Some(project_id) = selected_project_id {
@@ -6808,6 +6818,7 @@ async fn render_study_workbench(
     <button type="submit">Create CRF Submission (Draft)</button>
   </form>
   <p><strong>Selected submission:</strong> {}</p>
+  {}
   <form method="post" action="{}" style="display:inline-block; margin-right:0.5rem;">
     <input type="hidden" name="admin_email" value="{}" />
     <button type="submit">Mark Submitted</button>
@@ -6838,6 +6849,7 @@ async fn render_study_workbench(
             html_escape(admin_email.trim()),
             selected_template_hex.clone(),
             selected_submission_display,
+            answers_preview,
             submit_submission_action,
             html_escape(admin_email.trim()),
             lock_submission_action,
