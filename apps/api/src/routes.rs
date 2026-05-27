@@ -168,6 +168,9 @@ async fn submit_patient_intake(
     // Falls back gracefully if no match (coordinator will assign later).
 
     let study_code = form.study_code.trim();
+    if study_code.is_empty() || form.email.trim().is_empty() {
+        return Err(ApiError::Validation("Study code and email are required for portal intake.".to_string()));
+    }
 
     // Try to resolve study_code to a project (by protocol_code or name contains)
     let projects = ctx.db.list_all_projects().await.unwrap_or_default();
