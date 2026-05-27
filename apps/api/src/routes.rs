@@ -2973,6 +2973,33 @@ async fn render_app_dashboard(
 
     let now = Utc::now();
 
+    // Lightweight top-level Patient Portal Health summary (reuses the recent_pro_reports we already load)
+    let (recent_portal_stale, recent_portal_aging) = {
+        let mut s = 0usize;
+        let mut a = 0usize;
+        for r in &recent_pro_reports {
+            let (age, bucket) = patient_report_age(r.created_at, now);
+            if bucket == "stale" { s += 1; }
+            else if bucket == "aging" { a += 1; }
+        }
+        (s, a)
+    };
+
+    let portal_health_pills = {
+        let mut parts = Vec::new();
+        if recent_portal_stale > 0 {
+            parts.push(format!(r#"<span style="background:#c53030;color:white;padding:2px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;">{} stale</span>"#, recent_portal_stale));
+        }
+        if recent_portal_aging > 0 {
+            parts.push(format!(r#"<span style="background:#b7791f;color:white;padding:2px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;">{} aging</span>"#, recent_portal_aging));
+        }
+        if parts.is_empty() {
+            r#"<span style="color:#166534;font-size:0.7rem;">all recent</span>"#.to_string()
+        } else {
+            parts.join(" ")
+        }
+    };
+
     // Build a compact "Recent Patient Portal Reports" section for the patients tab
     let recent_pro_reports_html = if recent_pro_reports.is_empty() {
         "<div style=\"font-size:0.85rem;color:#64748b;font-style:italic;margin-top:0.5rem;\">No patient portal reports yet. Generate a portal link for a patient above to enable daily check-ins.</div>".to_string()
@@ -3012,7 +3039,13 @@ async fn render_app_dashboard(
             })
             .collect::<Vec<_>>()
             .join("");
-        format!("<div style=\"margin-top:1rem;\"><strong style=\"font-size:0.9rem;color:#166534;\">Recent Patient Portal Reports</strong>{}</div>", items)
+        format!(
+            "<div style=\"margin-top:1rem;\"><div style=\"display:flex; align-items:baseline; gap:8px; margin-bottom:4px; flex-wrap:wrap;\"><strong style=\"font-size:0.9rem;color:#166534;\">Recent Patient Portal Reports</strong> <span style=\"font-size:0.7rem; color:#475569;\">{} recent</span> <span style=\"margin-left:2px;\">{}</span>{}</div>{}</div>",
+            recent_pro_reports.len(),
+            portal_health_pills,
+            if recent_portal_stale + recent_portal_aging > 0 { format!(r#" <span style="font-size:0.65rem; color:#c53030;">({} at risk)</span>"#, recent_portal_stale + recent_portal_aging) } else { "".to_string() },
+            items
+        )
     };
 
     let providers = if let Some(org_id) = selected_org_id {
