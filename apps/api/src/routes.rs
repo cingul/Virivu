@@ -2971,6 +2971,16 @@ async fn render_app_dashboard(
         .await
         .unwrap_or_default();
 
+    // Lightweight queries load for the selected project (for top-level Queries Health summary)
+    let project_queries = if let Some(project_id) = selected_project_id {
+        ctx.db
+            .list_study_data_queries(project_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let now = Utc::now();
 
     // Per-patient last portal report lookup (from the recent_pro_reports already loaded)
@@ -2998,6 +3008,21 @@ async fn render_app_dashboard(
         (s, a)
     };
 
+    // Queries Health for selected project (symmetric to patient portal health)
+    let (open_queries_count, stale_queries_count, aging_queries_count) = {
+        let open: Vec<_> = project_queries
+            .iter()
+            .filter(|q| q.status.trim().to_ascii_lowercase() != "closed")
+            .collect();
+        let open_count = open.len();
+        let stale = open.iter().filter(|q| (now - q.created_at).num_days() > 30).count();
+        let aging = open.iter().filter(|q| {
+            let d = (now - q.created_at).num_days();
+            d > 7 && d <= 30
+        }).count();
+        (open_count, stale, aging)
+    };
+
     let portal_health_pills = {
         let mut parts = Vec::new();
         if recent_portal_stale > 0 {
@@ -3011,6 +3036,26 @@ async fn render_app_dashboard(
         } else {
             parts.join(" ")
         }
+    };
+
+    let queries_health_html = if let Some(_) = selected_project_id {
+        let mut parts = Vec::new();
+        if open_queries_count > 0 {
+            parts.push(format!(r#"<span style="background:#2b6cb0;color:white;padding:2px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;">{} open</span>"#, open_queries_count));
+        }
+        if stale_queries_count > 0 {
+            parts.push(format!(r#"<span style="background:#c53030;color:white;padding:2px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;">{} stale</span>"#, stale_queries_count));
+        }
+        if aging_queries_count > 0 {
+            parts.push(format!(r#"<span style="background:#b7791f;color:white;padding:2px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;">{} aging</span>"#, aging_queries_count));
+        }
+        if parts.is_empty() {
+            "<span style=\"color:#718096;font-size:0.7rem;\">no open queries</span>".to_string()
+        } else {
+            format!("<span style=\"margin-left:6px;\">{}</span>", parts.join(" "))
+        }
+    } else {
+        String::new()
     };
 
     // Build a compact "Recent Patient Portal Reports" section for the patients tab
@@ -4187,6 +4232,7 @@ async fn render_app_dashboard(
   </div>
   {}
   {}
+  {}
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">
     <div id="add-patient-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('patient-create-modal').showModal()">
       <span style="font-size:2.5rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
@@ -4228,6 +4274,7 @@ async fn render_app_dashboard(
             selected_project_value,
             pending_intakes_html,
             recent_pro_reports_html,
+            if queries_health_html.is_empty() { "".to_string() } else { format!(r#"<div style="margin-top:0.75rem; padding:6px 10px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; font-size:0.82rem;"><strong style="color:#0369a1;">Queries Health</strong> {}</div>"#, queries_health_html) },
             patients_html,
             html_escape(admin_email.trim())
         ),
