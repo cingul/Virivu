@@ -5366,9 +5366,20 @@ async fn render_study_workbench(
             };
 
             let preview = if sub.entered_by_user_id.is_none() {
-                // For patient reports, show a compact view of the answers + visit context
-                let compact = sub.answers_json.chars().take(180).collect::<String>();
-                let truncated = if sub.answers_json.len() > 180 { "..." } else { "" };
+                // For patient reports, show a readable key-value preview of answers + visit context
+                let answers_preview = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&sub.answers_json) {
+                    if let Some(obj) = val.as_object() {
+                        obj.iter().take(4).map(|(k, v)| {
+                            let v_str = if v.is_string() { v.as_str().unwrap_or("").to_string() } else { v.to_string() };
+                            format!("{}: {}", html_escape(k), html_escape(&v_str.chars().take(40).collect::<String>()))
+                        }).collect::<Vec<_>>().join(" | ")
+                    } else {
+                        sub.answers_json.chars().take(120).collect()
+                    }
+                } else {
+                    sub.answers_json.chars().take(120).collect()
+                };
+
                 let visit_info = sub.patient_visit_id.and_then(|vid| {
                     patient_visits.iter().find(|v| v.id == vid).map(|v| {
                         let date = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "unscheduled".to_string());
@@ -5377,8 +5388,8 @@ async fn render_study_workbench(
                 }).unwrap_or_default();
 
                 format!(
-                    "<div style=\"font-size:0.75rem;color:#166534;margin-top:2px;\"><strong>Patient answers:</strong> <code>{}{}</code>{}</div>",
-                    html_escape(&compact), truncated, visit_info
+                    "<div style=\"font-size:0.75rem;color:#166534;margin-top:2px;\"><strong>Patient answers:</strong> <span style=\"font-family:monospace;\">{}</span>{}</div>",
+                    answers_preview, visit_info
                 )
             } else {
                 "".to_string()
