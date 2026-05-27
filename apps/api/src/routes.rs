@@ -7348,6 +7348,7 @@ async fn submit_schedule_patient_visit(
 
 async fn submit_create_study_crf_submission(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(project_id): Path<Uuid>,
     Form(form): Form<StudyCreateSubmissionForm>,
 ) -> Result<Redirect, ApiError> {
@@ -7367,22 +7368,10 @@ async fn submit_create_study_crf_submission(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
-    let entered_by_user_id = ctx
-        .db
-        .get_user_by_email(form.admin_email.trim())
-        .await
-        .map_err(ApiError::internal)?
-        .map(|u| u.id);
+
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+
+    let entered_by_user_id = Some(user.user_id);
     let submission = ctx
         .db
         .create_study_crf_submission(
@@ -7397,7 +7386,7 @@ async fn submit_create_study_crf_submission(
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         project.organization_id,
         project_id,
         submission.id,
