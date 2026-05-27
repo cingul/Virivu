@@ -6462,9 +6462,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async fn submit_create_study_from_ui(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Form(form): Form<StudyCreateForm>,
 ) -> Result<Redirect, ApiError> {
-    let admin_email_q = query_escape(form.admin_email.trim());
     let organization_id = match ctx
         .db
         .get_organization_id_by_hex(form.organization_hex.trim())
@@ -6474,7 +6474,7 @@ async fn submit_create_study_from_ui(
         Err(_) => {
             return Ok(Redirect::to(&format!(
                 "/ui/studies?admin_email={}&error={}",
-                admin_email_q,
+                query_escape(user.email.as_str()),
                 query_escape(&format!(
                     "Invalid Organization ID Code: '{}' not found.",
                     form.organization_hex.trim()
@@ -6483,22 +6483,12 @@ async fn submit_create_study_from_ui(
         }
     };
     
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Ok(Redirect::to(&format!(
-            "/ui/studies?admin_email={}&error={}",
-            admin_email_q,
-            query_escape("You do not have manager access to this organization.")
-        )));
-    }
+    require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
+
     if form.study_name.trim().is_empty() {
         return Ok(Redirect::to(&format!(
             "/ui/studies?admin_email={}&error={}",
-            admin_email_q,
+            query_escape(user.email.as_str()),
             query_escape("Study name is required.")
         )));
     }
@@ -6523,7 +6513,7 @@ async fn submit_create_study_from_ui(
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         organization_id,
         study.id,
         query_escape("Study created in pre_study phase")
@@ -7730,16 +7720,6 @@ async fn submit_set_study_startup_checklist_item(
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
     let completed = form.completed.is_some();
     if completed && form.notes.trim().is_empty() {
         return Err(ApiError::Validation(
@@ -7782,6 +7762,7 @@ async fn submit_set_study_startup_checklist_item(
 
 async fn submit_set_site_startup_checklist_item(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(site_id): Path<Uuid>,
     Form(form): Form<StudyChecklistItemForm>,
 ) -> Result<Redirect, ApiError> {
@@ -7797,16 +7778,8 @@ async fn submit_set_site_startup_checklist_item(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
     let completed = form.completed.is_some();
     if completed && form.notes.trim().is_empty() {
         return Err(ApiError::Validation(
@@ -7814,11 +7787,7 @@ async fn submit_set_site_startup_checklist_item(
         ));
     }
     let completed_by_user_id = if completed {
-        ctx.db
-            .get_user_by_email(form.admin_email.trim())
-            .await
-            .map_err(ApiError::internal)?
-            .map(|u| u.id)
+        Some(user.user_id)
     } else {
         None
     };
@@ -7840,7 +7809,7 @@ async fn submit_set_site_startup_checklist_item(
     };
     Ok(Redirect::to(&format!(
         "/ui/app?admin_email={}&organization_id={}&project_id={}&view=sites&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         project.organization_id,
         project.id,
         query_escape(notice)
