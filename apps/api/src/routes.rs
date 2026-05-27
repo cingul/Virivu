@@ -2976,15 +2976,21 @@ async fn render_app_dashboard(
         let items = recent_pro_reports
             .iter()
             .map(|r| {
-                let symptoms = r.answers.get("symptoms").and_then(|v| v.as_str()).unwrap_or("(no details)");
-                let short = if symptoms.len() > 80 { format!("{}…", &symptoms[..77]) } else { symptoms.to_string() };
+                // Compact preview of the full answers (consistent with patient reports lists elsewhere)
+                let compact_answers = {
+                    let json_str = serde_json::to_string(&r.answers).unwrap_or_else(|_| "{}".to_string());
+                    let compact = json_str.chars().take(120).collect::<String>();
+                    let truncated = if json_str.len() > 120 { "..." } else { "" };
+                    format!("{} {}", compact, truncated)
+                };
+
                 format!(
                     r#"<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:4px;padding:6px 10px;margin-bottom:4px;font-size:0.82rem;">
                         <strong>Patient Report</strong> • {} <span style="color:#166534;">(via portal)</span><br>
-                        <span style="color:#475569;">{}</span> <a href="/ui/app?admin_email={}&patient_id={}" style="color:#166534;font-weight:600;">View patient →</a>
+                        <span style="color:#475569;"><code>{}</code></span> <a href="/ui/app?admin_email={}&patient_id={}" style="color:#166534;font-weight:600;">View patient →</a>
                     </div>"#,
                     html_escape(&r.submitted_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "recent".into())),
-                    html_escape(&short),
+                    html_escape(&compact_answers),
                     admin_email_q,
                     r.patient_id
                 )
