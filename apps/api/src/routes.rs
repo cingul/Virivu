@@ -321,6 +321,17 @@ async fn render_patient_portal_home(
     } else {
         "{\n  \"field_key\": \"value\"\n}".to_string()
     };
+
+    let rendered_fields_html = if let Some(first_template) = available_templates.first() {
+        let fields = ctx.db.list_study_crf_fields(first_template.id).await.unwrap_or_default();
+        if fields.is_empty() {
+            "<p style=\"color:#64748b;font-size:0.8rem;\">No fields defined for this template yet.</p>".to_string()
+        } else {
+            fields.iter().map(|f| render_crf_field_for_data_entry(f, "")).collect::<Vec<_>>().join("")
+        }
+    } else {
+        "<p style=\"color:#64748b;font-size:0.8rem;\">No CRF templates defined for this study yet.</p>".to_string()
+    };
     let visits_html = if scheduled_visits.is_empty() {
         "<p style=\"color:#64748b;font-size:0.9rem;\">No scheduled visits yet. Your coordinator will schedule your first activities soon.</p>".to_string()
     } else {
@@ -412,8 +423,11 @@ async fn render_patient_portal_home(
           <option value="">Use default / first available</option>
           {}
         </select>
-        <p style="font-size:0.8rem;color:#64748b;margin-top:0.25rem;">Selecting a template will create a proper structured CRF submission for the chosen visit. Edit the answers below (keys should match the template fields):</p>
-        <textarea name="answers_json" rows="6" style="width:100%;font-family:monospace;font-size:0.75rem;padding:6px;border:1px solid #cbd5e0;border-radius:4px;">{}</textarea>
+        <p style="font-size:0.8rem;color:#64748b;margin-top:0.25rem;">Selecting a template will create a proper structured CRF submission for the chosen visit. Fill the fields below (or edit the JSON):</p>
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;padding:8px;border-radius:4px;margin-bottom:0.5rem;">
+          {}
+        </div>
+        <textarea name="answers_json" rows="4" style="width:100%;font-family:monospace;font-size:0.75rem;padding:6px;border:1px solid #cbd5e0;border-radius:4px;">{}</textarea>
       </details>
 
       <button type="submit" style="margin-top:1rem;background:#f05708;color:white;padding:0.65rem 1.4rem;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Submit Report to Study Team</button>
@@ -436,6 +450,7 @@ async fn render_patient_portal_home(
         query_escape(token),
         visit_options_html,
         template_options_html,
+        rendered_fields_html,
         html_escape(&sample_answers),
         recent_html
     );
@@ -11045,6 +11060,67 @@ fn generate_sample_answers_json(fields: &[StudyCrfField]) -> String {
         map.insert(field.field_key.clone(), sample);
     }
     serde_json::to_string_pretty(&map).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn render_crf_field_for_data_entry(field: &StudyCrfField, current_value: &str) -> String {
+    let name = format!("field_{}", field.field_key);
+    let required = if field.required { " required" } else { "" };
+    let label = html_escape(&field.field_label);
+    let value_esc = html_escape(current_value);
+
+    match field.field_type.as_str() {
+        "text" => format!(
+            r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="text" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
+            label, if field.required { "*" } else { "" }, name, value_esc, required
+        ),
+        "textarea" => format!(
+            r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><textarea name="{}" rows="3" style="width:100%;padding:6px;"{}>{}</textarea>"#,
+            label, if field.required { "*" } else { "" }, name, required, value_esc
+        ),
+        "number" => format!(
+            r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="number" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
+            label, if field.required { "*" } else { "" }, name, value_esc, required
+        ),
+        "date" => format!(
+            r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="date" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
+            label, if field.required { "*" } else { "" }, name, value_esc, required
+        ),
+        "boolean" => {
+            let checked = if current_value == "true" || current_value == "1" { " checked" } else { "" };
+            format!(
+                r#"<label style="display:block;margin-top:0.5rem;"><input type="checkbox" name="{}" value="true"{} {} /> {}</label>"#,
+                name, checked, required, label
+            )
+        }
+        "single_select" => {
+            let mut opts = String::new();
+            if let Ok(items) = serde_json::from_str::<Vec<String>>(&field.options_json) {
+                for item in items {
+                    let sel = if item == current_value { " selected" } else { "" };
+                    opts.push_str(&format!(r#"<option value="{}"{}>{}</option>"#, html_escape(&item), sel, html_escape(&item)));
+                }
+            }
+            format!(
+                r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><select name="{}" style="width:100%;padding:6px;"{}>{}</select>"#,
+                label, if field.required { "*" } else { "" }, name, required, opts
+            )
+        }
+        "multi_select" => {
+            let mut opts = String::new();
+            let selected: Vec<&str> = current_value.split(',').collect();
+            if let Ok(items) = serde_json::from_str::<Vec<String>>(&field.options_json) {
+                for item in items {
+                    let sel = if selected.contains(&item.as_str()) { " checked" } else { "" };
+                    opts.push_str(&format!(r#"<label style="display:block;"><input type="checkbox" name="{}[]" value="{}"{} /> {}</label>"#, name, html_escape(&item), sel, html_escape(&item)));
+                }
+            }
+            format!(r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><div style="padding-left:4px;">{}</div>"#, label, if field.required { "*" } else { "" }, opts)
+        }
+        _ => format!(
+            r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="text" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
+            label, if field.required { "*" } else { "" }, name, value_esc, required
+        ),
+    }
 }
 
 fn render_crf_field_type_options(selected_type: &str) -> String {
