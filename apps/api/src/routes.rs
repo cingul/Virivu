@@ -5359,6 +5359,36 @@ async fn render_study_workbench(
         .filter(|s| s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending")
         .count();
 
+    // Patient report aging (parallel to query aging)
+    let now = Utc::now();
+    let patient_stale_count = submissions
+        .iter()
+        .filter(|s| s.entered_by_user_id.is_none() && (now - s.created_at).num_days() > 30)
+        .count();
+
+    let patient_aging_count = submissions
+        .iter()
+        .filter(|s| {
+            let age = (now - s.created_at).num_days();
+            s.entered_by_user_id.is_none() && age > 7 && age <= 30
+        })
+        .count();
+
+    let patient_aging_html = {
+        let mut parts = Vec::new();
+        if patient_stale_count > 0 {
+            parts.push(format!(r#"<span style="background:#fed7d7; color:#c53030; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">{}</span>"#, patient_stale_count));
+        }
+        if patient_aging_count > 0 {
+            parts.push(format!(r#"<span style="background:#fefcbf; color:#b7791f; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">{}</span>"#, patient_aging_count));
+        }
+        if !parts.is_empty() {
+            format!(r#"<span style="font-size:0.75rem;">patient aging: {}</span>"#, parts.join(" "))
+        } else {
+            "".to_string()
+        }
+    };
+
     let selected_submission_id = query
         .submission_id
         .as_deref()
@@ -5752,6 +5782,18 @@ async fn render_study_workbench(
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> patient portal submission(s) are submitted but not locked.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Lock patient submissions &rarr;</a></div>"#,
                 action_card_style, patient_submitted_unlocked_count, submissions_tab_url
+            ));
+        }
+        if patient_stale_count > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#c53030; margin-bottom:0.35rem;"><strong>{}</strong> stale patient portal report(s) (>30 days old).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#c53030; text-decoration:none;">Review stale patient data &rarr;</a></div>"#,
+                action_card_style, patient_stale_count, submissions_tab_url
+            ));
+        }
+        if patient_aging_count > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#d69e2e; margin-bottom:0.35rem;"><strong>{}</strong> aging patient portal report(s) (7-30 days).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#b7791f; text-decoration:none;">Triage aging patient data &rarr;</a></div>"#,
+                action_card_style, patient_aging_count, submissions_tab_url
             ));
         }
         if open_query_count > 0 {
@@ -7145,6 +7187,7 @@ async fn render_study_workbench(
     {query_aging_html}
     <span style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_entered_count} patient reports</span>
     <span style="background:#fef3c7; color:#854d0e; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_pending_sdv_count} patient reports need SDV</span>
+    {patient_aging_html}
     <span style="color:#854d0e;">{pending_actions_html}</span>
     <span style="font-size:0.8rem; color:#a16207;">• Lock finalized submissions to freeze answers + generate provenance</span>
   </div>
@@ -7173,7 +7216,8 @@ async fn render_study_workbench(
         open_query_count = open_query_count,
         patient_entered_count = patient_entered_count,
         patient_pending_sdv_count = patient_pending_sdv_count,
-        query_aging_html = query_aging_html
+        query_aging_html = query_aging_html,
+        patient_aging_html = patient_aging_html
     );
 
     let script = r#"
