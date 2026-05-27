@@ -4565,6 +4565,7 @@ async fn submit_app_create_provider(
 
 async fn submit_app_create_encounter(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Form(form): Form<AppCreateEncounterForm>,
 ) -> Result<Redirect, ApiError> {
     let patient_id = parse_uuid_field(&form.patient_id, "patient_id")?;
@@ -4574,16 +4575,8 @@ async fn submit_app_create_encounter(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("patient not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), patient.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, patient.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
     let provider_id = if form.provider_id.trim().is_empty() {
         None
     } else {
@@ -4612,7 +4605,7 @@ async fn submit_app_create_encounter(
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
         "/ui/app?admin_email={}&organization_id={}&project_id={}&patient_id={}&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         patient.organization_id,
         patient.project_id,
         patient.id,
