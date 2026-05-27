@@ -5872,7 +5872,7 @@ async fn render_study_workbench(
                     .map(|project_id| format!("&project_id={project_id}"))
                     .unwrap_or_default();
                 let source_badge = if submission.entered_by_user_id.is_none() {
-                    " <span style=\"background:#166534;color:white;font-size:0.65rem;padding:1px 5px;border-radius:3px;\">patient</span>"
+                    " <span style=\"background:#166534;color:white;font-size:0.65rem;padding:1px 5px;border-radius:3px;\">patient portal</span>"
                 } else {
                     ""
                 };
