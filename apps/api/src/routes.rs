@@ -2300,6 +2300,7 @@ struct StudyWorkbenchQuery {
     error: Option<String>,
     view: Option<String>,
     patient_report_age: Option<String>, // "stale" | "aging" | "all" (or absent) to filter the Patient Reports (via portal) list
+    query_age: Option<String>,          // "stale" | "aging" | "all" — mirrors patient_report_age for monitor query filtering
 }
 
 #[derive(Debug, Deserialize)]
@@ -5622,12 +5623,15 @@ async fn render_study_workbench(
     );
     // Actionable filters for the patient reports list (wired from Recommended Next Steps cards)
     let patient_age_filter = query.patient_report_age.as_deref().unwrap_or("all").to_string();
+    let query_age_filter = query.query_age.as_deref().unwrap_or("all").to_string();
     let stale_patients_url = format!("{}&patient_report_age=stale", submissions_tab_url);
     let aging_patients_url = format!("{}&patient_report_age=aging", submissions_tab_url);
     let queries_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=queries",
         admin_email_q, selected_org_q, selected_project_q
     );
+    let stale_queries_url = format!("{}&query_age=stale", queries_tab_url);
+    let aging_queries_url = format!("{}&query_age=aging", queries_tab_url);
     let close_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=close",
         admin_email_q, selected_org_q, selected_project_q
@@ -5881,13 +5885,13 @@ async fn render_study_workbench(
         if stale_queries_count > 0 {
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#c53030; margin-bottom:0.35rem;"><strong>{}</strong> stale monitor query(ies) (>30 days old).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#c53030; text-decoration:none;">Address stale queries &rarr;</a></div>"#,
-                action_card_style, stale_queries_count, queries_tab_url
+                action_card_style, stale_queries_count, stale_queries_url
             ));
         }
         if aging_queries_count > 0 {
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#d69e2e; margin-bottom:0.35rem;"><strong>{}</strong> aging monitor query(ies) (7-30 days).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#b7791f; text-decoration:none;">Triage aging queries &rarr;</a></div>"#,
-                action_card_style, aging_queries_count, queries_tab_url
+                action_card_style, aging_queries_count, aging_queries_url
             ));
         }
         if patient_related_open_queries > 0 {
@@ -6398,10 +6402,25 @@ async fn render_study_workbench(
             .join("")
     };
 
-    let data_queries_html = if data_queries.is_empty() {
-        "<li>No monitor queries yet.</li>".to_string()
+    // Apply query_age filter (from Recommended Next Steps) for actionable triage, same pattern as patient reports.
+    let mut filtered_queries: Vec<_> = data_queries.iter().collect();
+    if query_age_filter == "stale" {
+        filtered_queries.retain(|q| (now - q.created_at).num_days() > 30);
+    } else if query_age_filter == "aging" {
+        filtered_queries.retain(|q| {
+            let age = (now - q.created_at).num_days();
+            age > 7 && age <= 30
+        });
+    }
+
+    let data_queries_html = if filtered_queries.is_empty() {
+        if query_age_filter == "stale" || query_age_filter == "aging" {
+            format!("<li style=\"color:#64748b;font-size:0.85rem;\">No {} queries match the current filter.</li>", query_age_filter)
+        } else {
+            "<li>No monitor queries yet.</li>".to_string()
+        }
     } else {
-        data_queries
+        filtered_queries
             .iter()
             .take(30)
             .map(|q| {
