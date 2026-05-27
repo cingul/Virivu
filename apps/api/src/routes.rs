@@ -5234,10 +5234,15 @@ async fn render_study_workbench(
         Vec::new()
     };
 
-    // Patient-entered data signal for operational snapshot
+    // Patient-entered data signals for operational snapshot
     let patient_entered_count = submissions
         .iter()
         .filter(|s| s.entered_by_user_id.is_none())
+        .count();
+
+    let patient_pending_sdv_count = submissions
+        .iter()
+        .filter(|s| s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending")
         .count();
 
     let selected_submission_id = query
@@ -6842,6 +6847,7 @@ async fn render_study_workbench(
     <strong style="color:#854d0e;">Operational Snapshot:</strong>
     <span style="background:#fef08c; color:#713f12; padding:2px 8px; border-radius:4px; font-weight:600;">{open_query_count} open queries</span>
     <span style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_entered_count} patient reports</span>
+    <span style="background:#fef3c7; color:#854d0e; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_pending_sdv_count} patient reports need SDV</span>
     <span style="color:#854d0e;">{pending_actions_html}</span>
     <span style="font-size:0.8rem; color:#a16207;">• Lock finalized submissions to freeze answers + generate provenance</span>
   </div>
@@ -6868,7 +6874,8 @@ async fn render_study_workbench(
         visit_options_html = visit_options_html,
         submission_options_html = submission_options_html,
         open_query_count = open_query_count,
-        patient_entered_count = patient_entered_count
+        patient_entered_count = patient_entered_count,
+        patient_pending_sdv_count = patient_pending_sdv_count
     );
 
     let script = r#"
