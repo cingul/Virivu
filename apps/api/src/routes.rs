@@ -6643,7 +6643,7 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">Patients</h3>
   <ul>{}</ul>
-  <h3 style="margin-top:1rem;">Submissions</h3>
+  <h3 style="margin-top:1rem;">Submissions <span style="font-size:0.75rem;color:#166534;">({} patient portal)</span></h3>
   <ul>{}</ul>
 </section>"#,
             create_submission_action,
@@ -6660,6 +6660,7 @@ async fn render_study_workbench(
             html_escape(admin_email.trim()),
             sdv_submission_action,
             html_escape(admin_email.trim()),
+            patient_entered_count,
             patients_html,
             submissions_html
         ),
