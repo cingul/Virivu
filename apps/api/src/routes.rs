@@ -2299,6 +2299,7 @@ struct StudyWorkbenchQuery {
     notice: Option<String>,
     error: Option<String>,
     view: Option<String>,
+    patient_report_age: Option<String>, // "stale" | "aging" | "all" (or absent) to filter the Patient Reports (via portal) list
 }
 
 #[derive(Debug, Deserialize)]
@@ -5417,14 +5418,7 @@ async fn render_study_workbench(
         }
     };
 
-    let patient_reports_header = if patient_stale_count > 0 || patient_aging_count > 0 {
-        format!(
-            r#"Patient Reports (via portal) <span style="font-size:0.7rem; color:#c53030;">({} stale, {} aging)</span>"#,
-            patient_stale_count, patient_aging_count
-        )
-    } else {
-        "Patient Reports (via portal)".to_string()
-    };
+    // (Header recomputed later after q vars for filter-aware display.)
 
     let selected_submission_id = query
         .submission_id
@@ -5626,6 +5620,10 @@ async fn render_study_workbench(
         "/ui/studies?admin_email={}{}{}&view=submissions",
         admin_email_q, selected_org_q, selected_project_q
     );
+    // Actionable filters for the patient reports list (wired from Recommended Next Steps cards)
+    let patient_age_filter = query.patient_report_age.as_deref().unwrap_or("all").to_string();
+    let stale_patients_url = format!("{}&patient_report_age=stale", submissions_tab_url);
+    let aging_patients_url = format!("{}&patient_report_age=aging", submissions_tab_url);
     let queries_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=queries",
         admin_email_q, selected_org_q, selected_project_q
@@ -5634,6 +5632,27 @@ async fn render_study_workbench(
         "/ui/studies?admin_email={}{}{}&view=close",
         admin_email_q, selected_org_q, selected_project_q
     );
+
+    // Recompute header here (after q vars) so we can show nice "showing STALE only + clear filter" when filtered.
+    let patient_reports_header = if patient_age_filter == "stale" {
+        format!(
+            r#"Patient Reports (via portal) <span style="font-size:0.7rem; color:#c53030; background:#fff1f2; padding:1px 5px; border-radius:3px;">showing STALE only</span> <a href="/ui/studies?admin_email={}{}{}&view=submissions" style="font-size:0.65rem; color:#166534; margin-left:6px;">clear filter</a>"#,
+            admin_email_q, selected_org_q, selected_project_q
+        )
+    } else if patient_age_filter == "aging" {
+        format!(
+            r#"Patient Reports (via portal) <span style="font-size:0.7rem; color:#b7791f; background:#fefce8; padding:1px 5px; border-radius:3px;">showing AGING only</span> <a href="/ui/studies?admin_email={}{}{}&view=submissions" style="font-size:0.65rem; color:#166534; margin-left:6px;">clear filter</a>"#,
+            admin_email_q, selected_org_q, selected_project_q
+        )
+    } else if patient_stale_count > 0 || patient_aging_count > 0 {
+        format!(
+            r#"Patient Reports (via portal) <span style="font-size:0.7rem; color:#c53030;">({} stale, {} aging)</span>"#,
+            patient_stale_count, patient_aging_count
+        )
+    } else {
+        "Patient Reports (via portal)".to_string()
+    };
+
     let selected_study_label = selected_project_id
         .and_then(|project_id| projects.iter().find(|project| project.id == project_id))
         .map(|project| {
@@ -5844,13 +5863,13 @@ async fn render_study_workbench(
         if patient_stale_count > 0 {
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#c53030; margin-bottom:0.35rem;"><strong>{}</strong> stale patient portal report(s) (>30 days old).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#c53030; text-decoration:none;">Review stale patient data &rarr;</a></div>"#,
-                action_card_style, patient_stale_count, submissions_tab_url
+                action_card_style, patient_stale_count, stale_patients_url
             ));
         }
         if patient_aging_count > 0 {
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#d69e2e; margin-bottom:0.35rem;"><strong>{}</strong> aging patient portal report(s) (7-30 days).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#b7791f; text-decoration:none;">Triage aging patient data &rarr;</a></div>"#,
-                action_card_style, patient_aging_count, submissions_tab_url
+                action_card_style, patient_aging_count, aging_patients_url
             ));
         }
         if open_query_count > 0 {
@@ -6230,13 +6249,34 @@ async fn render_study_workbench(
             .join("")
     };
 
-    // Split for dedicated Patient Reports section in the study workbench
-    let (patient_submissions, other_submissions): (Vec<_>, Vec<_>) = submissions
+    // Split for dedicated Patient Reports section in the study workbench.
+    // Apply optional age filter (from Recommended Next Steps cards) so the list is actionable.
+    let mut patient_submissions: Vec<_> = submissions
         .iter()
-        .partition(|s| s.entered_by_user_id.is_none());
+        .filter(|s| s.entered_by_user_id.is_none())
+        .collect();
+
+    if patient_age_filter == "stale" {
+        patient_submissions.retain(|s| (now - s.created_at).num_days() > 30);
+    } else if patient_age_filter == "aging" {
+        patient_submissions.retain(|s| {
+            let age = (now - s.created_at).num_days();
+            age > 7 && age <= 30
+        });
+    }
+    // "all" (or unknown) shows everything
+
+    let other_submissions: Vec<_> = submissions
+        .iter()
+        .filter(|s| s.entered_by_user_id.is_some())
+        .collect();
 
     let patient_reports_html = if patient_submissions.is_empty() {
-        "<p style=\"color:#64748b;font-size:0.85rem;margin:0.5rem 0;\">No patient portal reports yet for this study.</p>".to_string()
+        if patient_age_filter == "stale" || patient_age_filter == "aging" {
+            format!("<p style=\"color:#64748b;font-size:0.85rem;margin:0.5rem 0;\">No {} patient portal reports match the current filter.</p>", patient_age_filter)
+        } else {
+            "<p style=\"color:#64748b;font-size:0.85rem;margin:0.5rem 0;\">No patient portal reports yet for this study.</p>".to_string()
+        }
     } else {
         patient_submissions
             .iter()
