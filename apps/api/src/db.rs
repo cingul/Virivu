@@ -3343,7 +3343,20 @@ impl Db {
             .await?;
         Ok(row_to_provider(&row))
     }
-
+    pub async fn get_provider(&self, provider_id: Uuid) -> anyhow::Result<Option<Provider>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT id, organization_id, name, title, referral_source, hex_code, email, phone_number, npi_number, address, notes, created_at
+                FROM providers
+                WHERE id = $1
+                "#,
+                &[&provider_id],
+            )
+            .await?;
+        Ok(row.as_ref().map(row_to_provider))
+    }
     pub async fn list_providers_by_organization(
         &self,
         organization_id: Uuid,
@@ -4286,7 +4299,6 @@ impl Db {
             .await?;
         Ok(())
     }
-    #[allow(dead_code)]
     pub async fn insert_audit_log(
         &self,
         entity_table: &str,

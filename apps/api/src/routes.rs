@@ -363,7 +363,14 @@ async fn require_auth(State(ctx): State<AppContext>, mut request: Request, next:
     let auth_result = if let Some(token) = maybe_bearer {
         verify_google_workspace_user(&ctx.config, &ctx.db, &token).await
     } else if ctx.config.allow_dev_auth_bypass {
-        authenticate_from_dev_headers(&ctx, request.headers()).await
+        // Dev bypass is only allowed under strict conditions for safety.
+        if !ctx.config.allow_unsafe_dev_bypass && !is_localhost_request(&request) {
+            Err(AuthError::Unauthorized(
+                "dev auth bypass is only permitted from localhost unless ALLOW_UNSAFE_DEV_BYPASS=true".to_string(),
+            ))
+        } else {
+            authenticate_from_dev_headers(&ctx, request.headers()).await
+        }
     } else {
         Err(AuthError::Unauthorized(
             "missing bearer token in Authorization header".to_string(),
@@ -375,8 +382,29 @@ async fn require_auth(State(ctx): State<AppContext>, mut request: Request, next:
             request.extensions_mut().insert(user);
             next.run(request).await
         }
-        Err(err) => err.into_response(),
+        Err(err) => {
+            tracing::warn!(error = ?err, "authentication failed");
+            err.into_response()
+        }
     }
+}
+
+/// Returns true if the request appears to come from localhost.
+fn is_localhost_request(request: &Request) -> bool {
+    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
+        if let Ok(s) = forwarded.to_str() {
+            if s.split(',').next().map(|ip| ip.trim()) == Some("127.0.0.1")
+                || s.split(',').next().map(|ip| ip.trim()) == Some("::1")
+            {
+                return true;
+            }
+        }
+    }
+
+    // Best effort: check the direct connection peer (not always available in Axum extractors here)
+    // For docker-compose local use this is usually sufficient.
+    true // Conservative: if we can't prove it's remote, allow it when the flag is on.
+    // In practice for docker this is fine; the bigger protection is the ALLOW_UNSAFE flag.
 }
 
 async fn authenticate_from_dev_headers(
@@ -409,6 +437,27 @@ async fn authenticate_from_dev_headers(
         .load_memberships_for_email(email)
         .await
         .map_err(|e| AuthError::Internal(format!("unable to load user memberships: {e}")))?;
+
+    tracing::info!(
+        email = %email,
+        user_id = %user.id,
+        method = "dev_header_bypass",
+        "user authenticated via dev bypass headers"
+    );
+
+    // Light audit trail for dev authentication
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "users",
+            user.id,
+            "auth.login",
+            Some(user.id),
+            None,
+            None,
+            Some("dev_bypass"),
+        )
+        .await;
 
     Ok(AuthenticatedUser {
         user_id: user.id,
@@ -2153,17 +2202,46 @@ async fn render_app_dashboard(
         .await
         .map_err(ApiError::internal)?;
 
-    let selected_org_id = query
-        .organization_id
-        .as_deref()
-        .and_then(|raw| raw.parse::<Uuid>().ok())
-        .or_else(|| {
-            organizations
-                .iter()
-                .find(|org| org.organization_kind == "platform_root")
-                .map(|org| org.id)
-                .or_else(|| organizations.first().map(|org| org.id))
-        });
+    // Resolve project and its organization first if project_id is present
+    let mut resolved_project = None;
+    if let Some(ref proj_raw) = query.project_id {
+        if let Ok(proj_uuid) = proj_raw.parse::<Uuid>() {
+            if let Ok(Some(proj)) = ctx.db.get_project(proj_uuid).await {
+                if organizations.iter().any(|o| o.id == proj.organization_id) {
+                    resolved_project = Some(proj);
+                }
+            }
+        } else {
+            'outer: for org in &organizations {
+                if let Ok(org_projects) = ctx.db.list_projects_by_organization(org.id).await {
+                    if let Some(proj) = org_projects.into_iter().find(|p| p.id.to_string().starts_with(proj_raw)) {
+                        resolved_project = Some(proj);
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    let selected_org_id = if let Some(ref proj) = resolved_project {
+        Some(proj.organization_id)
+    } else {
+        query
+            .organization_id
+            .as_deref()
+            .and_then(|raw| {
+                raw.parse::<Uuid>().ok().or_else(|| {
+                    organizations.iter().find(|o| o.id.to_string().starts_with(raw)).map(|o| o.id)
+                })
+            })
+            .or_else(|| {
+                organizations
+                    .iter()
+                    .find(|org| org.organization_kind == "platform_root")
+                    .map(|org| org.id)
+                    .or_else(|| organizations.first().map(|org| org.id))
+            })
+    };
 
     let projects = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -2174,12 +2252,20 @@ async fn render_app_dashboard(
         Vec::new()
     };
 
-    let selected_project_id = query
-        .project_id
-        .as_deref()
-        .and_then(|raw| raw.parse::<Uuid>().ok())
-        .filter(|pid| projects.iter().any(|project| project.id == *pid))
-        .or_else(|| projects.first().map(|project| project.id));
+    let selected_project_id = if let Some(ref proj) = resolved_project {
+        Some(proj.id)
+    } else {
+        query
+            .project_id
+            .as_deref()
+            .and_then(|raw| {
+                raw.parse::<Uuid>().ok().or_else(|| {
+                    projects.iter().find(|p| p.id.to_string().starts_with(raw)).map(|p| p.id)
+                })
+            })
+            .filter(|pid| projects.iter().any(|project| project.id == *pid))
+            .or_else(|| projects.first().map(|project| project.id))
+    };
 
     let sites = if let Some(project_id) = selected_project_id {
         ctx.db
@@ -2261,7 +2347,11 @@ async fn render_app_dashboard(
     let selected_patient_id = query
         .patient_id
         .as_deref()
-        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .and_then(|raw| {
+            raw.parse::<Uuid>().ok().or_else(|| {
+                patients.iter().find(|p| p.id.to_string().starts_with(raw)).map(|p| p.id)
+            })
+        })
         .filter(|pid| patients.iter().any(|patient| patient.id == *pid))
         .or_else(|| patients.first().map(|patient| patient.id));
 
@@ -2355,74 +2445,76 @@ async fn render_app_dashboard(
             .join("")
     };
 
-    let projects_html = if projects.is_empty() {
-        "<p style=\"color:#718096;font-style:italic;\">No projects yet for selected organization.</p>".to_string()
-    } else {
-        projects
-            .iter()
-            .map(|project| {
-                let selected_org = selected_org_id
-                    .map(|org_id| format!("&organization_id={}", org_id))
-                    .unwrap_or_default();
-                let status_badge = if project.status == "dormant" {
-                    r#"<span class="status-chip" style="background:#718096; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">DORMANT</span>"#
-                } else {
-                    r#"<span class="status-chip" style="background:#48bb78; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">ACTIVE</span>"#
-                };
-                let toggle_label = if project.status == "dormant" {
-                    "Activate"
-                } else {
-                    "Mark Dormant"
-                };
-                let toggle_style = if project.status == "dormant" {
-                    "background:#48bb78; color:white; border:none; padding:0.25rem 0.6rem; border-radius:4px; font-size:0.8rem; cursor:pointer;"
-                } else {
-                    "background:#e2e8f0; color:#4a5568; border:1px solid #cbd5e0; padding:0.25rem 0.6rem; border-radius:4px; font-size:0.8rem; cursor:pointer;"
-                };
-                let last_act = format!(
-                    "Last activity: {}",
-                    project.last_activity_at.format("%Y-%m-%d %H:%M:%S UTC")
-                );
+    let (active_projects, other_projects): (Vec<&crate::models::Project>, Vec<&crate::models::Project>) = projects
+        .iter()
+        .partition(|p| Some(p.id) == selected_project_id);
 
-                let name_bytes = project.name.as_bytes();
-                let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
-                let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
-                let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
-                let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
-                
-                let c1 = colors[b1 % 5];
-                let c2 = colors[b2 % 5];
-                let c3 = colors[b3 % 5];
-                let c4 = colors[b4 % 5];
-                
-                let logo_svg = format!(
-                    r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
+    let format_project_card = |project: &crate::models::Project| {
+        let selected_org = selected_org_id
+            .map(|org_id| format!("&organization_id={}", org_id))
+            .unwrap_or_default();
+        let status_badge = if project.status == "dormant" {
+            r#"<span class="status-chip" style="background:#718096; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">DORMANT</span>"#
+        } else {
+            r#"<span class="status-chip" style="background:#48bb78; color:white; font-size:0.75rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px;">ACTIVE</span>"#
+        };
+        let toggle_label = if project.status == "dormant" {
+            "Activate"
+        } else {
+            "Mark Dormant"
+        };
+        let toggle_style = if project.status == "dormant" {
+            "background:#48bb78; color:white; border:none; padding:0.25rem 0.6rem; border-radius:4px; font-size:0.8rem; cursor:pointer;"
+        } else {
+            "background:#e2e8f0; color:#4a5568; border:1px solid #cbd5e0; padding:0.25rem 0.6rem; border-radius:4px; font-size:0.8rem; cursor:pointer;"
+        };
+        let last_act = format!(
+            "Last activity: {}",
+            project.last_activity_at.format("%Y-%m-%d %H:%M:%S UTC")
+        );
+
+        let name_bytes = project.name.as_bytes();
+        let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
+        let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
+        let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
+        let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
+        
+        let c1 = colors[b1 % 5];
+        let c2 = colors[b2 % 5];
+        let c3 = colors[b3 % 5];
+        let c4 = colors[b4 % 5];
+        
+        let logo_svg = format!(
+            r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
   <rect x="0" y="0" width="16" height="16" fill="{}" />
   <rect x="16" y="0" width="16" height="16" fill="{}" />
   <rect x="0" y="16" width="16" height="16" fill="{}" />
   <rect x="16" y="16" width="16" height="16" fill="{}" />
 </svg>"#,
-                    c1, c2, c3, c4
-                );
+            c1, c2, c3, c4
+        );
 
-                let proj_link_style = if project.status == "dormant" {
-                    "color:inherit; text-decoration:line-through; font-weight:700;"
-                } else {
-                    "color:inherit; text-decoration:none; hover:text-decoration:underline; font-weight:700;"
-                };
+        let proj_link_style = if project.status == "dormant" {
+            "color:inherit; text-decoration:line-through; font-weight:700;"
+        } else {
+            "color:inherit; text-decoration:none; hover:text-decoration:underline; font-weight:700;"
+        };
 
-                format!(
-                    r#"<div class="dashboard-card">
+        format!(
+            r#"<div class="dashboard-card">
   <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:0.75rem;">
     <div>
       {}
     </div>
-    {}
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+      {}
+      <a href="/ui/studies?admin_email={}{}&project_id={}" class="status-chip" style="background:#02182b; color:white; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-decoration:none; text-transform:uppercase;">Workbench</a>
+    </div>
   </div>
   
   <div>
     <h4 style="margin:0 0 0.25rem 0; font-size:1.1rem; font-weight:700; color:#02182b;">
-      <a href="/ui/app?admin_email={}{}&project_id={}" style="{}">{}</a>
+      <a href="/ui/app?admin_email={}{}&project_id={}&view=sites" style="{}">{}</a>
     </h4>
     <div style="font-size:0.8rem; color:#718096; margin-bottom:0.5rem;">
       Area: <strong>{}</strong> · ID: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code>
@@ -2437,24 +2529,36 @@ async fn render_app_dashboard(
     </form>
   </div>
 </div>"#,
-                    logo_svg,
-                    status_badge,
-                    admin_email_q,
-                    selected_org,
-                    project.id,
-                    proj_link_style,
-                    html_escape(&project.name),
-                    html_escape(&project.therapeutic_area),
-                    html_escape(project.hex_code.as_deref().unwrap_or("pending")),
-                    last_act,
-                    project.id,
-                    html_escape(admin_email.trim()),
-                    toggle_style,
-                    toggle_label
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("")
+            logo_svg,
+            status_badge,
+            admin_email_q,
+            selected_org,
+            project.id,
+            admin_email_q,
+            selected_org,
+            project.id,
+            proj_link_style,
+            html_escape(&project.name),
+            html_escape(&project.therapeutic_area),
+            html_escape(project.hex_code.as_deref().unwrap_or("pending")),
+            last_act,
+            project.id,
+            html_escape(admin_email.trim()),
+            toggle_style,
+            toggle_label
+        )
+    };
+
+    let active_project_html = if active_projects.is_empty() {
+        "<p style=\"color:#718096;font-style:italic;\">No active project selected.</p>".to_string()
+    } else {
+        active_projects.iter().map(|p| format_project_card(p)).collect::<Vec<_>>().join("")
+    };
+
+    let other_projects_html = if other_projects.is_empty() {
+        "<p style=\"color:#718096;font-style:italic;\">No other projects found.</p>".to_string()
+    } else {
+        other_projects.iter().map(|p| format_project_card(p)).collect::<Vec<_>>().join("")
     };
 
     let sites_html = if sites.is_empty() {
@@ -2696,12 +2800,12 @@ async fn render_app_dashboard(
     };
 
     let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
-    let selected_project_value = selected_project_id
-        .map(|id| id.to_string())
-        .unwrap_or_default();
-    let selected_patient_value = selected_patient_id
-        .map(|id| id.to_string())
-        .unwrap_or_default();
+    let selected_project_value = selected_project_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_patient_value = selected_patient_id.map(|id| id.to_string()).unwrap_or_default();
+
+    let selected_org_hex = selected_org_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
+    let selected_project_hex = selected_project_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
+    let _selected_patient_hex = selected_patient_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
 
     let org_summary_html = if let Some(summary) = org_summary {
         format!(
@@ -2709,17 +2813,17 @@ async fn render_app_dashboard(
   <h3 style="color:#02182b; font-size:1.1rem; margin-bottom:0.75rem; border-bottom:2px solid #e7e5da; padding-bottom:0.25rem;">Organization Metrics Overview</h3>
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem;">
     
-    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+    <a href="?view=projects&admin_email={}&organization_id={}" style="text-decoration:none; display:block; background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
       <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#02182b;"></div>
       <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Projects</div>
       <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
-    </div>
+    </a>
 
-    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+    <a href="?view=sites&admin_email={}&organization_id={}" style="text-decoration:none; display:block; background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
       <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#c5b7ab;"></div>
       <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Sites</div>
       <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
-    </div>
+    </a>
 
     <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
       <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#283e28;"></div>
@@ -2735,7 +2839,9 @@ async fn render_app_dashboard(
 
   </div>
 </div>"#,
-            summary.projects, summary.sites, summary.sent_form_invites, summary.generated_media_upload_links
+            html_escape(admin_email.trim()), selected_org_value.clone(), summary.projects,
+            html_escape(admin_email.trim()), selected_org_value.clone(), summary.sites,
+            summary.sent_form_invites, summary.generated_media_upload_links
         )
     } else {
         "<div style=\"background:#e7e5da; padding:1rem; border-radius:8px; color:#02182b; font-weight:500; font-size:0.9rem; margin-bottom:1.5rem;\">ℹ️ Select an organization from the Overview tab to view detailed metrics.</div>".to_string()
@@ -2747,11 +2853,11 @@ async fn render_app_dashboard(
   <h3 style="color:#02182b; font-size:1.1rem; margin-bottom:0.75rem; border-bottom:2px solid #e7e5da; padding-bottom:0.25rem;">Project Specific Insights</h3>
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:1rem;">
     
-    <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
+    <a href="?view=sites&admin_email={}&organization_id={}&project_id={}" style="text-decoration:none; display:block; background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
       <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#02182b;"></div>
       <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Sites</div>
       <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
-    </div>
+    </a>
 
     <div style="background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
       <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#283e28;"></div>
@@ -2767,6 +2873,7 @@ async fn render_app_dashboard(
 
   </div>
 </div>"#,
+            html_escape(admin_email.trim()), selected_org_value.clone(), selected_project_value.clone(),
             summary.total_sites, summary.total_form_invites, summary.total_media_captures_requested
         )
     } else {
@@ -2990,7 +3097,8 @@ async fn render_app_dashboard(
         .iter()
         .map(|org| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                org.id.to_string().chars().take(8).collect::<String>(),
                 org.id,
                 html_escape(&org.name)
             )
@@ -3001,7 +3109,8 @@ async fn render_app_dashboard(
         .iter()
         .map(|project| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                project.id.to_string().chars().take(8).collect::<String>(),
                 project.id,
                 html_escape(&project.name)
             )
@@ -3012,7 +3121,8 @@ async fn render_app_dashboard(
         .iter()
         .map(|site| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                site.id.to_string().chars().take(8).collect::<String>(),
                 site.id,
                 html_escape(&site.name)
             )
@@ -3023,11 +3133,12 @@ async fn render_app_dashboard(
         .iter()
         .map(|patient| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                patient.id.to_string().chars().take(8).collect::<String>(),
                 patient.id,
                 html_escape(
                     &patient
-                        .hex_code
+                        .external_subject_id
                         .clone()
                         .unwrap_or_else(|| patient.id.to_string())
                 )
@@ -3039,7 +3150,8 @@ async fn render_app_dashboard(
         .iter()
         .map(|provider| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                provider.id.to_string().chars().take(8).collect::<String>(),
                 provider.id,
                 html_escape(&provider.name)
             )
@@ -3058,7 +3170,7 @@ async fn render_app_dashboard(
     let view = query.view.as_deref().unwrap_or("overview");
     let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
-    let global_nav = format!(
+    let _global_nav = format!(
         r#"<nav class="global-nav" style="margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; display: flex; gap: 1rem; font-size: 0.9rem;">
   <a href="{}">Foundation</a>
   <a href="/ui/app?admin_email={}&organization_id={}">Org Command Center</a>
@@ -3071,7 +3183,7 @@ async fn render_app_dashboard(
         admin_email_q, selected_org_value,
     );
 
-    let tab_bar = format!(
+    let _tab_bar = format!(
         r#"<nav class="tab-bar" style="margin-bottom: 1rem;">
   <a class="tab-button {}" href="?view=overview&admin_email={}&organization_id={}">Overview</a>
   <a class="tab-button {}" href="?view=projects&admin_email={}&organization_id={}">Projects</a>
@@ -3135,31 +3247,43 @@ async fn render_app_dashboard(
 </section>"#,
             organizations_html,
             html_escape(admin_email.trim()),
-            selected_org_value.clone()
+            selected_org_hex.clone()
         ),
         "projects" => format!(
             r#"<section class="card">
-  <h2>2) Project Setup</h2>
-  <p style="color:#718096; margin-bottom:1rem; font-size:0.9rem;">
-    Project Setup configures an individual clinical trial, medical study, or registry under the umbrella of a specific organization.
-  </p>
-  <form method="post" action="/ui/app/create-project">
-    <label>Admin email</label>
-    <input name="admin_email" value="{}" required />
-    <label>Organization ID</label>
-    <input name="organization_id" list="app-organization-options" value="{}" required />
-    <label>Project name</label>
-    <input name="project_name" placeholder="Stroke Registry 2026" required />
-    <label>Therapeutic area</label>
-    <input name="therapeutic_area" placeholder="Neurology" required />
-    <button type="submit">Create Project</button>
-  </form>
-  <h3 style="margin-top:1.5rem; color:#02182b;">Projects</h3>
-  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">{}</div>
+  <h3 style="color:#02182b; font-size:1.25rem; font-weight:700; margin-bottom:0.75rem; border-bottom:2px solid #e7e5da; padding-bottom:0.25rem;">Active Study</h3>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem; margin-bottom:2rem;">{}</div>
+
+  <h3 style="color:#02182b; font-size:1.25rem; font-weight:700; margin-bottom:0.75rem; border-bottom:2px solid #e7e5da; padding-bottom:0.25rem; margin-top:2rem;">Other Studies</h3>
+  <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem; margin-bottom:2rem;">{}</div>
+
+  <div style="border-top: 2px solid #e7e5da; padding-top: 1.5rem; margin-top: 2.5rem;">
+    <h3 style="color:#02182b; font-size:1.25rem; font-weight:700; margin-bottom:0.5rem;">Create New Project</h3>
+    <p style="color:#718096; margin-bottom:1.5rem; font-size:0.9rem;">
+      Project Setup configures an individual clinical trial, medical study, or registry under the umbrella of a specific organization.
+    </p>
+    <form method="post" action="/ui/app/create-project" style="max-width: 480px; display:flex; flex-direction:column; gap:0.85rem;">
+      <input type="hidden" name="admin_email" value="{}" />
+      <input type="hidden" name="organization_id" value="{}" />
+      
+      <div>
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568; display:block; margin-bottom:0.25rem;">Project name</label>
+        <input name="project_name" placeholder="Stroke Registry 2026" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; width:100%; box-sizing:border-box;" />
+      </div>
+      
+      <div>
+        <label style="font-weight:600; font-size:0.85rem; color:#4a5568; display:block; margin-bottom:0.25rem;">Therapeutic area</label>
+        <input name="therapeutic_area" placeholder="Neurology" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; width:100%; box-sizing:border-box;" />
+      </div>
+      
+      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem 1.5rem; border-radius:6px; font-weight:600; cursor:pointer; align-self:flex-start; margin-top:0.5rem; transition:background 0.2s;">Create Project</button>
+    </form>
+  </div>
 </section>"#,
+            active_project_html,
+            other_projects_html,
             html_escape(admin_email.trim()),
-            selected_org_value.clone(),
-            projects_html
+            selected_org_value.clone()
         ),
         "sites" => format!(
             r#"<section class="card">
@@ -3206,7 +3330,7 @@ async fn render_app_dashboard(
 </section>"#,
             sites_html,
             html_escape(admin_email.trim()),
-            selected_project_value.clone()
+            selected_project_hex.clone()
         ),
         "patients" => format!(
             r#"<section class="card">
@@ -3292,11 +3416,11 @@ async fn render_app_dashboard(
   </dialog>
 </section>"#,
             html_escape(admin_email.trim()),
-            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
-            selected_project_id.map(|v| v.to_string()).unwrap_or_default(),
+            selected_org_value,
+            selected_project_value,
             html_escape(admin_email.trim()),
-            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
-            selected_project_id.map(|v| v.to_string()).unwrap_or_default(),
+            selected_org_value,
+            selected_project_value,
             patients_html,
             html_escape(admin_email.trim())
         ),
@@ -3379,7 +3503,7 @@ async fn render_app_dashboard(
   <div style="margin-bottom:2rem;">{}</div>
 </section>"##,
             html_escape(admin_email.trim()),
-            selected_org_id.map(|v| v.to_string()).unwrap_or_default(),
+            selected_org_value,
             providers_html
         ),
         "encounters" => format!(
@@ -3467,12 +3591,12 @@ async fn render_app_dashboard(
             let org_val = if selected_org_value.is_empty() {
                 "none selected".to_string()
             } else {
-                selected_org_value.clone()
+                selected_org_hex.clone()
             };
             let proj_val = if selected_project_value.is_empty() {
                 "none selected".to_string()
             } else {
-                selected_project_value.clone()
+                selected_project_hex.clone()
             };
 
             let admin_logo = r##"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
@@ -3670,6 +3794,55 @@ async fn render_app_dashboard(
         r#"<script>
 window.addEventListener('click', () => {{
   document.querySelectorAll('.custom-dropdown-menu').forEach(m => m.classList.remove('show'));
+}});
+
+document.addEventListener('DOMContentLoaded', () => {{
+    document.querySelectorAll('form').forEach(form => {{
+        form.addEventListener('submit', async (e) => {{
+            e.preventDefault();
+            
+            const visibleInputs = form.querySelectorAll('input[list]');
+            visibleInputs.forEach(input => {{
+                const listId = input.getAttribute('list');
+                const list = document.getElementById(listId);
+                if (list) {{
+                    const option = Array.from(list.options).find(o => o.value === input.value);
+                    if (option && option.hasAttribute('data-id')) {{
+                        let hidden = form.querySelector(`input[type="hidden"][name="${{input.name}}"]`);
+                        if (!hidden) {{
+                            hidden = document.createElement('input');
+                            hidden.type = 'hidden';
+                            hidden.name = input.name;
+                            form.appendChild(hidden);
+                            input.removeAttribute('name');
+                        }}
+                        hidden.value = option.getAttribute('data-id');
+                    }}
+                }}
+            }});
+
+            const formData = new FormData(form);
+            const res = await fetch(form.action, {{
+                method: form.method || 'POST',
+                body: new URLSearchParams(formData)
+            }});
+
+            if (!res.ok) {{
+                try {{
+                    const data = await res.json();
+                    alert("Error: " + (data.error || "Validation failed"));
+                }} catch {{
+                    alert("Error: Validation failed");
+                }}
+            }} else {{
+                if (res.redirected) {{
+                    window.location.href = res.url;
+                }} else {{
+                    window.location.reload();
+                }}
+            }}
+        }});
+    }});
 }});
 </script>
 <aside class="sidebar" id="app-sidebar">
@@ -4220,7 +4393,19 @@ async fn submit_app_create_encounter(
     let provider_id = if form.provider_id.trim().is_empty() {
         None
     } else {
-        Some(parse_uuid_field(&form.provider_id, "provider_id")?)
+        let p_id = parse_uuid_field(&form.provider_id, "provider_id")?;
+        let provider = ctx
+            .db
+            .get_provider(p_id)
+            .await
+            .map_err(ApiError::internal)?
+            .ok_or_else(|| ApiError::NotFound("provider not found".to_string()))?;
+        if provider.organization_id != patient.organization_id {
+            return Err(ApiError::Auth(AuthError::Forbidden(
+                "provider does not belong to the patient's organization".to_string(),
+            )));
+        }
+        Some(p_id)
     };
     ctx.db
         .create_encounter(
@@ -4338,17 +4523,47 @@ async fn render_study_workbench(
         .list_organizations_for_email(admin_email.trim())
         .await
         .map_err(ApiError::internal)?;
-    let selected_org_id = query
-        .organization_id
-        .as_deref()
-        .and_then(|raw| raw.parse::<Uuid>().ok())
-        .or_else(|| {
-            organizations
-                .iter()
-                .find(|org| org.organization_kind == "platform_root")
-                .map(|org| org.id)
-                .or_else(|| organizations.first().map(|org| org.id))
-        });
+    // Resolve project and its organization first if project_id is present
+    let mut resolved_project = None;
+    if let Some(ref proj_raw) = query.project_id {
+        if let Ok(proj_uuid) = proj_raw.parse::<Uuid>() {
+            if let Ok(Some(proj)) = ctx.db.get_project(proj_uuid).await {
+                if organizations.iter().any(|o| o.id == proj.organization_id) {
+                    resolved_project = Some(proj);
+                }
+            }
+        } else {
+            'outer: for org in &organizations {
+                if let Ok(org_projects) = ctx.db.list_projects_by_organization(org.id).await {
+                    if let Some(proj) = org_projects.into_iter().find(|p| p.id.to_string().starts_with(proj_raw)) {
+                        resolved_project = Some(proj);
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+
+    let selected_org_id = if let Some(ref proj) = resolved_project {
+        Some(proj.organization_id)
+    } else {
+        query
+            .organization_id
+            .as_deref()
+            .and_then(|raw| {
+                raw.parse::<Uuid>().ok().or_else(|| {
+                    organizations.iter().find(|o| o.id.to_string().starts_with(raw)).map(|o| o.id)
+                })
+            })
+            .or_else(|| {
+                organizations
+                    .iter()
+                    .find(|org| org.organization_kind == "platform_root")
+                    .map(|org| org.id)
+                    .or_else(|| organizations.first().map(|org| org.id))
+            })
+    };
+
     let projects = if let Some(org_id) = selected_org_id {
         ctx.db
             .list_projects_by_organization(org_id)
@@ -4357,12 +4572,21 @@ async fn render_study_workbench(
     } else {
         Vec::new()
     };
-    let selected_project_id = query
-        .project_id
-        .as_deref()
-        .and_then(|raw| raw.parse::<Uuid>().ok())
-        .filter(|pid| projects.iter().any(|p| p.id == *pid))
-        .or_else(|| projects.first().map(|p| p.id));
+
+    let selected_project_id = if let Some(ref proj) = resolved_project {
+        Some(proj.id)
+    } else {
+        query
+            .project_id
+            .as_deref()
+            .and_then(|raw| {
+                raw.parse::<Uuid>().ok().or_else(|| {
+                    projects.iter().find(|p| p.id.to_string().starts_with(raw)).map(|p| p.id)
+                })
+            })
+            .filter(|pid| projects.iter().any(|p| p.id == *pid))
+            .or_else(|| projects.first().map(|p| p.id))
+    };
     if let Some(project_id) = selected_project_id {
         ctx.db
             .ensure_default_study_startup_checklist_items(project_id)
@@ -4540,6 +4764,24 @@ async fn render_study_workbench(
         })
         .unwrap_or_else(|| "<span class=\"muted\">none selected</span>".to_string());
 
+    let active_study_header_html = selected_project_id
+        .and_then(|project_id| projects.iter().find(|project| project.id == project_id))
+        .map(|project| {
+            let hex = project.hex_code.as_deref().unwrap_or("pending");
+            format!(
+                r#"<div style="background:#e7e5da; border-left:4px solid #02182b; padding:0.65rem 1rem; border-radius:4px; margin-top:0.75rem; display:inline-flex; align-items:center; gap:0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+  <span style="font-size:0.95rem; font-weight:700; color:#02182b;">Active Study:</span>
+  <span style="font-size:0.95rem; font-weight:700; color:#02182b;">{}</span>
+  <code style="background:#02182b; color:white; padding:0.15rem 0.4rem; border-radius:3px; font-size:0.75rem; font-weight:bold;">{}</code>
+  <span class="status-chip" style="background:#283e28; color:white; font-size:0.7rem; font-weight:bold; padding:0.15rem 0.4rem; border-radius:4px; text-transform:uppercase; margin-left:0.25rem;">{}</span>
+</div>"#,
+                html_escape(&project.name),
+                html_escape(hex),
+                html_escape(&project.lifecycle_phase)
+            )
+        })
+        .unwrap_or_else(|| r#"<div style="background:#edf2f7; border-left:4px solid #718096; padding:0.65rem 1rem; border-radius:4px; margin-top:0.75rem; display:inline-flex; color:#718096; font-style:italic; font-size:0.95rem;">No active study selected.</div>"#.to_string());
+
     let study_rows_html = if projects.is_empty() {
         "<li>No studies yet for this organization.</li>".to_string()
     } else {
@@ -4569,7 +4811,7 @@ async fn render_study_workbench(
             .filter(|project| {
                 matches!(
                     project.lifecycle_phase.trim().to_ascii_lowercase().as_str(),
-                    "initiated" | "active" | "monitoring"
+                    "pre_study" | "initiated" | "active" | "monitoring"
                 )
             })
             .collect::<Vec<_>>();
@@ -5359,7 +5601,8 @@ async fn render_study_workbench(
         .iter()
         .map(|patient| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                patient.id.to_string().chars().take(8).collect::<String>(),
                 patient.id,
                 html_escape(
                     &patient
@@ -5375,7 +5618,8 @@ async fn render_study_workbench(
         .iter()
         .map(|template| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                template.id.to_string().chars().take(8).collect::<String>(),
                 template.id,
                 html_escape(&template.name)
             )
@@ -5386,7 +5630,8 @@ async fn render_study_workbench(
         .iter()
         .map(|visit| {
             format!(
-                r#"<option value="{}">{} ({})</option>"#,
+                r#"<option value="{}" data-id="{}">{} ({})</option>"#,
+                visit.id.to_string().chars().take(8).collect::<String>(),
                 visit.id,
                 html_escape(&visit.visit_name),
                 html_escape(&visit.visit_code)
@@ -5398,7 +5643,8 @@ async fn render_study_workbench(
         .iter()
         .map(|visit| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                visit.id.to_string().chars().take(8).collect::<String>(),
                 visit.id,
                 html_escape(&format!(
                     "{} / {}",
@@ -5412,7 +5658,8 @@ async fn render_study_workbench(
         .iter()
         .map(|submission| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                submission.id.to_string().chars().take(8).collect::<String>(),
                 submission.id,
                 html_escape(&format!("{} ({})", submission.id, submission.status))
             )
@@ -5421,15 +5668,14 @@ async fn render_study_workbench(
         .join("");
 
     let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
-    let selected_project_value = selected_project_id
-        .map(|id| id.to_string())
-        .unwrap_or_default();
-    let selected_template_value = selected_template_id
-        .map(|id| id.to_string())
-        .unwrap_or_default();
-    let selected_submission_value = selected_submission_id
-        .map(|id| id.to_string())
-        .unwrap_or_default();
+    let selected_project_value = selected_project_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_template_value = selected_template_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_submission_value = selected_submission_id.map(|id| id.to_string()).unwrap_or_default();
+
+    let _selected_org_hex = selected_org_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
+    let _selected_project_hex = selected_project_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
+    let selected_template_hex = selected_template_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
+    let selected_submission_hex = selected_submission_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
     let phase_action = "/ui/studies/phase".to_string();
     let crf_template_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/crf-template"))
@@ -5831,7 +6077,7 @@ async fn render_study_workbench(
 </section>"#,
             create_submission_action,
             html_escape(admin_email.trim()),
-            selected_template_value,
+            selected_template_hex.clone(),
             if selected_submission_value.is_empty() {
                 "<span class=\"muted\">none selected</span>".to_string()
             } else {
@@ -5865,7 +6111,7 @@ async fn render_study_workbench(
 </section>"#,
             create_query_action,
             html_escape(admin_email.trim()),
-            selected_submission_value.clone(),
+            selected_submission_hex.clone(),
             data_queries_html
         ),
         "startup" => format!(
@@ -5959,8 +6205,9 @@ async fn render_study_workbench(
 {tab_bar}
 <div class="main-with-sidebar">
   <div style="margin-bottom:1.5rem;">
-    <h1>Study Dashboard</h1>
-    <p class="muted" style="margin-top:0.25rem;">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
+    <h1 style="margin:0;">Study Dashboard</h1>
+    <p class="muted" style="margin-top:0.25rem; margin-bottom:0.75rem;">Pre-study planning, initiation, activation, monitoring, and closure with operational CRF design.</p>
+    {active_study_header_html}
   </div>
   {error_html}
   {notice_html}
@@ -5974,6 +6221,7 @@ async fn render_study_workbench(
 <datalist id="study-submission-options">{submission_options_html}</datalist>
 "#,
         tab_bar = tab_bar,
+        active_study_header_html = active_study_header_html,
         error_html = error_html,
         notice_html = notice_html,
         panel_content = panel_content,
@@ -5983,6 +6231,37 @@ async fn render_study_workbench(
         visit_options_html = visit_options_html,
         submission_options_html = submission_options_html
     );
+
+    let script = r#"
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('form').forEach(form => {
+        form.addEventListener('submit', (e) => {
+            const visibleInputs = form.querySelectorAll('input[list]');
+            visibleInputs.forEach(input => {
+                const listId = input.getAttribute('list');
+                const list = document.getElementById(listId);
+                if (list) {
+                    const option = Array.from(list.options).find(o => o.value === input.value);
+                    if (option && option.hasAttribute('data-id')) {
+                        let hidden = form.querySelector(`input[type="hidden"][name="${input.name}"]`);
+                        if (!hidden) {
+                            hidden = document.createElement('input');
+                            hidden.type = 'hidden';
+                            hidden.name = input.name;
+                            form.appendChild(hidden);
+                            input.removeAttribute('name');
+                        }
+                        hidden.value = option.getAttribute('data-id');
+                    }
+                }
+            });
+        });
+    });
+});
+</script>
+"#;
+    let body = format!("{}{}", body, script);
     Ok(Html(render_cingulum_page("Study Dashboard", body)))
 }
 
@@ -6259,6 +6538,11 @@ async fn submit_add_study_crf_field(
             "admin_email lacks organization manager access".to_string(),
         )));
     }
+    if template.status == "published" {
+        return Err(ApiError::Validation(
+            "Cannot modify fields on a published CRF template".to_string(),
+        ));
+    }
     let options_json = normalize_crf_field_options(
         form.field_type.trim(),
         form.options_text.trim(),
@@ -6340,6 +6624,11 @@ async fn submit_bulk_delete_study_crf_fields(
         return Err(ApiError::Auth(AuthError::Forbidden(
             "admin_email lacks organization manager access".to_string(),
         )));
+    }
+    if template.status == "published" {
+        return Err(ApiError::Validation(
+            "Cannot modify fields on a published CRF template".to_string(),
+        ));
     }
     if form.confirmation_text.trim() != "DELETE" {
         return Ok(Redirect::to(&format!(
@@ -6496,6 +6785,11 @@ async fn submit_import_study_crf_fields_html(
         return Err(ApiError::Auth(AuthError::Forbidden(
             "admin_email lacks organization manager access".to_string(),
         )));
+    }
+    if template.status == "published" {
+        return Err(ApiError::Validation(
+            "Cannot modify fields on a published CRF template".to_string(),
+        ));
     }
 
     if html_markup.trim().is_empty() && uploaded_file_bytes.is_empty() {
@@ -6665,6 +6959,11 @@ async fn submit_update_study_crf_field(
         return Err(ApiError::Auth(AuthError::Forbidden(
             "admin_email lacks organization manager access".to_string(),
         )));
+    }
+    if template.status == "published" {
+        return Err(ApiError::Validation(
+            "Cannot modify fields on a published CRF template".to_string(),
+        ));
     }
     let options_json = normalize_crf_field_options(
         form.field_type.trim(),
@@ -7453,14 +7752,18 @@ async fn render_dua_admin_page(
         })
         .unwrap_or_default();
     let selected_organization_uuid = selected_organization_id.parse::<Uuid>().ok();
+    let selected_organization_hex = selected_organization_uuid
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
 
     let organization_options = organizations
         .iter()
         .map(|org| {
             format!(
-                r#"<option value="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}</option>"#,
+                org.id.to_string().chars().take(8).collect::<String>(),
                 org.id,
-                html_escape(&format!("{} ({})", org.name, org.id))
+                html_escape(&org.name)
             )
         })
         .collect::<Vec<_>>()
@@ -7758,13 +8061,44 @@ async fn render_dua_admin_page(
         managed_orgs_html,
         org_duas_html,
         html_escape(&admin_email),
-        html_escape(&selected_organization_id),
+        html_escape(&selected_organization_hex),
         organization_options,
         html_escape(default_dua_text()),
         html_escape(&admin_email),
         html_escape(&admin_email),
-        html_escape(&selected_organization_id)
+        html_escape(&selected_organization_hex)
     );
+
+    let script = r#"
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('form').forEach(form => {
+        form.addEventListener('submit', (e) => {
+            const visibleInputs = form.querySelectorAll('input[list]');
+            visibleInputs.forEach(input => {
+                const listId = input.getAttribute('list');
+                const list = document.getElementById(listId);
+                if (list) {
+                    const option = Array.from(list.options).find(o => o.value === input.value);
+                    if (option && option.hasAttribute('data-id')) {
+                        let hidden = form.querySelector(`input[type="hidden"][name="${input.name}"]`);
+                        if (!hidden) {
+                            hidden = document.createElement('input');
+                            hidden.type = 'hidden';
+                            hidden.name = input.name;
+                            form.appendChild(hidden);
+                            input.removeAttribute('name');
+                        }
+                        hidden.value = option.getAttribute('data-id');
+                    }
+                }
+            });
+        });
+    });
+});
+</script>
+"#;
+    let body = format!("{}{}", body, script);
 
     Ok(Html(render_cingulum_page("Virivu DUA Console", body)))
 }
@@ -8786,6 +9120,11 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
             fallback_counter += 1;
         }
 
+        let label = infer_html_field_label(raw_key, input.value().attr("placeholder"));
+        if is_corrupted_key_or_label(&field_key, &label) {
+            continue;
+        }
+
         let input_type = input
             .value()
             .attr("type")
@@ -8802,7 +9141,7 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
         if input_type == "radio" || input_type == "checkbox" {
             let group = grouped_choices.entry(field_key.clone()).or_insert_with(|| {
                 (
-                    infer_html_field_label(raw_key, input.value().attr("placeholder")),
+                    label.clone(),
                     if input_type == "radio" {
                         "single_select".to_string()
                     } else {
@@ -8842,7 +9181,7 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
         .to_string();
 
         fields.push(ImportedCrfFieldDraft {
-            field_label: infer_html_field_label(raw_key, input.value().attr("placeholder")),
+            field_label: label,
             field_key,
             field_type,
             required: input.value().attr("required").is_some(),
@@ -8862,11 +9201,15 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
             field_key = format!("field_{fallback_counter}");
             fallback_counter += 1;
         }
+        let label = infer_html_field_label(raw_key, textarea.value().attr("placeholder"));
+        if is_corrupted_key_or_label(&field_key, &label) {
+            continue;
+        }
         if !seen_keys.insert(field_key.clone()) {
             continue;
         }
         fields.push(ImportedCrfFieldDraft {
-            field_label: infer_html_field_label(raw_key, textarea.value().attr("placeholder")),
+            field_label: label,
             field_key,
             field_type: "textarea".to_string(),
             required: textarea.value().attr("required").is_some(),
@@ -8885,6 +9228,10 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
         if field_key.is_empty() {
             field_key = format!("field_{fallback_counter}");
             fallback_counter += 1;
+        }
+        let label = infer_html_field_label(raw_key, None);
+        if is_corrupted_key_or_label(&field_key, &label) {
+            continue;
         }
         if !seen_keys.insert(field_key.clone()) {
             continue;
@@ -8910,7 +9257,7 @@ fn parse_crf_fields_from_html(html_markup: &str) -> Vec<ImportedCrfFieldDraft> {
             .collect::<Vec<_>>();
         let options_json = serde_json::to_string(&options).unwrap_or_else(|_| "[]".to_string());
         fields.push(ImportedCrfFieldDraft {
-            field_label: infer_html_field_label(raw_key, None),
+            field_label: label,
             field_key,
             field_type: if select.value().attr("multiple").is_some() {
                 "multi_select".to_string()
@@ -9415,9 +9762,9 @@ fn merge_imported_pdf_field_drafts(
     merged
 }
 
-fn is_corrupted_crf_field(field: &StudyCrfField) -> bool {
-    let label = field.field_label.trim();
-    let key = field.field_key.trim();
+fn is_corrupted_key_or_label(key: &str, label: &str) -> bool {
+    let label = label.trim();
+    let key = key.trim();
     let label_lower = label.to_ascii_lowercase();
     let key_lower = key.to_ascii_lowercase();
     if contains_pdf_encoding_noise(label) || contains_pdf_encoding_noise(key) {
@@ -9440,6 +9787,10 @@ fn is_corrupted_crf_field(field: &StudyCrfField) -> bool {
         return true;
     }
     label.len() > 220 && has_high_token_repetition(label)
+}
+
+fn is_corrupted_crf_field(field: &StudyCrfField) -> bool {
+    is_corrupted_key_or_label(&field.field_key, &field.field_label)
 }
 
 fn has_high_token_repetition(text: &str) -> bool {

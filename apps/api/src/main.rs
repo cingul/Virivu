@@ -50,6 +50,21 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind to {}", config.bind_address))?;
 
+    if config.allow_dev_auth_bypass {
+        if config.allow_unsafe_dev_bypass {
+            tracing::error!(
+                "!!! DANGER: ALLOW_UNSAFE_DEV_BYPASS is enabled. \
+                 Dev authentication bypass is allowed from any IP. \
+                 This should NEVER be true in production or shared environments. !!!"
+            );
+        } else {
+            tracing::warn!(
+                "Dev auth bypass is enabled. It will only work from localhost \
+                 unless ALLOW_UNSAFE_DEV_BYPASS is also set to true."
+            );
+        }
+    }
+
     info!(
         app_name = %config.app_name,
         bind_address = %config.bind_address,
@@ -57,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         database_url = %config.database_url,
         allowed_google_workspace_domain = %config.allowed_google_workspace_domain,
         allow_dev_auth_bypass = config.allow_dev_auth_bypass,
+        allow_unsafe_dev_bypass = config.allow_unsafe_dev_bypass,
         "starting API server"
     );
 

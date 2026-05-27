@@ -24,6 +24,9 @@ services:
       GOOGLE_WORKSPACE_DOMAIN: cingulum.org
       GOOGLE_CLIENT_ID: ""
       ALLOW_DEV_AUTH_BYPASS: "true"
+      # Only set ALLOW_UNSAFE_DEV_BYPASS=true if you truly need dev bypass from non-localhost.
+      # This is dangerous and should be false in almost all cases.
+      ALLOW_UNSAFE_DEV_BYPASS: "false"
     depends_on:
       - postgres
     ports:
