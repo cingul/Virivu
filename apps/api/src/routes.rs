@@ -7118,6 +7118,7 @@ async fn submit_import_study_crf_fields_html(
 
 async fn submit_update_study_crf_field(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(field_id): Path<Uuid>,
     Form(form): Form<StudyCrfFieldForm>,
 ) -> Result<Redirect, ApiError> {
@@ -7139,16 +7140,9 @@ async fn submit_update_study_crf_field(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+
     if template.status == "published" {
         return Err(ApiError::Validation(
             "Cannot modify fields on a published CRF template".to_string(),
