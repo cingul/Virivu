@@ -253,6 +253,7 @@ struct PatientProReportForm {
     additional_notes: Option<String>,
     patient_visit_id: Option<String>,
     template_id: Option<String>,
+    answers_json: Option<String>,
 }
 
 async fn render_patient_portal_home(
@@ -411,8 +412,8 @@ async fn render_patient_portal_home(
           <option value="">Use default / first available</option>
           {}
         </select>
-        <p style="font-size:0.8rem;color:#64748b;margin-top:0.25rem;">Selecting a template will create a proper structured CRF submission for the chosen visit. Example answers structure:</p>
-        <pre style="background:#f8fafc;padding:6px;font-size:0.75rem;overflow:auto;max-height:120px;">{}</pre>
+        <p style="font-size:0.8rem;color:#64748b;margin-top:0.25rem;">Selecting a template will create a proper structured CRF submission for the chosen visit. Edit the answers below (keys should match the template fields):</p>
+        <textarea name="answers_json" rows="6" style="width:100%;font-family:monospace;font-size:0.75rem;padding:6px;border:1px solid #cbd5e0;border-radius:4px;">{}</textarea>
       </details>
 
       <button type="submit" style="margin-top:1rem;background:#f05708;color:white;padding:0.65rem 1.4rem;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Submit Report to Study Team</button>
@@ -490,8 +491,7 @@ async fn submit_patient_pro_report(
         Some(&format!("Patient portal daily check-in ({} chars)", form.symptoms.trim().len())),
     ).await;
 
-    // If the patient selected a scheduled visit, also create a real CRF submission draft linked to it.
-    // If a specific template was chosen, use it; otherwise fall back to first available.
+    // If the patient selected a scheduled visit + template, create a real CRF submission using the provided structured answers (if given) or the free-text.
     if let Some(visit_id_str) = &form.patient_visit_id {
         if let Ok(visit_id) = parse_uuid_field(visit_id_str, "patient_visit_id") {
             let chosen_template_id = if let Some(tpl_str) = &form.template_id {
@@ -508,13 +508,24 @@ async fn submit_patient_pro_report(
             };
 
             if !template_id.is_nil() {
+                // Prefer explicit answers_json from the advanced form if provided; otherwise use the constructed one from symptoms.
+                let crf_answers = if let Some(provided) = &form.answers_json {
+                    if !provided.trim().is_empty() {
+                        provided.trim().to_string()
+                    } else {
+                        answers_json.clone()
+                    }
+                } else {
+                    answers_json.clone()
+                };
+
                 let _ = ctx.db
                     .create_study_crf_submission(
                         patient.project_id,
                         template_id,
                         patient.id,
                         Some(visit_id),
-                        &answers_json,
+                        &crf_answers,
                         None, // entered via patient portal
                     )
                     .await;
@@ -525,7 +536,7 @@ async fn submit_patient_pro_report(
                     "patient_submitted_via_portal",
                     None,
                     None,
-                    Some(&answers_json),
+                    Some(&crf_answers),
                     Some(&format!("Patient submitted structured data for visit {} via portal", visit_id)),
                 ).await;
             }
