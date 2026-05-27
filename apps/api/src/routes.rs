@@ -5385,7 +5385,8 @@ async fn render_study_workbench(
                 let visit_info = sub.patient_visit_id.and_then(|vid| {
                     patient_visits.iter().find(|v| v.id == vid).map(|v| {
                         let date = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "unscheduled".to_string());
-                        format!(" (visit: {} - {})", date, v.status)
+                        let visit_name = visit_templates.iter().find(|vt| vt.id == v.visit_template_id).map(|vt| vt.visit_name.clone()).unwrap_or_else(|| "Unknown visit".to_string());
+                        format!(" ({}: {} - {})", visit_name, date, v.status)
                     })
                 }).unwrap_or_default();
 
@@ -6051,7 +6052,8 @@ async fn render_study_workbench(
                 let visit_info = submission.patient_visit_id.and_then(|vid| {
                     patient_visits.iter().find(|v| v.id == vid).map(|v| {
                         let date = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "unscheduled".to_string());
-                        format!("visit {} ({})", date, v.status)
+                        let visit_name = visit_templates.iter().find(|vt| vt.id == v.visit_template_id).map(|vt| vt.visit_name.clone()).unwrap_or_else(|| "Unknown visit".to_string());
+                        format!("{}: {} ({})", visit_name, date, v.status)
                     })
                 }).unwrap_or_default();
 
