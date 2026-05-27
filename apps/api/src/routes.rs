@@ -313,6 +313,13 @@ async fn render_patient_portal_home(
         })
         .collect::<Vec<_>>()
         .join("");
+
+    let sample_answers = if let Some(first_template) = available_templates.first() {
+        let fields = ctx.db.list_study_crf_fields(first_template.id).await.unwrap_or_default();
+        generate_sample_answers_json(&fields)
+    } else {
+        "{\n  \"field_key\": \"value\"\n}".to_string()
+    };
     let visits_html = if scheduled_visits.is_empty() {
         "<p style=\"color:#64748b;font-size:0.9rem;\">No scheduled visits yet. Your coordinator will schedule your first activities soon.</p>".to_string()
     } else {
@@ -404,7 +411,8 @@ async fn render_patient_portal_home(
           <option value="">Use default / first available</option>
           {}
         </select>
-        <p style="font-size:0.8rem;color:#64748b;margin-top:0.25rem;">Selecting a template will create a proper structured CRF submission for the chosen visit.</p>
+        <p style="font-size:0.8rem;color:#64748b;margin-top:0.25rem;">Selecting a template will create a proper structured CRF submission for the chosen visit. Example answers structure:</p>
+        <pre style="background:#f8fafc;padding:6px;font-size:0.75rem;overflow:auto;max-height:120px;">{}</pre>
       </details>
 
       <button type="submit" style="margin-top:1rem;background:#f05708;color:white;padding:0.65rem 1.4rem;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Submit Report to Study Team</button>
@@ -427,6 +435,7 @@ async fn render_patient_portal_home(
         query_escape(token),
         visit_options_html,
         template_options_html,
+        html_escape(&sample_answers),
         recent_html
     );
 
@@ -11001,6 +11010,30 @@ fn title_case_token(token: &str) -> String {
 
 fn normalize_whitespace(input: &str) -> String {
     input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn generate_sample_answers_json(fields: &[StudyCrfField]) -> String {
+    if fields.is_empty() {
+        return "{}".to_string();
+    }
+    let mut map = serde_json::Map::new();
+    for field in fields.iter().take(10) {
+        let sample = match field.field_type.as_str() {
+            "number" => serde_json::Value::Number(0.into()),
+            "boolean" => serde_json::Value::Bool(false),
+            "date" | "datetime" => serde_json::Value::String("2026-01-01".to_string()),
+            "single_select" => {
+                if let Ok(opts) = serde_json::from_str::<Vec<serde_json::Value>>(&field.options_json) {
+                    opts.first().cloned().unwrap_or(serde_json::Value::String("option1".to_string()))
+                } else {
+                    serde_json::Value::String("option1".to_string())
+                }
+            }
+            _ => serde_json::Value::String("".to_string()),
+        };
+        map.insert(field.field_key.clone(), sample);
+    }
+    serde_json::to_string_pretty(&map).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn render_crf_field_type_options(selected_type: &str) -> String {
