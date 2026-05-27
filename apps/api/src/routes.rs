@@ -2969,6 +2969,8 @@ async fn render_app_dashboard(
         .await
         .unwrap_or_default();
 
+    let now = Utc::now();
+
     // Build a compact "Recent Patient Portal Reports" section for the patients tab
     let recent_pro_reports_html = if recent_pro_reports.is_empty() {
         "<div style=\"font-size:0.85rem;color:#64748b;font-style:italic;margin-top:0.5rem;\">No patient portal reports yet. Generate a portal link for a patient above to enable daily check-ins.</div>".to_string()
@@ -2984,12 +2986,23 @@ async fn render_app_dashboard(
                     format!("{} {}", compact, truncated)
                 };
 
+                // Aging badge for top-level visibility (matches workbench patient report pills)
+                let (age_days, _bucket) = patient_report_age(r.created_at, now);
+                let age_badge = if age_days > 30 {
+                    format!(r#"<span style="background:#c53030;color:white;padding:1px 4px;border-radius:3px;font-size:0.62rem;font-weight:600;margin-left:4px;" title="Stale patient portal report">STALE {}d</span>"#, age_days)
+                } else if age_days > 7 {
+                    format!(r#"<span style="background:#b7791f;color:white;padding:1px 4px;border-radius:3px;font-size:0.62rem;font-weight:600;margin-left:4px;" title="Aging patient portal report">AGING {}d</span>"#, age_days)
+                } else {
+                    format!(r#"<span style="background:#047857;color:white;padding:1px 4px;border-radius:3px;font-size:0.62rem;font-weight:600;margin-left:4px;" title="Recent patient portal report">{}d</span>"#, age_days)
+                };
+
                 format!(
                     r#"<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:4px;padding:6px 10px;margin-bottom:4px;font-size:0.82rem;">
-                        <strong>Patient Report</strong> • {} <span style="color:#166534;">(via portal)</span><br>
+                        <strong>Patient Report</strong> • {} <span style="color:#166534;">(via portal)</span>{}<br>
                         <span style="color:#475569;"><code>{}</code></span> <a href="/ui/app?admin_email={}&patient_id={}" style="color:#166534;font-weight:600;">View patient →</a>
                     </div>"#,
                     html_escape(&r.submitted_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "recent".into())),
+                    age_badge,
                     html_escape(&compact_answers),
                     admin_email_q,
                     r.patient_id
