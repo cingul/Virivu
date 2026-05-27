@@ -7609,6 +7609,19 @@ async fn submit_create_study_data_query(
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
+    let submission = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+
+    if submission.status == "draft" {
+        return Err(ApiError::Validation(
+            "Cannot raise queries on a draft submission.".to_string(),
+        ));
+    }
+
     let raised_by_user_id = ctx
         .db
         .get_user_by_email(user.email.as_str())
