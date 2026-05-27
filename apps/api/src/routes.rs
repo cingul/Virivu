@@ -4615,20 +4615,14 @@ async fn submit_app_create_encounter(
 
 async fn submit_app_send_invite(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Form(form): Form<AppSendInviteForm>,
 ) -> Result<Redirect, ApiError> {
     let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
     let project_id = parse_uuid_field(&form.project_id, "project_id")?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
+
     ctx.db
         .create_form_invite(
             organization_id,
@@ -4641,7 +4635,7 @@ async fn submit_app_send_invite(
 
     Ok(Redirect::to(&format!(
         "/ui/app?admin_email={}&organization_id={}&project_id={}&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         organization_id,
         project_id,
         query_escape("Form invite sent")
@@ -4650,20 +4644,13 @@ async fn submit_app_send_invite(
 
 async fn submit_app_create_media_ticket(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Form(form): Form<AppCreateMediaTicketForm>,
 ) -> Result<Html<String>, ApiError> {
     let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
     let project_id = parse_uuid_field(&form.project_id, "project_id")?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, organization_id, ROLE_COORDINATOR_OR_BETTER)?;
     let ticket = ctx
         .db
         .create_media_upload_ticket(
@@ -4687,7 +4674,7 @@ async fn submit_app_create_media_ticket(
         html_escape(&ticket.upload_url),
         html_escape(&ticket.upload_url),
         ticket.expires_at,
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         organization_id,
         project_id
     );
@@ -7271,6 +7258,7 @@ async fn submit_publish_study_crf_template(
 
 async fn submit_create_study_visit_template(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(project_id): Path<Uuid>,
     Form(form): Form<StudyVisitTemplateForm>,
 ) -> Result<Redirect, ApiError> {
@@ -7280,16 +7268,8 @@ async fn submit_create_study_visit_template(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
     let target_day = form.target_day.trim().parse::<i32>().unwrap_or(0);
     let window_before_days = form
         .window_before_days
@@ -7317,7 +7297,7 @@ async fn submit_create_study_visit_template(
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         project.organization_id,
         project_id,
         query_escape("Visit template created")
