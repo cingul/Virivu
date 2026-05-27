@@ -5865,10 +5865,52 @@ async fn render_study_workbench(
             .join("")
     };
 
-    let submissions_html = if submissions.is_empty() {
-        "<li>No CRF submissions yet.</li>".to_string()
+    // Split for dedicated Patient Reports section in the study workbench
+    let (patient_submissions, other_submissions): (Vec<_>, Vec<_>) = submissions
+        .iter()
+        .partition(|s| s.entered_by_user_id.is_none());
+
+    let patient_reports_html = if patient_submissions.is_empty() {
+        "<p style=\"color:#64748b;font-size:0.85rem;margin:0.5rem 0;\">No patient portal reports yet for this study.</p>".to_string()
     } else {
-        submissions
+        patient_submissions
+            .iter()
+            .take(8)
+            .map(|submission| {
+                let selected_org = selected_org_id
+                    .map(|org_id| format!("&organization_id={org_id}"))
+                    .unwrap_or_default();
+                let selected_project = selected_project_id
+                    .map(|project_id| format!("&project_id={project_id}"))
+                    .unwrap_or_default();
+                format!(
+                    r#"<li style="margin-bottom:4px;"><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(patient={} status={} SDV={})</small>
+                    <form method="post" action="/ui/studies/queries" style="display:inline;margin-left:8px;">
+                      <input type="hidden" name="admin_email" value="{}" />
+                      <input type="hidden" name="submission_id" value="{}" />
+                      <button type="submit" style="font-size:0.65rem;padding:1px 6px;">Create Query</button>
+                    </form>
+                    </li>"#,
+                    admin_email_q,
+                    selected_org,
+                    selected_project,
+                    submission.id,
+                    submission.id,
+                    submission.patient_id,
+                    html_escape(&submission.status),
+                    html_escape(&submission.sdv_status),
+                    admin_email_q,
+                    submission.id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let submissions_html = if other_submissions.is_empty() {
+        "<li>No coordinator submissions yet.</li>".to_string()
+    } else {
+        other_submissions
             .iter()
             .take(20)
             .map(|submission| {
@@ -5878,13 +5920,8 @@ async fn render_study_workbench(
                 let selected_project = selected_project_id
                     .map(|project_id| format!("&project_id={project_id}"))
                     .unwrap_or_default();
-                let source_badge = if submission.entered_by_user_id.is_none() {
-                    " <span style=\"background:#166534;color:white;font-size:0.65rem;padding:1px 5px;border-radius:3px;\">patient portal</span>"
-                } else {
-                    ""
-                };
                 format!(
-                    r#"<li><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(template={} patient={} status={} SDV={})</small>{}</li>"#,
+                    r#"<li><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(template={} patient={} status={} SDV={})</small></li>"#,
                     admin_email_q,
                     selected_org,
                     selected_project,
@@ -5893,8 +5930,7 @@ async fn render_study_workbench(
                     submission.template_id,
                     submission.patient_id,
                     html_escape(&submission.status),
-                    html_escape(&submission.sdv_status),
-                    source_badge
+                    html_escape(&submission.sdv_status)
                 )
             })
             .collect::<Vec<_>>()
@@ -6643,7 +6679,9 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">Patients</h3>
   <ul>{}</ul>
-  <h3 style="margin-top:1rem;">Submissions <span style="font-size:0.75rem;color:#166534;">({} patient portal)</span></h3>
+  <h3 style="margin-top:1rem;">Patient Reports (via portal)</h3>
+  <ul style="background:#f0fdf4;border:1px solid #86efac;border-radius:4px;padding:6px 10px;margin-bottom:0.75rem;">{}</ul>
+  <h3 style="margin-top:0.25rem;">Coordinator Submissions</h3>
   <ul>{}</ul>
 </section>"#,
             create_submission_action,
@@ -6660,8 +6698,8 @@ async fn render_study_workbench(
             html_escape(admin_email.trim()),
             sdv_submission_action,
             html_escape(admin_email.trim()),
-            patient_entered_count,
             patients_html,
+            patient_reports_html,
             submissions_html
         ),
         "queries" => format!(
