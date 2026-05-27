@@ -252,6 +252,7 @@ struct PatientProReportForm {
     severity: Option<String>,
     additional_notes: Option<String>,
     patient_visit_id: Option<String>,
+    template_id: Option<String>,
 }
 
 async fn render_patient_portal_home(
@@ -298,6 +299,20 @@ async fn render_patient_portal_home(
     };
 
     let scheduled_visits = ctx.db.list_patient_study_visits_for_patient(patient.id).await.unwrap_or_default();
+
+    let available_templates = ctx.db.list_study_crf_templates(patient.project_id).await.unwrap_or_default();
+
+    let template_options_html = available_templates
+        .iter()
+        .map(|t| {
+            format!(
+                "<option value=\"{}\">{}</option>",
+                t.id,
+                html_escape(&t.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
     let visits_html = if scheduled_visits.is_empty() {
         "<p style=\"color:#64748b;font-size:0.9rem;\">No scheduled visits yet. Your coordinator will schedule your first activities soon.</p>".to_string()
     } else {
@@ -382,6 +397,16 @@ async fn render_patient_portal_home(
         {}
       </select>
 
+      <details style="margin-top:0.75rem;">
+        <summary style="font-weight:600;cursor:pointer;">Submit structured data using a CRF template (advanced)</summary>
+        <label style="display:block;margin-top:0.5rem;font-weight:600;">CRF Template</label>
+        <select name="template_id" style="width:100%;padding:8px;border:1px solid #cbd5e0;border-radius:6px;">
+          <option value="">Use default / first available</option>
+          {}
+        </select>
+        <p style="font-size:0.8rem;color:#64748b;margin-top:0.25rem;">Selecting a template will create a proper structured CRF submission for the chosen visit.</p>
+      </details>
+
       <button type="submit" style="margin-top:1rem;background:#f05708;color:white;padding:0.65rem 1.4rem;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Submit Report to Study Team</button>
     </form>
 
@@ -401,6 +426,7 @@ async fn render_patient_portal_home(
         visits_html,
         query_escape(token),
         visit_options_html,
+        template_options_html,
         recent_html
     );
 
@@ -456,16 +482,27 @@ async fn submit_patient_pro_report(
     ).await;
 
     // If the patient selected a scheduled visit, also create a real CRF submission draft linked to it.
-    // This makes patient-reported data appear in the normal study submissions workflow.
+    // If a specific template was chosen, use it; otherwise fall back to first available.
     if let Some(visit_id_str) = &form.patient_visit_id {
         if let Ok(visit_id) = parse_uuid_field(visit_id_str, "patient_visit_id") {
-            // Resolve a template for the patient's project (first available)
-            let templates = ctx.db.list_study_crf_templates(patient.project_id).await.unwrap_or_default();
-            if let Some(template) = templates.first() {
+            let chosen_template_id = if let Some(tpl_str) = &form.template_id {
+                parse_uuid_field(tpl_str, "template_id").ok()
+            } else {
+                None
+            };
+
+            let template_id = if let Some(tid) = chosen_template_id {
+                tid
+            } else {
+                let templates = ctx.db.list_study_crf_templates(patient.project_id).await.unwrap_or_default();
+                templates.first().map(|t| t.id).unwrap_or_default()
+            };
+
+            if !template_id.is_nil() {
                 let _ = ctx.db
                     .create_study_crf_submission(
                         patient.project_id,
-                        template.id,
+                        template_id,
                         patient.id,
                         Some(visit_id),
                         &answers_json,
@@ -480,7 +517,7 @@ async fn submit_patient_pro_report(
                     None,
                     None,
                     Some(&answers_json),
-                    Some(&format!("Patient submitted data for visit {} via portal", visit_id)),
+                    Some(&format!("Patient submitted structured data for visit {} via portal", visit_id)),
                 ).await;
             }
         }
