@@ -1221,6 +1221,18 @@ async fn mark_study_crf_submission_submitted(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+
+    if submission.status == "locked" {
+        return Err(ApiError::Validation(
+            "This CRF submission is locked. Answers are frozen and it cannot be re-submitted.".to_string(),
+        ));
+    }
+    if submission.status != "draft" {
+        return Err(ApiError::Validation(
+            "Only draft submissions can be marked submitted.".to_string(),
+        ));
+    }
+
     let updated = ctx
         .db
         .submit_study_crf_submission(submission_id)
@@ -1247,6 +1259,13 @@ async fn lock_study_crf_submission(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
     require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+
+    if submission.status == "locked" {
+        return Err(ApiError::Validation(
+            "This CRF submission is already locked. Answers are frozen.".to_string(),
+        ));
+    }
+
     let updated = ctx
         .db
         .lock_study_crf_submission(submission_id)
@@ -7370,6 +7389,17 @@ async fn submit_mark_study_crf_submission_submitted(
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
+    if submission.status == "locked" {
+        return Err(ApiError::Validation(
+            "This CRF submission is locked. Answers are frozen and it cannot be re-submitted.".to_string(),
+        ));
+    }
+    if submission.status != "draft" {
+        return Err(ApiError::Validation(
+            "Only draft submissions can be marked submitted.".to_string(),
+        ));
+    }
+
     // Snapshot answers at submit for provenance
     let current = ctx.db.get_study_crf_submission(submission_id).await.ok().flatten();
     let snapshot = current.as_ref().map(|s| s.answers_json.clone());
@@ -7420,6 +7450,12 @@ async fn submit_lock_study_crf_submission(
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+
+    if submission.status == "locked" {
+        return Err(ApiError::Validation(
+            "This CRF submission is already locked. Answers are frozen.".to_string(),
+        ));
+    }
 
     // Capture current answers for provenance before locking
     let current_submission = ctx.db.get_study_crf_submission(submission_id).await.ok().flatten();
