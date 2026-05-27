@@ -8367,6 +8367,7 @@ async fn open_dua_agreement_workspace(
 
 async fn render_create_dua_from_form(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Form(form): Form<DuaDraftForm>,
 ) -> Result<Html<String>, ApiError> {
     let organization_id =
@@ -8374,25 +8375,11 @@ async fn render_create_dua_from_form(
             ApiError::Validation("organization_id must be a valid UUID".to_string())
         })?;
 
-    let has_access = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !has_access {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks permission for this organization".to_string(),
-        )));
-    }
+    require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
 
     let effective_date = parse_optional_date(&form.effective_date)?;
     let expiration_date = parse_optional_date(&form.expiration_date)?;
-    let created_by_user_id = ctx
-        .db
-        .get_user_by_email(form.admin_email.trim())
-        .await
-        .map_err(ApiError::internal)?
-        .map(|u| u.id);
+    let created_by_user_id = Some(user.user_id);
 
     let agreement = ctx
         .db
@@ -8437,8 +8424,8 @@ async fn render_create_dua_from_form(
         html_escape(&signing_url),
         html_escape(&signing_url),
         agreement.id,
-        query_escape(form.admin_email.trim()),
-        query_escape(form.admin_email.trim())
+        query_escape(user.email.as_str()),
+        query_escape(user.email.as_str())
     );
     Ok(Html(render_cingulum_page("DUA Created", body)))
 }
