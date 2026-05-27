@@ -320,12 +320,26 @@ async fn render_patient_portal_home(
             .join("")
     };
 
+    let scheduled_visits = ctx.db.list_patient_study_visits_for_patient(patient.id).await.unwrap_or_default();
+
+    // Build visit lookup for nice display in the patient's own structured report history
+    let visit_display: std::collections::HashMap<uuid::Uuid, String> = scheduled_visits
+        .iter()
+        .map(|v| {
+            let date = v.scheduled_for
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "unscheduled".to_string());
+            (v.id, format!("{} ({})", date, html_escape(&v.status)))
+        })
+        .collect();
+
+    // Enriched view of the patient's own structured CRF submissions (with visit context + status)
     let my_structured_html = if my_structured_submissions.is_empty() {
         "<p style=\"color:#64748b;font-size:0.85rem;margin-top:0.25rem;\">No structured CRF reports submitted yet.</p>".to_string()
     } else {
         my_structured_submissions
             .iter()
-            .take(3)
+            .take(4)
             .map(|s| {
                 let (age_days, bucket) = patient_report_age(s.created_at, now);
                 let age_badge = if bucket == "stale" {
@@ -335,17 +349,49 @@ async fn render_patient_portal_home(
                 } else {
                     format!(r#"<span style="background:#047857;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;">{}d</span>"#, age_days)
                 };
+
+                let visit_info = s.patient_visit_id
+                    .and_then(|vid| visit_display.get(&vid))
+                    .cloned()
+                    .unwrap_or_else(|| "general / unscheduled".to_string());
+
+                let sdv = if s.sdv_status.trim().to_ascii_lowercase() != "pending" {
+                    format!(r#"<span style="background:#dbeafe;color:#1e40af;padding:1px 3px;border-radius:2px;font-size:0.55rem;margin-left:4px;">SDV {}</span>"#, html_escape(&s.sdv_status))
+                } else { String::new() };
+
+                let locked = if s.locked_at.is_some() {
+                    r#"<span style="margin-left:4px;" title="Locked (immutable)">🔒</span>"#
+                } else { "" };
+
+                // Very compact answers preview (first 1-2 fields)
+                let answers_preview = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&s.answers_json) {
+                    if let Some(obj) = val.as_object() {
+                        let preview = obj.iter().take(2).map(|(k, v)| {
+                            let vstr = if v.is_string() { v.as_str().unwrap_or("").to_string() } else { v.to_string() };
+                            format!("{}: {}", html_escape(k), html_escape(&vstr.chars().take(25).collect::<String>()))
+                        }).collect::<Vec<_>>().join(" | ");
+                        if !preview.is_empty() {
+                            format!(r#"<div style="font-size:0.65rem;color:#64748b;margin-top:2px;">{}</div>"#, preview)
+                        } else { String::new() }
+                    } else { String::new() }
+                } else { String::new() };
+
                 format!(
-                    "<li style=\"margin-bottom:4px;\"><strong>Structured CRF</strong> — {} {}</li>",
+                    "<li style=\"margin-bottom:8px;\"><strong>Structured CRF</strong> — {} <span style=\"color:#64748b;font-size:0.75rem;\">{}</span> {} {}{} {}</li>{}",
                     html_escape(&s.status),
-                    age_badge
+                    visit_info,
+                    age_badge,
+                    sdv,
+                    locked,
+                    answers_preview,
+                    if s.status.to_ascii_lowercase() == "submitted" && s.locked_at.is_none() {
+                        r#"<span style="font-size:0.6rem;color:#b45309;margin-left:6px;">(awaiting coordinator review)</span>"#
+                    } else { "" }
                 )
             })
             .collect::<Vec<_>>()
             .join("")
     };
-
-    let scheduled_visits = ctx.db.list_patient_study_visits_for_patient(patient.id).await.unwrap_or_default();
 
     let available_templates = ctx.db.list_study_crf_templates(patient.project_id).await.unwrap_or_default();
 
