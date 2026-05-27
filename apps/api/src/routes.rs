@@ -296,6 +296,31 @@ async fn render_patient_portal_home(
             .join("")
     };
 
+    let scheduled_visits = ctx.db.list_patient_study_visits_for_patient(patient.id).await.unwrap_or_default();
+    let visits_html = if scheduled_visits.is_empty() {
+        "<p style=\"color:#64748b;font-size:0.9rem;\">No scheduled visits yet. Your coordinator will schedule your first activities soon.</p>".to_string()
+    } else {
+        scheduled_visits
+            .iter()
+            .take(5)
+            .map(|v| {
+                let date_str = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "TBD".to_string());
+                let status_badge = match v.status.as_str() {
+                    "completed" => "<span style=\"background:#dcfce7;color:#166534;padding:1px 6px;border-radius:3px;font-size:0.7rem;\">completed</span>",
+                    "cancelled" => "<span style=\"background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:3px;font-size:0.7rem;\">cancelled</span>",
+                    _ => "<span style=\"background:#fef3c7;color:#854d0e;padding:1px 6px;border-radius:3px;font-size:0.7rem;\">scheduled</span>",
+                };
+                format!(
+                    "<li style=\"margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;\"><span><strong>{}</strong> — {}</span> {}</li>",
+                    html_escape(&date_str),
+                    html_escape(&v.status),
+                    status_badge
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
     let body = format!(
         r#"
 <div style="max-width:720px;margin:40px auto;font-family:system-ui,sans-serif;">
@@ -310,7 +335,10 @@ async fn render_patient_portal_home(
       Enrolled: {}
     </div>
 
-    <h3 style="margin-top:1.5rem;">Daily Check-in / Symptom Report</h3>
+    <h3 style="margin-top:1.5rem;">Your Scheduled Visits</h3>
+    <ul style="font-size:0.9rem; line-height:1.5; padding-left:1.1rem; margin-bottom:1rem;">{}</ul>
+
+    <h3 style="margin-top:1rem;">Daily Check-in / Symptom Report</h3>
     <form method="post" action="/portal/home?token={}">
       <label style="display:block;margin-bottom:0.25rem;font-weight:600;">What symptoms or changes are you experiencing today?</label>
       <textarea name="symptoms" required rows="4" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;" placeholder="e.g. mild headache, fatigue, no new issues..."></textarea>
@@ -347,6 +375,7 @@ async fn render_patient_portal_home(
         patient.hex_code.as_deref().unwrap_or("N/A"),
         html_escape(patient.email.as_deref().unwrap_or("not on file")),
         patient.created_at.format("%Y-%m-%d"),
+        visits_html,
         query_escape(token),
         recent_html
     );

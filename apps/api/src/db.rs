@@ -1171,6 +1171,38 @@ impl Db {
         Ok(rows.iter().map(row_to_patient_study_visit).collect())
     }
 
+    /// List scheduled visits for a specific patient (used in patient portal)
+    pub async fn list_patient_study_visits_for_patient(
+        &self,
+        patient_id: Uuid,
+    ) -> anyhow::Result<Vec<PatientStudyVisit>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT
+                    id,
+                    project_id,
+                    patient_id,
+                    visit_template_id,
+                    scheduled_for,
+                    status,
+                    completed_at,
+                    locked,
+                    locked_at,
+                    locked_by_user_id,
+                    created_at
+                FROM patient_study_visits
+                WHERE patient_id = $1
+                ORDER BY scheduled_for ASC NULLS LAST, created_at DESC
+                LIMIT 50
+                "#,
+                &[&patient_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_patient_study_visit).collect())
+    }
+
     pub async fn create_study_crf_submission(
         &self,
         project_id: Uuid,
