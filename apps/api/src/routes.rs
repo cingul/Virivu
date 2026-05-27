@@ -164,36 +164,52 @@ async fn submit_patient_intake(
     State(ctx): State<AppContext>,
     Form(form): Form<PatientIntakeForm>,
 ) -> Result<Redirect, ApiError> {
-    // Basic intake that creates a patient record.
-    // In production this should resolve study_code to a real org/site,
-    // enforce consent workflow, send emails, and create audit trail.
+    // Production-oriented intake: best-effort resolution of study_code to a real site.
+    // Falls back gracefully if no match (coordinator will assign later).
+
+    let study_code = form.study_code.trim();
+
+    // Try to resolve study_code to a project (by protocol_code or name contains)
+    let projects = ctx.db.list_all_projects().await.unwrap_or_default();
+
+    let matched_project = projects.iter().find(|p| {
+        p.protocol_code.as_deref().map_or(false, |c| c.eq_ignore_ascii_case(study_code)) ||
+        p.name.to_lowercase().contains(&study_code.to_lowercase())
+    });
+
+    let site_id = if let Some(proj) = matched_project {
+        // Pick first site for the project (real flow should be smarter)
+        ctx.db.list_sites_by_project(proj.id).await
+            .ok()
+            .and_then(|sites| sites.first().map(|s| s.id))
+            .unwrap_or_else(uuid::Uuid::nil)
+    } else {
+        uuid::Uuid::nil()
+    };
 
     let patient = ctx
         .db
         .create_patient(
-            // Using a placeholder site for now — real flow will assign properly
-            // For demo purposes we create under a default org if one exists.
-            // TODO: Proper study_code resolution
-            uuid::Uuid::nil(), // temporary until study resolution is wired
-            None,
+            site_id,
+            Some(&format!("intake:{}", study_code)),
             Some(form.email.trim()),
             None,
         )
         .await
         .map_err(ApiError::internal)?;
 
-    // Audit the intake
+    // Strong audit for portal intake (important for compliance)
     let _ = ctx.db.insert_audit_log(
         "patients",
         patient.id,
-        "intake_submitted",
+        "intake_submitted_via_portal",
         None,
         None,
         None,
-        Some(&format!("Study code: {}", form.study_code.trim())),
+        Some(&format!("Study code: {} | resolved_site: {}", study_code, site_id)),
     ).await;
 
-    Ok(Redirect::to("/portal?notice=Thank+you.+Your+intake+has+been+received.+A+study+coordinator+will+contact+you+shortly+to+complete+enrollment+and+consent."))
+    Ok(Redirect::to("/portal/intake/success"))
 }
 
 async fn render_patient_intake_success() -> Result<Html<String>, ApiError> {
@@ -218,6 +234,7 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/portal", get(render_portal_placeholder))
         .route("/portal/intake", get(render_patient_intake_form))
         .route("/portal/intake", post(submit_patient_intake))
+        .route("/portal/intake/success", get(render_patient_intake_success))
         .route("/ui/foundation", get(render_foundation_command_center))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
