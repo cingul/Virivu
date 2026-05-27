@@ -6831,6 +6831,7 @@ async fn submit_bulk_delete_study_crf_fields(
 
 async fn submit_bulk_delete_corrupted_study_crf_fields(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(template_id): Path<Uuid>,
     Form(form): Form<StudyCrfBulkDeleteForm>,
 ) -> Result<Redirect, ApiError> {
@@ -6846,20 +6847,12 @@ async fn submit_bulk_delete_corrupted_study_crf_fields(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
     if form.confirmation_text.trim() != "DELETE CORRUPTED" {
         return Ok(Redirect::to(&format!(
             "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
-            query_escape(form.admin_email.trim()),
+            query_escape(user.email.as_str()),
             project.organization_id,
             project.id,
             template.id,
@@ -6883,7 +6876,7 @@ async fn submit_bulk_delete_corrupted_study_crf_fields(
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         project.organization_id,
         project.id,
         template.id,
