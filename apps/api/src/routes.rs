@@ -280,6 +280,7 @@ async fn render_patient_portal_home(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::Auth(AuthError::Forbidden("Invalid or expired patient portal link".to_string())))?;
 
+    let now = Utc::now();
     let recent_submissions = ctx.db.list_pro_submissions(patient.id).await.unwrap_or_default();
     let recent_html = if recent_submissions.is_empty() {
         "<p style=\"color:#64748b;font-size:0.9rem;\">No prior reports submitted yet.</p>".to_string()
@@ -288,10 +289,21 @@ async fn render_patient_portal_home(
             .iter()
             .take(3)
             .map(|s| {
+                let age_badge = {
+                    let (age_days, bucket) = patient_report_age(s.created_at, now);
+                    if bucket == "stale" {
+                        format!(r#"<span style="background:#c53030;color:white;padding:1px 4px;border-radius:2px;font-size:0.65rem;font-weight:600;margin-left:4px;">STALE {}d</span>"#, age_days)
+                    } else if bucket == "aging" {
+                        format!(r#"<span style="background:#b7791f;color:white;padding:1px 4px;border-radius:2px;font-size:0.65rem;font-weight:600;margin-left:4px;">AGING {}d</span>"#, age_days)
+                    } else {
+                        format!(r#"<span style="background:#047857;color:white;padding:1px 4px;border-radius:2px;font-size:0.65rem;font-weight:600;margin-left:4px;">{}d</span>"#, age_days)
+                    }
+                };
                 format!(
-                    "<li style=\"margin-bottom:6px;\"><strong>{}</strong> — {} <span style=\"color:#64748b;font-size:0.8rem;\">({})</span></li>",
+                    "<li style=\"margin-bottom:6px;\"><strong>{}</strong> — {} {} <span style=\"color:#64748b;font-size:0.8rem;\">({})</span></li>",
                     html_escape(&s.form_type),
                     html_escape(&s.submitted_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "recent".to_string())),
+                    age_badge,
                     s.total_score.map(|sc| format!("score {}", sc)).unwrap_or_default()
                 )
             })
