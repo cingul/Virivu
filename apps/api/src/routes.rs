@@ -5369,15 +5369,15 @@ async fn render_study_workbench(
                 // For patient reports, show a readable key-value preview of answers + visit context
                 let answers_preview = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&sub.answers_json) {
                     if let Some(obj) = val.as_object() {
-                        obj.iter().take(4).map(|(k, v)| {
+                        obj.iter().take(10).map(|(k, v)| {
                             let v_str = if v.is_string() { v.as_str().unwrap_or("").to_string() } else { v.to_string() };
-                            format!("{}: {}", html_escape(k), html_escape(&v_str.chars().take(40).collect::<String>()))
-                        }).collect::<Vec<_>>().join(" | ")
+                            format!("{}: {}", html_escape(k), html_escape(&v_str.chars().take(60).collect::<String>()))
+                        }).collect::<Vec<_>>().join("<br>")
                     } else {
-                        sub.answers_json.chars().take(120).collect()
+                        sub.answers_json.chars().take(200).collect()
                     }
                 } else {
-                    sub.answers_json.chars().take(120).collect()
+                    sub.answers_json.chars().take(200).collect()
                 };
 
                 let visit_info = sub.patient_visit_id.and_then(|vid| {
