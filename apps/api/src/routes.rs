@@ -196,6 +196,20 @@ async fn submit_patient_intake(
     Ok(Redirect::to("/portal?notice=Thank+you.+Your+intake+has+been+received.+A+study+coordinator+will+contact+you+shortly+to+complete+enrollment+and+consent."))
 }
 
+async fn render_patient_intake_success() -> Result<Html<String>, ApiError> {
+    let body = r#"
+<div style="max-width:620px; margin:60px auto; font-family:system-ui,sans-serif; text-align:center;">
+  <div style="background:white; padding:3rem; border-radius:16px; box-shadow:0 10px 15px -3px rgba(0,0,0,0.1);">
+    <div style="font-size:3rem; margin-bottom:1rem;">✅</div>
+    <h1 style="margin:0 0 0.5rem; color:#02182b;">Intake Received</h1>
+    <p style="color:#475569; font-size:1.05rem;">Thank you. A study coordinator has been notified and will reach out soon to guide you through consent and next steps.</p>
+    <a href="/portal" style="display:inline-block; margin-top:1.5rem; background:#f05708; color:white; padding:0.7rem 1.4rem; border-radius:6px; text-decoration:none; font-weight:600;">Back to Patient Portal</a>
+  </div>
+</div>
+"#;
+    Ok(Html(body.to_string()))
+}
+
 pub fn router(ctx: AppContext) -> Router {
     let public_router = Router::new()
         .route("/health", get(health))
@@ -3044,6 +3058,29 @@ async fn render_app_dashboard(
         "<div style=\"background:#e7e5da; padding:1rem; border-radius:8px; color:#02182b; font-weight:500; font-size:0.9rem;\">ℹ️ Select a project from the Overview tab to view granular insights.</div>".to_string()
     };
 
+    let pending_intakes: Vec<_> = patients
+        .iter()
+        .filter(|p| p.external_subject_id.as_deref().map_or(false, |s| s.starts_with("intake:")))
+        .collect();
+
+    let pending_intakes_html = if !pending_intakes.is_empty() {
+        let items = pending_intakes.iter().map(|p| {
+            format!(
+                r#"<div style="background:#fefce8; border:1px solid #fde047; padding:6px 10px; border-radius:4px; font-size:0.85rem; margin-bottom:4px;">
+                   <strong>Portal Intake:</strong> {} &nbsp; <a href="/ui/app?admin_email={}&organization_id={}&project_id={}&patient_id={}" style="color:#b45309; font-weight:600;">Review →</a>
+                 </div>"#,
+                html_escape(p.external_subject_id.as_deref().unwrap_or("")),
+                html_escape(admin_email.trim()),
+                selected_org_value,
+                selected_project_value,
+                p.id
+            )
+        }).collect::<Vec<_>>().join("");
+        format!(r#"<div style="margin-bottom:1rem;"><div style="font-weight:600; color:#854d0e; margin-bottom:4px;">Pending Intakes from Patient Portal</div>{}</div>"#, items)
+    } else {
+        String::new()
+    };
+
     let patients_html = if patients.is_empty() {
         "<p style=\"color:#718096;font-style:italic;\">No patients yet for selected project.</p>".to_string()
     } else {
@@ -3546,6 +3583,7 @@ async fn render_app_dashboard(
   </div>
 
   <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700;">Patients</h3>
+  {}
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">
     <div id="add-patient-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('patient-create-modal').showModal()">
       <span style="font-size:2.5rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
@@ -3585,6 +3623,7 @@ async fn render_app_dashboard(
             html_escape(admin_email.trim()),
             selected_org_value,
             selected_project_value,
+            pending_intakes_html,
             patients_html,
             html_escape(admin_email.trim())
         ),
