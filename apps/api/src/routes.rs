@@ -6042,8 +6042,15 @@ async fn render_study_workbench(
                     String::new()
                 };
 
+                let answers_preview = {
+                    let compact = submission.answers_json.chars().take(120).collect::<String>();
+                    let truncated = if submission.answers_json.len() > 120 { "..." } else { "" };
+                    format!("<div style=\"font-size:0.7rem;color:#166534;margin-top:2px;\"><code>{}{}</code></div>", html_escape(&compact), truncated)
+                };
+
                 format!(
                     r#"<li style="margin-bottom:4px;"><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(patient={} status={} SDV={}{})</small>
+                    {}
                     <form method="post" action="/ui/studies/queries" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="admin_email" value="{}" />
                       <input type="hidden" name="submission_id" value="{}" />
@@ -6067,6 +6074,7 @@ async fn render_study_workbench(
                     html_escape(&submission.status),
                     html_escape(&submission.sdv_status),
                     visit_text,
+                    answers_preview,
                     admin_email_q,
                     submission.id,
                     submission.id,
