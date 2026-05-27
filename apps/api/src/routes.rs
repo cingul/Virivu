@@ -5360,10 +5360,20 @@ async fn render_study_workbench(
             };
 
             let preview = if sub.entered_by_user_id.is_none() {
-                // For patient reports, show a compact view of the answers
+                // For patient reports, show a compact view of the answers + visit context
                 let compact = sub.answers_json.chars().take(180).collect::<String>();
                 let truncated = if sub.answers_json.len() > 180 { "..." } else { "" };
-                format!("<div style=\"font-size:0.75rem;color:#166534;margin-top:2px;\"><strong>Patient answers:</strong> <code>{}{}</code></div>", html_escape(&compact), truncated)
+                let visit_info = sub.patient_visit_id.and_then(|vid| {
+                    patient_visits.iter().find(|v| v.id == vid).map(|v| {
+                        let date = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "unscheduled".to_string());
+                        format!(" (visit: {} - {})", date, v.status)
+                    })
+                }).unwrap_or_default();
+
+                format!(
+                    "<div style=\"font-size:0.75rem;color:#166534;margin-top:2px;\"><strong>Patient answers:</strong> <code>{}{}</code>{}</div>",
+                    html_escape(&compact), truncated, visit_info
+                )
             } else {
                 "".to_string()
             };
