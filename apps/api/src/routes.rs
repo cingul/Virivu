@@ -461,7 +461,7 @@ async fn render_patient_portal_home(
 async fn submit_patient_pro_report(
     State(ctx): State<AppContext>,
     Query(query): Query<PatientPortalQuery>,
-    Form(form): Form<PatientProReportForm>,
+    Form(form): Form<serde_json::Value>,
 ) -> Result<Redirect, ApiError> {
     let token = query.token.as_deref().unwrap_or("").trim();
     if token.is_empty() {
@@ -475,16 +475,21 @@ async fn submit_patient_pro_report(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::Auth(AuthError::Forbidden("Invalid or expired patient portal link".to_string())))?;
 
+    // Extract known simple fields (with safe defaults for the daily check-in path)
+    let symptoms = form.get("symptoms").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let severity = form.get("severity").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
+    let additional_notes = form.get("additional_notes").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
+
     let mut answers = serde_json::Map::new();
-    answers.insert("symptoms".to_string(), serde_json::Value::String(form.symptoms.trim().to_string()));
-    if let Some(sev) = &form.severity {
-        if !sev.trim().is_empty() {
-            answers.insert("severity".to_string(), serde_json::Value::String(sev.trim().to_string()));
+    answers.insert("symptoms".to_string(), serde_json::Value::String(symptoms.clone()));
+    if let Some(sev) = severity {
+        if !sev.is_empty() {
+            answers.insert("severity".to_string(), serde_json::Value::String(sev));
         }
     }
-    if let Some(notes) = &form.additional_notes {
-        if !notes.trim().is_empty() {
-            answers.insert("additional_notes".to_string(), serde_json::Value::String(notes.trim().to_string()));
+    if let Some(notes) = additional_notes {
+        if !notes.is_empty() {
+            answers.insert("additional_notes".to_string(), serde_json::Value::String(notes));
         }
     }
     let answers_json = serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string());
@@ -503,17 +508,17 @@ async fn submit_patient_pro_report(
         None,
         None,
         Some(&answers_json),
-        Some(&format!("Patient portal daily check-in ({} chars)", form.symptoms.trim().len())),
+        Some(&format!("Patient portal daily check-in ({} chars)", symptoms.len())),
     ).await;
 
-    // If the patient selected a scheduled visit + template, create a real CRF submission using the provided structured answers (if given) or the free-text.
-    if let Some(visit_id_str) = &form.patient_visit_id {
+    // If the patient selected a scheduled visit + template, create a real CRF submission.
+    // Collect structured answers from posted "field_*" inputs if present (from the rendered form fields),
+    // otherwise fall back to the explicit answers_json textarea or the free-text.
+    if let Some(visit_id_str) = form.get("patient_visit_id").and_then(|v| v.as_str()) {
         if let Ok(visit_id) = parse_uuid_field(visit_id_str, "patient_visit_id") {
-            let chosen_template_id = if let Some(tpl_str) = &form.template_id {
-                parse_uuid_field(tpl_str, "template_id").ok()
-            } else {
-                None
-            };
+            let chosen_template_id = form.get("template_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| parse_uuid_field(s, "template_id").ok());
 
             let template_id = if let Some(tid) = chosen_template_id {
                 tid
@@ -523,8 +528,29 @@ async fn submit_patient_pro_report(
             };
 
             if !template_id.is_nil() {
-                // Prefer explicit answers_json from the advanced form if provided; otherwise use the constructed one from symptoms.
-                let crf_answers = if let Some(provided) = &form.answers_json {
+                // Try to build structured answers from the rendered field inputs (field_<key>)
+                let mut crf_answers_map = serde_json::Map::new();
+
+                if let Some(obj) = form.as_object() {
+                    for (key, val) in obj {
+                        if key.starts_with("field_") {
+                            let field_key = key.trim_start_matches("field_");
+                            if let Some(s) = val.as_str() {
+                                if !s.trim().is_empty() {
+                                    crf_answers_map.insert(field_key.to_string(), serde_json::Value::String(s.trim().to_string()));
+                                }
+                            } else if let Some(n) = val.as_i64() {
+                                crf_answers_map.insert(field_key.to_string(), serde_json::Value::Number(n.into()));
+                            } else if let Some(b) = val.as_bool() {
+                                crf_answers_map.insert(field_key.to_string(), serde_json::Value::Bool(b));
+                            }
+                        }
+                    }
+                }
+
+                let crf_answers = if !crf_answers_map.is_empty() {
+                    serde_json::to_string(&crf_answers_map).unwrap_or_else(|_| "{}".to_string())
+                } else if let Some(provided) = form.get("answers_json").and_then(|v| v.as_str()) {
                     if !provided.trim().is_empty() {
                         provided.trim().to_string()
                     } else {
