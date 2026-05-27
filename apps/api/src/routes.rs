@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use lopdf::{Document as LopdfDocument, Object as LopdfObject};
 use scraper::{Html as ParsedHtml, Selector};
 use serde::{Deserialize, Serialize};
@@ -5171,6 +5171,21 @@ async fn submit_app_create_media_ticket(
     )))
 }
 
+/// Compute age in whole days + standardized bucket for patient-entered reports and queries.
+/// Central helper so thresholds (stale >30d, aging 7-30d) stay consistent across
+/// Operational Snapshot, Recommended Next Steps, list items, and selected previews.
+fn patient_report_age(created_at: DateTime<Utc>, now: DateTime<Utc>) -> (i64, &'static str) {
+    let age = (now - created_at).num_days();
+    let bucket = if age > 30 {
+        "stale"
+    } else if age > 7 {
+        "aging"
+    } else {
+        "fresh"
+    };
+    (age, bucket)
+}
+
 async fn render_study_workbench(
     State(ctx): State<AppContext>,
     Query(query): Query<StudyWorkbenchQuery>,
@@ -5408,10 +5423,19 @@ async fn render_study_workbench(
     // Rich provenance + compact answers preview for selected submission (especially useful for patient-entered data)
     let (selected_submission_display, answers_preview) = if let Some(sid) = selected_submission_id {
         if let Some(sub) = submissions.iter().find(|s| s.id == sid) {
-            let source = if sub.entered_by_user_id.is_none() {
-                " <span style=\"background:#166534;color:white;font-size:0.7rem;padding:1px 6px;border-radius:3px;\">via Patient Portal</span>"
+            let (age_days, _bucket) = patient_report_age(sub.created_at, now);
+            let age_label = if age_days > 30 {
+                format!(" <span style=\"background:#c53030;color:white;font-size:0.65rem;padding:1px 4px;border-radius:2px;font-weight:600;\">STALE {}d</span>", age_days)
+            } else if age_days > 7 {
+                format!(" <span style=\"background:#b7791f;color:white;font-size:0.65rem;padding:1px 4px;border-radius:2px;font-weight:600;\">AGING {}d</span>", age_days)
             } else {
-                ""
+                format!(" <span style=\"background:#047857;color:white;font-size:0.65rem;padding:1px 4px;border-radius:2px;font-weight:600;\">{}d</span>", age_days)
+            };
+
+            let source = if sub.entered_by_user_id.is_none() {
+                format!(" <span style=\"background:#166534;color:white;font-size:0.7rem;padding:1px 6px;border-radius:3px;\">via Patient Portal</span>{}", age_label)
+            } else {
+                String::new()
             };
 
             let preview = if sub.entered_by_user_id.is_none() {
@@ -5453,9 +5477,20 @@ async fn render_study_workbench(
                     })
                 }).unwrap_or_default();
 
+                let submitted_ts = sub.submitted_at
+                    .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| sub.created_at.format("%Y-%m-%d %H:%M").to_string());
+                let age_status_text = if age_days > 30 {
+                    format!("STALE ({} days old)", age_days)
+                } else if age_days > 7 {
+                    format!("AGING ({} days old)", age_days)
+                } else {
+                    format!("{} days old", age_days)
+                };
+
                 format!(
-                    "<div style=\"font-size:0.75rem;color:#166534;margin-top:2px;\"><strong>Patient answers:</strong> <span style=\"font-family:monospace;\">{}</span>{}</div>",
-                    answers_preview, visit_info
+                    "<div style=\"font-size:0.75rem;color:#166534;margin-top:2px;\"><strong>Patient answers:</strong> <span style=\"font-family:monospace;\">{}</span>{}</div><div style=\"font-size:0.68rem;color:#854d0e;background:#fefce8;padding:2px 5px;border-radius:3px;margin-top:3px;display:inline-block;\"><strong>Age:</strong> {} • <strong>Submitted:</strong> {}</div>",
+                    answers_preview, visit_info, age_status_text, submitted_ts
                 )
             } else {
                 "".to_string()
@@ -6214,6 +6249,18 @@ async fn render_study_workbench(
                     String::new()
                 };
 
+                // Per-item aging indicator for patient portal reports (makes monitoring immediate at list level)
+                let age_days = (now - submission.created_at).num_days();
+                let age_badge = if age_days > 30 {
+                    format!(r#"<span style="background:#c53030;color:white;padding:1px 4px;border-radius:3px;font-size:0.62rem;font-weight:600;margin-left:4px;" title="Stale: >30 days old patient-entered report">STALE {}d</span>"#, age_days)
+                } else if age_days > 7 {
+                    format!(r#"<span style="background:#b7791f;color:white;padding:1px 4px;border-radius:3px;font-size:0.62rem;font-weight:600;margin-left:4px;" title="Aging: 7-30 days old patient-entered report">AGING {}d</span>"#, age_days)
+                } else if age_days >= 0 {
+                    format!(r#"<span style="background:#047857;color:white;padding:1px 4px;border-radius:3px;font-size:0.62rem;font-weight:600;margin-left:4px;" title="Fresh patient-entered report">{}d</span>"#, age_days)
+                } else {
+                    String::new()
+                };
+
                 let answers_preview = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&submission.answers_json) {
                     if let Some(obj) = val.as_object() {
                         let pairs = obj.iter().take(3).map(|(k, v)| {
@@ -6231,7 +6278,7 @@ async fn render_study_workbench(
                 };
 
                 format!(
-                    r#"<li style="margin-bottom:4px;"><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(patient={} status={} SDV={}{})</small>
+                    r#"<li style="margin-bottom:4px;"><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(patient={} status={} SDV={}{})</small>{}
                     {}
                     <form method="post" action="/ui/studies/queries" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="admin_email" value="{}" />
@@ -6256,6 +6303,7 @@ async fn render_study_workbench(
                     html_escape(&submission.status),
                     html_escape(&submission.sdv_status),
                     visit_text,
+                    age_badge,
                     answers_preview,
                     admin_email_q,
                     submission.id,
