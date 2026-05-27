@@ -3628,6 +3628,9 @@ async fn render_app_dashboard(
   </div>
 
   <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700;">Patients</h3>
+  <div style="margin-bottom:0.5rem; font-size:0.85rem; color:#64748b;">
+    Participants can self-submit basic intake via the <a href="/portal/intake" style="color:#f05708; font-weight:600;">Patient Portal</a>. New submissions appear above as "Pending Intakes from Patient Portal".
+  </div>
   {}
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">
     <div id="add-patient-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('patient-create-modal').showModal()">
