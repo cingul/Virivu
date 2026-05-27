@@ -5349,6 +5349,16 @@ async fn render_study_workbench(
         .filter(|s| s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending")
         .count();
 
+    let patient_submitted_unlocked_count = submissions
+        .iter()
+        .filter(|s| s.entered_by_user_id.is_none() && s.status.trim().to_ascii_lowercase() == "submitted")
+        .count();
+
+    let patient_pending_sdv_count = submissions
+        .iter()
+        .filter(|s| s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending")
+        .count();
+
     let selected_submission_id = query
         .submission_id
         .as_deref()
@@ -5684,6 +5694,18 @@ async fn render_study_workbench(
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> new patient portal report(s) to review.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Review patient reports &rarr;</a></div>"#,
                 action_card_style, patient_entered_count, submissions_tab_url
+            ));
+        }
+        if patient_pending_sdv_count > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> patient portal report(s) need SDV.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Perform SDV on patient data &rarr;</a></div>"#,
+                action_card_style, patient_pending_sdv_count, submissions_tab_url
+            ));
+        }
+        if patient_submitted_unlocked_count > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> patient portal submission(s) are submitted but not locked.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Lock patient submissions &rarr;</a></div>"#,
+                action_card_style, patient_submitted_unlocked_count, submissions_tab_url
             ));
         }
         if open_query_count > 0 {
