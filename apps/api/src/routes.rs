@@ -5389,6 +5389,15 @@ async fn render_study_workbench(
         }
     };
 
+    let patient_reports_header = if patient_stale_count > 0 || patient_aging_count > 0 {
+        format!(
+            r#"Patient Reports (via portal) <span style="font-size:0.7rem; color:#c53030;">({} stale, {} aging)</span>"#,
+            patient_stale_count, patient_aging_count
+        )
+    } else {
+        "Patient Reports (via portal)".to_string()
+    };
+
     let selected_submission_id = query
         .submission_id
         .as_deref()
@@ -7031,7 +7040,7 @@ async fn render_study_workbench(
   </form>
   <h3 style="margin-top:1rem;">Patients</h3>
   <ul>{}</ul>
-  <h3 style="margin-top:1rem;">Patient Reports (via portal)</h3>
+  <h3 style="margin-top:1rem;">{}</h3>
   <ul style="background:#f0fdf4;border:1px solid #86efac;border-radius:4px;padding:6px 10px;margin-bottom:0.75rem;">{}</ul>
   <h3 style="margin-top:0.25rem;">Coordinator Submissions</h3>
   <ul>{}</ul>
@@ -7047,6 +7056,7 @@ async fn render_study_workbench(
             html_escape(admin_email.trim()),
             sdv_submission_action,
             html_escape(admin_email.trim()),
+            patient_reports_header,
             patients_html,
             patient_reports_html,
             submissions_html
