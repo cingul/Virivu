@@ -227,8 +227,12 @@ async fn render_patient_intake_success() -> Result<Html<String>, ApiError> {
   <div style="background:white; padding:3rem; border-radius:16px; box-shadow:0 10px 15px -3px rgba(0,0,0,0.1);">
     <div style="font-size:3rem; margin-bottom:1rem;">✅</div>
     <h1 style="margin:0 0 0.5rem; color:#02182b;">Intake Received</h1>
-    <p style="color:#475569; font-size:1.05rem;">Thank you. A study coordinator has been notified and will reach out soon to guide you through consent and next steps.</p>
-    <a href="/portal" style="display:inline-block; margin-top:1.5rem; background:#f05708; color:white; padding:0.7rem 1.4rem; border-radius:6px; text-decoration:none; font-weight:600;">Back to Patient Portal</a>
+    <p style="color:#475569; font-size:1.05rem;">Thank you. Your information has been submitted to the study team.</p>
+    <p style="color:#475569; font-size:0.95rem; margin-top:1rem;">A coordinator will contact you shortly to complete informed consent and schedule your first activities.</p>
+    <div style="margin-top:1.75rem;">
+      <a href="/portal" style="display:inline-block; margin-right:12px; background:#f05708; color:white; padding:0.7rem 1.4rem; border-radius:6px; text-decoration:none; font-weight:600;">Back to Portal Home</a>
+      <a href="/ui/app?admin_email=arcot@cingulum.org" style="display:inline-block; background:#e7e5da; color:#02182b; padding:0.7rem 1.4rem; border-radius:6px; text-decoration:none; font-weight:600;">Return to Research Team View</a>
+    </div>
   </div>
 </div>
 "#;
