@@ -251,6 +251,7 @@ struct PatientProReportForm {
     symptoms: String,
     severity: Option<String>,
     additional_notes: Option<String>,
+    patient_visit_id: Option<String>,
 }
 
 async fn render_patient_portal_home(
@@ -321,6 +322,22 @@ async fn render_patient_portal_home(
             .join("")
     };
 
+    // Options for the form select (so patients can associate their report with a specific visit)
+    let visit_options_html = scheduled_visits
+        .iter()
+        .take(8)
+        .map(|v| {
+            let date_str = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "TBD".to_string());
+            format!(
+                "<option value=\"{}\">{} — {}</option>",
+                v.id,
+                html_escape(&date_str),
+                html_escape(&v.status)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
     let body = format!(
         r#"
 <div style="max-width:720px;margin:40px auto;font-family:system-ui,sans-serif;">
@@ -359,6 +376,12 @@ async fn render_patient_portal_home(
         </div>
       </div>
 
+      <label style="display:block;margin-top:1rem;font-weight:600;">Link to a scheduled visit (optional)</label>
+      <select name="patient_visit_id" style="width:100%;padding:8px;border:1px solid #cbd5e0;border-radius:6px;margin-bottom:0.5rem;">
+        <option value="">General report (not tied to a specific visit)</option>
+        {}
+      </select>
+
       <button type="submit" style="margin-top:1rem;background:#f05708;color:white;padding:0.65rem 1.4rem;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Submit Report to Study Team</button>
     </form>
 
@@ -377,6 +400,7 @@ async fn render_patient_portal_home(
         patient.created_at.format("%Y-%m-%d"),
         visits_html,
         query_escape(token),
+        visit_options_html,
         recent_html
     );
 
@@ -430,6 +454,37 @@ async fn submit_patient_pro_report(
         Some(&answers_json),
         Some(&format!("Patient portal daily check-in ({} chars)", form.symptoms.trim().len())),
     ).await;
+
+    // If the patient selected a scheduled visit, also create a real CRF submission draft linked to it.
+    // This makes patient-reported data appear in the normal study submissions workflow.
+    if let Some(visit_id_str) = &form.patient_visit_id {
+        if let Ok(visit_id) = parse_uuid_field(visit_id_str, "patient_visit_id") {
+            // Resolve a template for the patient's project (first available)
+            let templates = ctx.db.list_study_crf_templates(patient.project_id).await.unwrap_or_default();
+            if let Some(template) = templates.first() {
+                let _ = ctx.db
+                    .create_study_crf_submission(
+                        patient.project_id,
+                        template.id,
+                        patient.id,
+                        Some(visit_id),
+                        &answers_json,
+                        None, // entered via patient portal
+                    )
+                    .await;
+
+                let _ = ctx.db.insert_audit_log(
+                    "study_crf_submissions",
+                    patient.id,
+                    "patient_submitted_via_portal",
+                    None,
+                    None,
+                    Some(&answers_json),
+                    Some(&format!("Patient submitted data for visit {} via portal", visit_id)),
+                ).await;
+            }
+        }
+    }
 
     Ok(Redirect::to(&format!("/portal/home?token={}&notice=Thank+you.+Your+report+was+submitted.", query_escape(token))))
 }
