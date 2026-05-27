@@ -1223,6 +1223,15 @@ async fn mark_study_crf_submission_submitted(
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
     if submission.status == "locked" {
+        let _ = ctx.db.insert_audit_log(
+            "study_crf_submissions",
+            submission_id,
+            "mutation_rejected",
+            Some(user.user_id),
+            None,
+            None,
+            Some("Attempt to mark locked submission as submitted (answers frozen)"),
+        ).await;
         return Err(ApiError::Validation(
             "This CRF submission is locked. Answers are frozen and it cannot be re-submitted.".to_string(),
         ));
@@ -1261,6 +1270,15 @@ async fn lock_study_crf_submission(
     require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
 
     if submission.status == "locked" {
+        let _ = ctx.db.insert_audit_log(
+            "study_crf_submissions",
+            submission_id,
+            "mutation_rejected",
+            Some(user.user_id),
+            None,
+            None,
+            Some("Attempt to re-lock an already locked submission"),
+        ).await;
         return Err(ApiError::Validation(
             "This CRF submission is already locked. Answers are frozen.".to_string(),
         ));
@@ -7204,20 +7222,25 @@ async fn submit_publish_study_crf_template(
 
     require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
 
+    // Capture snapshot before publish (template becomes immutable after this)
+    let field_count = ctx.db.list_study_crf_fields(template_id).await.map(|f| f.len()).unwrap_or(0);
+
     ctx.db
         .publish_study_crf_template(template_id)
         .await
         .map_err(ApiError::internal)?;
 
-    // Audit - publishing a CRF template is a significant clinical configuration event
+    // Strong provenance for publish (CRF template is now locked for the study)
+    let old_data = Some(format!(r#"{{"status":"draft","field_count":{}}}"#, field_count));
+    let new_data = Some(r#"{"status":"published"}"#.to_string());
     let _ = ctx.db.insert_audit_log(
         "study_crf_templates",
         template_id,
         "published",
         Some(user.user_id),
-        None,
-        None,
-        Some("CRF template published"),
+        old_data.as_deref(),
+        new_data.as_deref(),
+        Some(&format!("CRF template published ({} fields) - template is now immutable", field_count)),
     ).await;
 
     Ok(Redirect::to(&format!(
@@ -7390,6 +7413,15 @@ async fn submit_mark_study_crf_submission_submitted(
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
     if submission.status == "locked" {
+        let _ = ctx.db.insert_audit_log(
+            "study_crf_submissions",
+            submission_id,
+            "mutation_rejected",
+            Some(user.user_id),
+            None,
+            None,
+            Some("Attempt to mark locked submission as submitted via UI (answers frozen)"),
+        ).await;
         return Err(ApiError::Validation(
             "This CRF submission is locked. Answers are frozen and it cannot be re-submitted.".to_string(),
         ));
@@ -7452,6 +7484,15 @@ async fn submit_lock_study_crf_submission(
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
     if submission.status == "locked" {
+        let _ = ctx.db.insert_audit_log(
+            "study_crf_submissions",
+            submission_id,
+            "mutation_rejected",
+            Some(user.user_id),
+            None,
+            None,
+            Some("Attempt to re-lock an already locked submission via UI"),
+        ).await;
         return Err(ApiError::Validation(
             "This CRF submission is already locked. Answers are frozen.".to_string(),
         ));
@@ -7520,20 +7561,25 @@ async fn submit_update_study_crf_submission_sdv(
         ));
     }
 
+    let old_sdv_status = submission.sdv_status.clone();
+    let new_sdv_status = form.sdv_status.trim().to_string();
+
     ctx.db
-        .update_study_crf_submission_sdv_status(submission_id, form.sdv_status.trim())
+        .update_study_crf_submission_sdv_status(submission_id, &new_sdv_status)
         .await
         .map_err(ApiError::internal)?;
 
-    // Audit: SDV is a key monitoring/compliance action
+    // Richer provenance for SDV (critical monitoring step)
+    let old_data = Some(format!(r#"{{"sdv_status":"{}"}}"#, old_sdv_status));
+    let new_data = Some(format!(r#"{{"sdv_status":"{}"}}"#, new_sdv_status));
     let _ = ctx.db.insert_audit_log(
         "study_crf_submissions",
         submission_id,
         "sdv_updated",
         Some(user.user_id),
-        None,
-        None,
-        Some(&format!("New status: {}", form.sdv_status.trim())),
+        old_data.as_deref(),
+        new_data.as_deref(),
+        Some(&format!("SDV status changed: {} → {}", old_sdv_status, new_sdv_status)),
     ).await;
 
     Ok(Redirect::to(&format!(
@@ -7634,20 +7680,23 @@ async fn submit_respond_study_data_query(
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
+    let response_text = form.response_text.trim().to_string();
+
     ctx.db
-        .respond_study_data_query(query_id, form.response_text.trim())
+        .respond_study_data_query(query_id, &response_text)
         .await
         .map_err(ApiError::internal)?;
 
-    // Audit
+    // Rich provenance for query response (key compliance artifact)
+    let new_data = Some(format!(r#"{{"response":"{}"}}"#, serde_json::to_string(&response_text).unwrap_or_else(|_| response_text.clone())));
     let _ = ctx.db.insert_audit_log(
         "study_data_queries",
         query_id,
         "responded",
         Some(user.user_id),
         None,
-        None,
-        None,
+        new_data.as_deref(),
+        Some(&format!("Query responded ({} chars)", response_text.len())),
     ).await;
 
     Ok(Redirect::to(&format!(
@@ -7686,7 +7735,7 @@ async fn submit_close_study_data_query(
         .await
         .map_err(ApiError::internal)?;
 
-    // Audit
+    // Rich provenance for query closure
     let _ = ctx.db.insert_audit_log(
         "study_data_queries",
         query_id,
@@ -7694,7 +7743,7 @@ async fn submit_close_study_data_query(
         Some(user.user_id),
         None,
         None,
-        None,
+        Some("Data query closed by coordinator"),
     ).await;
 
     Ok(Redirect::to(&format!(
