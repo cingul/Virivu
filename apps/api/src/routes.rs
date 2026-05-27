@@ -5631,7 +5631,7 @@ async fn render_study_workbench(
         }
     };
 
-    // (Header recomputed later after q vars for filter-aware display.)
+    // (patient_query_pill_html computed later, after patient_related_open_queries is available)
 
     let selected_submission_id = query
         .submission_id
@@ -5762,6 +5762,12 @@ async fn render_study_workbench(
                 .any(|s| s.id == q.submission_id && s.entered_by_user_id.is_none())
         })
         .count();
+
+    let patient_query_pill_html = if patient_related_open_queries > 0 {
+        format!(r#"<span style="background:#dbeafe; color:#1e40af; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_related_open_queries} patient queries</span>"#)
+    } else {
+        String::new()
+    };
 
     let query_aging_html = {
         let mut parts = Vec::new();
@@ -7541,6 +7547,7 @@ async fn render_study_workbench(
     <span style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_entered_count} patient reports</span>
     <span style="background:#fef3c7; color:#854d0e; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_pending_sdv_count} patient reports need SDV</span>
     {patient_aging_html}
+    {patient_query_pill_html}
     <span style="color:#854d0e;">{pending_actions_html}</span>
     <span style="font-size:0.8rem; color:#a16207;">• Lock finalized submissions to freeze answers + generate provenance</span>
   </div>
@@ -7570,7 +7577,8 @@ async fn render_study_workbench(
         patient_entered_count = patient_entered_count,
         patient_pending_sdv_count = patient_pending_sdv_count,
         query_aging_html = query_aging_html,
-        patient_aging_html = patient_aging_html
+        patient_aging_html = patient_aging_html,
+        patient_query_pill_html = patient_query_pill_html
     );
 
     let script = r#"
