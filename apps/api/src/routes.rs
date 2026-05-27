@@ -5871,8 +5871,13 @@ async fn render_study_workbench(
                 let selected_project = selected_project_id
                     .map(|project_id| format!("&project_id={project_id}"))
                     .unwrap_or_default();
+                let source_badge = if submission.entered_by_user_id.is_none() {
+                    " <span style=\"background:#166534;color:white;font-size:0.65rem;padding:1px 5px;border-radius:3px;\">patient</span>"
+                } else {
+                    ""
+                };
                 format!(
-                    r#"<li><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(template={} patient={} status={} SDV={})</small></li>"#,
+                    r#"<li><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(template={} patient={} status={} SDV={})</small>{}</li>"#,
                     admin_email_q,
                     selected_org,
                     selected_project,
@@ -5881,7 +5886,8 @@ async fn render_study_workbench(
                     submission.template_id,
                     submission.patient_id,
                     html_escape(&submission.status),
-                    html_escape(&submission.sdv_status)
+                    html_escape(&submission.sdv_status),
+                    source_badge
                 )
             })
             .collect::<Vec<_>>()
