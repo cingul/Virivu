@@ -130,8 +130,8 @@ async fn render_patient_intake_form() -> Result<Html<String>, ApiError> {
     <p style="color:#475569;">Please provide basic information to begin enrollment. A study coordinator will follow up to complete consent and scheduling.</p>
 
     <form method="post" action="/portal/intake" style="margin-top:1.5rem;">
-      <label style="display:block; margin-bottom:0.25rem; font-weight:600;">Study / Protocol Code</label>
-      <input type="text" name="study_code" required style="width:100%; padding:8px; margin-bottom:1rem; border:1px solid #cbd5e0; border-radius:6px;">
+      <label style="display:block; margin-bottom:0.25rem; font-weight:600;">Study / Protocol Code <span style="font-weight:400; color:#64748b;">(required for auto-assignment)</span></label>
+      <input type="text" name="study_code" required placeholder="e.g. PROT-2026-042 or MyStudyName" style="width:100%; padding:8px; margin-bottom:1rem; border:1px solid #cbd5e0; border-radius:6px;">
 
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
         <div>
@@ -199,6 +199,12 @@ async fn submit_patient_intake(
         .map_err(ApiError::internal)?;
 
     // Strong audit for portal intake (important for compliance)
+    let audit_details = format!(
+        "Study code: {} | resolved_site: {} | matched_project: {}",
+        study_code,
+        site_id,
+        matched_project.map(|p| p.id.to_string()).unwrap_or_else(|| "none".to_string())
+    );
     let _ = ctx.db.insert_audit_log(
         "patients",
         patient.id,
@@ -206,7 +212,7 @@ async fn submit_patient_intake(
         None,
         None,
         None,
-        Some(&format!("Study code: {} | resolved_site: {}", study_code, site_id)),
+        Some(&audit_details),
     ).await;
 
     Ok(Redirect::to("/portal/intake/success"))
@@ -3080,7 +3086,7 @@ async fn render_app_dashboard(
         .filter(|p| p.external_subject_id.as_deref().map_or(false, |s| s.starts_with("intake:")))
         .collect();
 
-    let pending_intakes_html = if !pending_intakes.is_empty() {
+    let pending_intakes_html = if !pending_intakes.is_empty() || selected_project_id.is_some() {
         let items = pending_intakes.iter().map(|p| {
             format!(
                 r#"<div style="background:#fefce8; border:1px solid #fde047; padding:6px 10px; border-radius:4px; font-size:0.85rem; margin-bottom:4px;">
@@ -3093,7 +3099,19 @@ async fn render_app_dashboard(
                 p.id
             )
         }).collect::<Vec<_>>().join("");
-        format!(r#"<div style="margin-bottom:1rem;"><div style="font-weight:600; color:#854d0e; margin-bottom:4px;">Pending Intakes from Patient Portal</div>{}</div>"#, items)
+        let count_str = if pending_intakes.is_empty() {
+            "(none)".to_string()
+        } else {
+            format!("({})", pending_intakes.len())
+        };
+        format!(
+            r#"<div style="margin-bottom:1rem; padding:8px; background:#fffbeb; border:1px solid #fde047; border-radius:6px;">
+               <div style="font-weight:600; color:#854d0e; margin-bottom:6px;">Pending Intakes from Patient Portal {}</div>
+               {}
+             </div>"#,
+            count_str,
+            if items.is_empty() { "<span style=\"font-size:0.85rem; color:#854d0e;\">No pending portal intakes for this project.</span>" } else { &items }
+        )
     } else {
         String::new()
     };
