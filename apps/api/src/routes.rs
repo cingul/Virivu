@@ -6281,6 +6281,7 @@ async fn render_study_workbench(
     <input type="hidden" name="admin_email" value="{}" />
     <button type="submit">Lock Submission</button>
   </form>
+  <span style="font-size:0.75rem; color:#166534; margin-left:0.5rem;">Lock freezes answers + creates immutable audit snapshot (21 CFR Part 11)</span>
   <form method="post" action="{}" style="display:inline-block;">
     <input type="hidden" name="admin_email" value="{}" />
     <label style="display:inline; margin-left:0.5rem; margin-right:0.2rem;">SDV Status:</label>
@@ -6447,7 +6448,7 @@ async fn render_study_workbench(
     <strong style="color:#854d0e;">Operational Snapshot:</strong>
     <span style="background:#fef08c; color:#713f12; padding:2px 8px; border-radius:4px; font-weight:600;">{open_query_count} open queries</span>
     <span style="color:#854d0e;">{pending_actions_html}</span>
-    <span style="font-size:0.8rem; color:#a16207;">• Startup/close checklists gate study phases</span>
+    <span style="font-size:0.8rem; color:#a16207;">• Lock finalized submissions to freeze answers + generate provenance</span>
   </div>
   {error_html}
   {notice_html}
