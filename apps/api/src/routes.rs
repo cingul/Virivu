@@ -2780,6 +2780,38 @@ async fn render_app_dashboard(
         Vec::new()
     };
 
+    // Load recent patient-reported data from the portal (makes the new patient portal feature visible and actionable)
+    let recent_pro_reports = ctx
+        .db
+        .list_recent_pro_submissions(8)
+        .await
+        .unwrap_or_default();
+
+    // Build a compact "Recent Patient Portal Reports" section for the patients tab
+    let recent_pro_reports_html = if recent_pro_reports.is_empty() {
+        "<div style=\"font-size:0.85rem;color:#64748b;font-style:italic;margin-top:0.5rem;\">No patient portal reports yet. Generate a portal link for a patient above to enable daily check-ins.</div>".to_string()
+    } else {
+        let items = recent_pro_reports
+            .iter()
+            .map(|r| {
+                let symptoms = r.answers.get("symptoms").and_then(|v| v.as_str()).unwrap_or("(no details)");
+                let short = if symptoms.len() > 80 { format!("{}…", &symptoms[..77]) } else { symptoms.to_string() };
+                format!(
+                    r#"<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:4px;padding:6px 10px;margin-bottom:4px;font-size:0.82rem;">
+                        <strong>Patient Report</strong> • {} <span style="color:#166534;">(via portal)</span><br>
+                        <span style="color:#475569;">{}</span> <a href="/ui/app?admin_email={}&patient_id={}" style="color:#166534;font-weight:600;">View patient →</a>
+                    </div>"#,
+                    html_escape(&r.submitted_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "recent".into())),
+                    html_escape(&short),
+                    admin_email_q,
+                    r.patient_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!("<div style=\"margin-top:1rem;\"><strong style=\"font-size:0.9rem;color:#166534;\">Recent Patient Portal Reports</strong>{}</div>", items)
+    };
+
     let providers = if let Some(org_id) = selected_org_id {
         ctx.db
             .list_providers_by_organization(org_id)
@@ -3881,6 +3913,7 @@ async fn render_app_dashboard(
     Participants can self-submit basic intake via the <a href="/portal/intake" style="color:#f05708; font-weight:600;">Patient Portal</a>. New submissions appear above as "Pending Intakes from Patient Portal".
   </div>
   {}
+  {}
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">
     <div id="add-patient-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('patient-create-modal').showModal()">
       <span style="font-size:2.5rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
@@ -3921,6 +3954,7 @@ async fn render_app_dashboard(
             selected_org_value,
             selected_project_value,
             pending_intakes_html,
+            recent_pro_reports_html,
             patients_html,
             html_escape(admin_email.trim())
         ),

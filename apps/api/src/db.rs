@@ -2850,6 +2850,40 @@ impl Db {
             .collect())
     }
 
+    /// List the most recent PRO submissions across all patients (for coordinator dashboard visibility of patient portal activity)
+    pub async fn list_recent_pro_submissions(
+        &self,
+        limit: i64,
+    ) -> anyhow::Result<Vec<ProSubmission>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, patient_id, form_type, answers::text as answers_text, total_score, submitted_at, created_at
+                FROM pro_submissions
+                ORDER BY created_at DESC
+                LIMIT $1
+                "#,
+                &[&limit],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let answers_str: String = row.get("answers_text");
+                ProSubmission {
+                    id: row.get("id"),
+                    patient_id: row.get("patient_id"),
+                    form_type: row.get("form_type"),
+                    answers: serde_json::from_str(&answers_str).unwrap_or(serde_json::Value::Null),
+                    total_score: row.get("total_score"),
+                    submitted_at: row.get("submitted_at"),
+                    created_at: row.get("created_at"),
+                }
+            })
+            .collect())
+    }
+
     /// Find a patient by email for portal login
     pub async fn get_patient_by_email(
         &self,
