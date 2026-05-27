@@ -5369,9 +5369,23 @@ async fn render_study_workbench(
                 // For patient reports, show a readable key-value preview of answers + visit context
                 let answers_preview = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&sub.answers_json) {
                     if let Some(obj) = val.as_object() {
+                        // If the selected submission's template matches the currently viewed template in the UI,
+                        // use the loaded fields to render with proper labels instead of raw keys.
+                        let use_labels = selected_template_id == Some(sub.template_id);
+                        let field_map: std::collections::HashMap<_, _> = if use_labels {
+                            fields.iter().map(|f| (f.field_key.clone(), f.field_label.clone())).collect()
+                        } else {
+                            std::collections::HashMap::new()
+                        };
+
                         let pairs = obj.iter().map(|(k, v)| {
+                            let label = if use_labels {
+                                field_map.get(k).cloned().unwrap_or_else(|| k.clone())
+                            } else {
+                                k.clone()
+                            };
                             let v_str = if v.is_string() { v.as_str().unwrap_or("").to_string() } else { v.to_string() };
-                            format!("{}: {}", html_escape(k), html_escape(&v_str.chars().take(80).collect::<String>()))
+                            format!("{}: {}", html_escape(&label), html_escape(&v_str.chars().take(80).collect::<String>()))
                         }).collect::<Vec<_>>().join("<br>");
                         // Wrap in scrollable container if many fields
                         format!("<div style=\"max-height:200px;overflow-y:auto;\">{}</div>", pairs)
