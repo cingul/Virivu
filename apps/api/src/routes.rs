@@ -3040,10 +3040,14 @@ async fn render_app_dashboard(
             .collect::<Vec<_>>()
             .join("");
         format!(
-            "<div style=\"margin-top:1rem;\"><div style=\"display:flex; align-items:baseline; gap:8px; margin-bottom:4px; flex-wrap:wrap;\"><strong style=\"font-size:0.9rem;color:#166534;\">Recent Patient Portal Reports</strong> <span style=\"font-size:0.7rem; color:#475569;\">{} recent</span> <span style=\"margin-left:2px;\">{}</span>{}</div>{}</div>",
+            "<div style=\"margin-top:1rem;\"><div style=\"display:flex; align-items:baseline; gap:8px; margin-bottom:4px; flex-wrap:wrap;\"><strong style=\"font-size:0.9rem;color:#166534;\">Recent Patient Portal Reports</strong> <span style=\"font-size:0.7rem; color:#475569;\">{} recent</span> <span style=\"margin-left:2px;\">{}</span>{}{}</div>{}</div>",
             recent_pro_reports.len(),
             portal_health_pills,
             if recent_portal_stale + recent_portal_aging > 0 { format!(r#" <span style="font-size:0.65rem; color:#c53030;">({} at risk)</span>"#, recent_portal_stale + recent_portal_aging) } else { "".to_string() },
+            if let Some(pid) = selected_project_id {
+                let orgp = selected_org_id.map(|o| format!("&organization_id={}", o)).unwrap_or_default();
+                format!(r#" <a href="/ui/studies?admin_email={}{}&project_id={}&view=submissions" style="font-size:0.65rem; color:#2b6cb0; font-weight:600; margin-left:6px;">Open in workbench →</a>"#, admin_email_q, orgp, pid)
+            } else { "".to_string() },
             items
         )
     };
