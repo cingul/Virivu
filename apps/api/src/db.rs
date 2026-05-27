@@ -2753,6 +2753,38 @@ impl Db {
         }))
     }
 
+    /// Look up a patient by portal token (multi-use within expiry window - practical for patient portal)
+    pub async fn get_patient_by_portal_token_multiuse(
+        &self,
+        token: &str,
+    ) -> anyhow::Result<Option<Patient>> {
+        let client = self.pool.get().await?;
+        let row = client
+            .query_opt(
+                r#"
+                SELECT p.id, p.organization_id, p.project_id, p.site_id,
+                       p.external_subject_id, p.email, p.date_of_birth, p.hex_code, p.created_at
+                FROM patients p
+                JOIN patient_sessions ps ON ps.patient_id = p.id
+                WHERE ps.token = $1
+                  AND ps.expires_at > NOW()
+                "#,
+                &[&token],
+            )
+            .await?;
+        Ok(row.map(|r| Patient {
+            id: r.get("id"),
+            organization_id: r.get("organization_id"),
+            project_id: r.get("project_id"),
+            site_id: r.get("site_id"),
+            external_subject_id: r.get("external_subject_id"),
+            email: r.get("email"),
+            date_of_birth: r.get("date_of_birth"),
+            hex_code: r.get("hex_code"),
+            created_at: r.get("created_at"),
+        }))
+    }
+
     /// Submit a PRO form from patient portal
     pub async fn create_pro_submission(
         &self,

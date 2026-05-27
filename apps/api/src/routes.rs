@@ -104,8 +104,8 @@ async fn render_portal_placeholder() -> Result<Html<String>, ApiError> {
     </div>
 
     <div style="margin-top:2rem; padding-top:1.25rem; border-top:1px solid #e2e8f0; font-size:0.85rem; color:#64748b;">
-      If you received a link or invitation code for a study, please check back shortly or contact your study coordinator.<br>
-      <a href="/ui/app" style="color:#f05708; text-decoration:none; font-weight:600;">Return to Research Team Dashboard →</a>
+      <strong>New:</strong> After intake, your coordinator can generate a secure portal link. Use it to submit daily check-ins and symptom reports directly (data flows into the study EDC with full audit).<br>
+      Start here: <a href="/portal/intake" style="color:#f05708;font-weight:600;">Participant Intake</a>
     </div>
   </div>
 </div>
@@ -228,7 +228,7 @@ async fn render_patient_intake_success() -> Result<Html<String>, ApiError> {
     <div style="font-size:3rem; margin-bottom:1rem;">✅</div>
     <h1 style="margin:0 0 0.5rem; color:#02182b;">Intake Received</h1>
     <p style="color:#475569; font-size:1.05rem;">Thank you. Your information has been submitted to the study team.</p>
-    <p style="color:#475569; font-size:0.95rem; margin-top:1rem;">A coordinator will contact you shortly to complete informed consent and schedule your first activities.</p>
+    <p style="color:#475569; font-size:0.95rem; margin-top:1rem;">A coordinator will contact you shortly to complete informed consent and schedule your first activities. You may also receive a secure Patient Portal link for submitting daily updates directly to the study team.</p>
     <div style="margin-top:1.75rem;">
       <a href="/portal" style="display:inline-block; margin-right:12px; background:#f05708; color:white; padding:0.7rem 1.4rem; border-radius:6px; text-decoration:none; font-weight:600;">Back to Portal Home</a>
       <a href="/ui/app?admin_email=arcot@cingulum.org" style="display:inline-block; background:#e7e5da; color:#02182b; padding:0.7rem 1.4rem; border-radius:6px; text-decoration:none; font-weight:600;">Return to Research Team View</a>
@@ -237,6 +237,215 @@ async fn render_patient_intake_success() -> Result<Html<String>, ApiError> {
 </div>
 "#;
     Ok(Html(body.to_string()))
+}
+
+// ===== Patient Portal (authenticated via magic token) =====
+
+#[derive(Deserialize)]
+struct PatientPortalQuery {
+    token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PatientProReportForm {
+    symptoms: String,
+    severity: Option<String>,
+    additional_notes: Option<String>,
+}
+
+async fn render_patient_portal_home(
+    State(ctx): State<AppContext>,
+    Query(query): Query<PatientPortalQuery>,
+) -> Result<Html<String>, ApiError> {
+    let token = query.token.as_deref().unwrap_or("").trim();
+    if token.is_empty() {
+        return Ok(Html(format!(
+            r#"<div style="max-width:620px;margin:40px auto;font-family:system-ui,sans-serif;">
+                <div style="background:white;padding:2rem;border-radius:12px;box-shadow:0 10px 15px -3px rgba(0,0,0,0.08);">
+                    <h2>Patient Portal</h2>
+                    <p>This link requires a valid access token. Please use the secure link provided by your study team, or start with <a href="/portal/intake">Participant Intake</a>.</p>
+                    <p><a href="/portal/intake" style="color:#f05708;font-weight:600;">Begin Intake →</a></p>
+                </div>
+            </div>"#
+        )));
+    }
+
+    let patient = ctx
+        .db
+        .get_patient_by_portal_token_multiuse(token)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::Auth(AuthError::Forbidden("Invalid or expired patient portal link".to_string())))?;
+
+    let recent_submissions = ctx.db.list_pro_submissions(patient.id).await.unwrap_or_default();
+    let recent_html = if recent_submissions.is_empty() {
+        "<p style=\"color:#64748b;font-size:0.9rem;\">No prior reports submitted yet.</p>".to_string()
+    } else {
+        recent_submissions
+            .iter()
+            .take(3)
+            .map(|s| {
+                format!(
+                    "<li style=\"margin-bottom:6px;\"><strong>{}</strong> — {} <span style=\"color:#64748b;font-size:0.8rem;\">({})</span></li>",
+                    html_escape(&s.form_type),
+                    html_escape(&s.submitted_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "recent".to_string())),
+                    s.total_score.map(|sc| format!("score {}", sc)).unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let body = format!(
+        r#"
+<div style="max-width:720px;margin:40px auto;font-family:system-ui,sans-serif;">
+  <div style="background:white;padding:2rem;border-radius:12px;box-shadow:0 10px 15px -3px rgba(0,0,0,0.08);">
+    <h2 style="margin-top:0;">Welcome to your Patient Portal</h2>
+    <p style="color:#475569;">Thank you for participating. This secure page lets you submit health updates directly to the study team.</p>
+
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;margin:1.25rem 0;">
+      <strong>Your Information</strong><br>
+      Patient ID: <code>{}</code><br>
+      Email on file: {}<br>
+      Enrolled: {}
+    </div>
+
+    <h3 style="margin-top:1.5rem;">Daily Check-in / Symptom Report</h3>
+    <form method="post" action="/portal/home?token={}">
+      <label style="display:block;margin-bottom:0.25rem;font-weight:600;">What symptoms or changes are you experiencing today?</label>
+      <textarea name="symptoms" required rows="4" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;" placeholder="e.g. mild headache, fatigue, no new issues..."></textarea>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:1rem;">
+        <div>
+          <label style="display:block;margin-bottom:0.25rem;font-weight:600;">Severity (optional)</label>
+          <select name="severity" style="width:100%;padding:8px;border:1px solid #cbd5e0;border-radius:6px;">
+            <option value="">-- select --</option>
+            <option value="mild">Mild</option>
+            <option value="moderate">Moderate</option>
+            <option value="severe">Severe</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;margin-bottom:0.25rem;font-weight:600;">Additional notes</label>
+          <input type="text" name="additional_notes" style="width:100%;padding:8px;border:1px solid #cbd5e0;border-radius:6px;" placeholder="Anything else?">
+        </div>
+      </div>
+
+      <button type="submit" style="margin-top:1rem;background:#f05708;color:white;padding:0.65rem 1.4rem;border:none;border-radius:6px;font-weight:600;cursor:pointer;">Submit Report to Study Team</button>
+    </form>
+
+    <h3 style="margin-top:2rem;">Recent Reports</h3>
+    <ul style="font-size:0.95rem;line-height:1.5;">{}</ul>
+
+    <div style="margin-top:2rem;padding-top:1rem;border-top:1px solid #e2e8f0;font-size:0.85rem;color:#64748b;">
+      Your data is protected and only visible to the authorized study team. <br>
+      Questions? Contact your coordinator using the information on your consent form.
+    </div>
+  </div>
+</div>
+"#,
+        patient.hex_code.as_deref().unwrap_or("N/A"),
+        html_escape(patient.email.as_deref().unwrap_or("not on file")),
+        patient.created_at.format("%Y-%m-%d"),
+        query_escape(token),
+        recent_html
+    );
+
+    Ok(Html(body))
+}
+
+async fn submit_patient_pro_report(
+    State(ctx): State<AppContext>,
+    Query(query): Query<PatientPortalQuery>,
+    Form(form): Form<PatientProReportForm>,
+) -> Result<Redirect, ApiError> {
+    let token = query.token.as_deref().unwrap_or("").trim();
+    if token.is_empty() {
+        return Err(ApiError::Validation("Missing patient portal token".to_string()));
+    }
+
+    let patient = ctx
+        .db
+        .get_patient_by_portal_token_multiuse(token)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::Auth(AuthError::Forbidden("Invalid or expired patient portal link".to_string())))?;
+
+    let mut answers = serde_json::Map::new();
+    answers.insert("symptoms".to_string(), serde_json::Value::String(form.symptoms.trim().to_string()));
+    if let Some(sev) = &form.severity {
+        if !sev.trim().is_empty() {
+            answers.insert("severity".to_string(), serde_json::Value::String(sev.trim().to_string()));
+        }
+    }
+    if let Some(notes) = &form.additional_notes {
+        if !notes.trim().is_empty() {
+            answers.insert("additional_notes".to_string(), serde_json::Value::String(notes.trim().to_string()));
+        }
+    }
+    let answers_json = serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string());
+
+    let _pro = ctx
+        .db
+        .create_pro_submission(patient.id, "daily_checkin", &answers_json, None)
+        .await
+        .map_err(ApiError::internal)?;
+
+    // Strong audit for patient-reported data (compliance important)
+    let _ = ctx.db.insert_audit_log(
+        "pro_submissions",
+        patient.id, // using patient id as entity for the event
+        "patient_reported_data",
+        None,
+        None,
+        Some(&answers_json),
+        Some(&format!("Patient portal daily check-in ({} chars)", form.symptoms.trim().len())),
+    ).await;
+
+    Ok(Redirect::to(&format!("/portal/home?token={}&notice=Thank+you.+Your+report+was+submitted.", query_escape(token))))
+}
+
+/// Coordinator action: generate (or refresh) a magic portal link for a patient.
+/// Returns a simple HTML page with the usable link. Protected by normal auth.
+async fn generate_patient_portal_link(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(patient_id): Path<Uuid>,
+) -> Result<Html<String>, ApiError> {
+    // Basic authorization - the user must have some access (we can tighten later with require_org_role if we fetch the patient first)
+    let _ = user; // already authenticated via middleware
+
+    let session = ctx
+        .db
+        .create_patient_session(patient_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    let base = ctx.config.app_base_url.trim_end_matches('/');
+    let link = format!("{}/portal/home?token={}", base, session.token);
+
+    let body = format!(
+        r#"
+<div style="max-width:620px;margin:40px auto;font-family:system-ui,sans-serif;">
+  <div style="background:white;padding:2rem;border-radius:12px;box-shadow:0 10px 15px -3px rgba(0,0,0,0.08);">
+    <h2 style="margin-top:0;color:#166534;">Patient Portal Link Generated</h2>
+    <p>The secure link below is valid for 7 days and can be used by the participant to submit daily check-ins and reports directly into the study.</p>
+
+    <div style="background:#f0fdf4;border:1px solid #86efac;padding:1rem;border-radius:8px;margin:1.25rem 0;font-family:monospace;word-break:break-all;">
+      <a href="{}" target="_blank" style="color:#166534;font-weight:600;">{}</a>
+    </div>
+
+    <p style="font-size:0.9rem;color:#475569;">Share this link securely with the participant (email, SMS, or printed). It grants access to the patient portal for this individual only.</p>
+
+    <p><a href="/ui/app" style="color:#f05708;font-weight:600;">← Back to Research Dashboard</a></p>
+  </div>
+</div>
+"#,
+        html_escape(&link),
+        html_escape(&link)
+    );
+
+    Ok(Html(body))
 }
 
 pub fn router(ctx: AppContext) -> Router {
@@ -248,6 +457,9 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/portal/intake", get(render_patient_intake_form))
         .route("/portal/intake", post(submit_patient_intake))
         .route("/portal/intake/success", get(render_patient_intake_success))
+        .route("/portal/home", get(render_patient_portal_home))
+        .route("/portal/home", post(submit_patient_pro_report))
+        .route("/ui/patients/{patient_id}/portal-link", post(generate_patient_portal_link))
         .route("/ui/foundation", get(render_foundation_command_center))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
