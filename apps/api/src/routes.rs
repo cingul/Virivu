@@ -6059,10 +6059,20 @@ async fn render_study_workbench(
                     String::new()
                 };
 
-                let answers_preview = {
-                    let compact = submission.answers_json.chars().take(120).collect::<String>();
-                    let truncated = if submission.answers_json.len() > 120 { "..." } else { "" };
-                    format!("<div style=\"font-size:0.7rem;color:#166534;margin-top:2px;\"><code>{}{}</code></div>", html_escape(&compact), truncated)
+                let answers_preview = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&submission.answers_json) {
+                    if let Some(obj) = val.as_object() {
+                        let pairs = obj.iter().take(3).map(|(k, v)| {
+                            let v_str = if v.is_string() { v.as_str().unwrap_or("").to_string() } else { v.to_string() };
+                            format!("{}: {}", html_escape(k), html_escape(&v_str.chars().take(30).collect::<String>()))
+                        }).collect::<Vec<_>>().join(" | ");
+                        format!("<div style=\"font-size:0.7rem;color:#166534;margin-top:2px;\"><code>{}</code></div>", pairs)
+                    } else {
+                        let compact = submission.answers_json.chars().take(100).collect::<String>();
+                        format!("<div style=\"font-size:0.7rem;color:#166534;margin-top:2px;\"><code>{}</code></div>", html_escape(&compact))
+                    }
+                } else {
+                    let compact = submission.answers_json.chars().take(100).collect::<String>();
+                    format!("<div style=\"font-size:0.7rem;color:#166534;margin-top:2px;\"><code>{}</code></div>", html_escape(&compact))
                 };
 
                 format!(
