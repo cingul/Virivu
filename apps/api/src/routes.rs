@@ -2973,6 +2973,19 @@ async fn render_app_dashboard(
 
     let now = Utc::now();
 
+    // Per-patient last portal report lookup (from the recent_pro_reports already loaded)
+    // Used to render risk/age badges on individual patient cards below.
+    let last_report_by_patient: std::collections::HashMap<uuid::Uuid, chrono::DateTime<chrono::Utc>> = {
+        let mut map = std::collections::HashMap::new();
+        for r in &recent_pro_reports {
+            // keep only the most recent per patient (recent_pro_reports is already ordered DESC)
+            if !map.contains_key(&r.patient_id) {
+                map.insert(r.patient_id, r.created_at);
+            }
+        }
+        map
+    };
+
     // Lightweight top-level Patient Portal Health summary (reuses the recent_pro_reports we already load)
     let (recent_portal_stale, recent_portal_aging) = {
         let mut s = 0usize;
@@ -3682,6 +3695,18 @@ async fn render_app_dashboard(
                     c1, c2, c3, c4
                 );
 
+                // Per-patient portal report age / risk badge (from recent activity we already loaded)
+                let patient_risk_badge = last_report_by_patient.get(&patient.id).map(|&last_ts| {
+                    let (age_days, bucket) = patient_report_age(last_ts, now);
+                    if bucket == "stale" {
+                        format!(r#"<span style="background:#c53030;color:white;padding:1px 4px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Last patient portal report >30 days ago">STALE {}d</span>"#, age_days)
+                    } else if bucket == "aging" {
+                        format!(r#"<span style="background:#b7791f;color:white;padding:1px 4px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Last patient portal report 7-30 days ago">AGING {}d</span>"#, age_days)
+                    } else {
+                        format!(r#"<span style="background:#047857;color:white;padding:1px 4px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Recent patient portal report">{}d</span>"#, age_days)
+                    }
+                }).unwrap_or_default();
+
                 format!(
                     r#"<div class="dashboard-card-mini" style="text-decoration:none; color:inherit;">
   <a href="/ui/app?admin_email={}{}{}&patient_id={}" style="display:flex; text-decoration:none; color:inherit; flex:1;">
@@ -3694,6 +3719,7 @@ async fn render_app_dashboard(
         ID: <code style="font-size:0.7rem; font-weight:bold;">{}</code>
         <br/>Site ID: <code style="font-size:0.7rem;">{}</code>
       </span>
+      <span style="font-size:0.65rem; display:block; margin-top:2px;">{}</span>
     </div>
   </a>
   <form method="post" action="/ui/patients/{}/portal-link" style="margin-top:4px; text-align:right;">
@@ -3711,6 +3737,7 @@ async fn render_app_dashboard(
                         .site_id
                         .map(|id| id.to_string())
                         .unwrap_or_else(|| "none".to_string()),
+                    patient_risk_badge,
                     patient.id
                 )
             })
