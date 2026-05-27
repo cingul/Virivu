@@ -5913,10 +5913,18 @@ async fn render_study_workbench(
                     .unwrap_or_default();
                 format!(
                     r#"<li style="margin-bottom:4px;"><a href="/ui/studies?admin_email={}{}{}&submission_id={}">{}</a> <small>(patient={} status={} SDV={})</small>
-                    <form method="post" action="/ui/studies/queries" style="display:inline;margin-left:8px;">
+                    <form method="post" action="/ui/studies/queries" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="admin_email" value="{}" />
                       <input type="hidden" name="submission_id" value="{}" />
-                      <button type="submit" style="font-size:0.65rem;padding:1px 6px;">Create Query</button>
+                      <button type="submit" style="font-size:0.65rem;padding:1px 5px;">Query</button>
+                    </form>
+                    <form method="post" action="/ui/studies/submissions/{}/sdv" style="display:inline;margin-left:2px;">
+                      <input type="hidden" name="admin_email" value="{}" />
+                      <select name="sdv_status" style="font-size:0.65rem;padding:1px;">
+                        <option value="verified">SDV Verified</option>
+                        <option value="failed">SDV Failed</option>
+                      </select>
+                      <button type="submit" style="font-size:0.65rem;padding:1px 5px;">Mark</button>
                     </form>
                     </li>"#,
                     admin_email_q,
@@ -5928,7 +5936,9 @@ async fn render_study_workbench(
                     html_escape(&submission.status),
                     html_escape(&submission.sdv_status),
                     admin_email_q,
-                    submission.id
+                    submission.id,
+                    submission.id,
+                    admin_email_q
                 )
             })
             .collect::<Vec<_>>()
