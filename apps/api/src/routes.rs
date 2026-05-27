@@ -6881,6 +6881,7 @@ async fn submit_bulk_delete_corrupted_study_crf_fields(
 
 async fn submit_import_study_crf_fields_html(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(template_id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> Result<Redirect, ApiError> {
@@ -6932,16 +6933,9 @@ async fn submit_import_study_crf_fields_html(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+
     if template.status == "published" {
         return Err(ApiError::Validation(
             "Cannot modify fields on a published CRF template".to_string(),
@@ -8509,6 +8503,7 @@ async fn submit_dua_hospital_sign_form(
 
 async fn render_dua_agreement_page(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
     Query(query): Query<DuaAgreementPageQuery>,
 ) -> Result<Html<String>, ApiError> {
@@ -8525,16 +8520,9 @@ async fn render_dua_agreement_page(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(&admin_email, agreement.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks permission for this organization's DUA workspace".to_string(),
-        )));
-    }
+
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+
     let signatures = ctx
         .db
         .list_data_use_agreement_signatures(agreement_id)
@@ -8734,8 +8722,9 @@ async fn submit_dua_cingulum_sign_form(
 
 async fn download_data_use_agreement_pdf_ui(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
-    Query(query): Query<DuaExportQuery>,
+    Query(_query): Query<DuaExportQuery>,
 ) -> Result<Response, ApiError> {
     let agreement = ctx
         .db
@@ -8743,16 +8732,8 @@ async fn download_data_use_agreement_pdf_ui(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(query.admin_email.trim(), agreement.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks permission for this organization".to_string(),
-        )));
-    }
+
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
 
     let signatures = ctx
         .db
