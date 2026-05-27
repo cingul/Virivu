@@ -6660,6 +6660,7 @@ fn map_study_phase_transition_error_to_notice(error_text: &str) -> Option<String
 
 async fn submit_create_study_crf_template(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(project_id): Path<Uuid>,
     Form(form): Form<StudyCrfTemplateForm>,
 ) -> Result<Redirect, ApiError> {
@@ -6669,22 +6670,10 @@ async fn submit_create_study_crf_template(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
-    let created_by_user_id = ctx
-        .db
-        .get_user_by_email(form.admin_email.trim())
-        .await
-        .map_err(ApiError::internal)?
-        .map(|u| u.id);
+
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+
+    let created_by_user_id = Some(user.user_id);
     let template = ctx
         .db
         .create_study_crf_template(
@@ -6698,7 +6687,7 @@ async fn submit_create_study_crf_template(
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         project.organization_id,
         project_id,
         template.id,
@@ -6789,6 +6778,7 @@ async fn submit_add_study_crf_field(
 
 async fn submit_bulk_delete_study_crf_fields(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(template_id): Path<Uuid>,
     Form(form): Form<StudyCrfBulkDeleteForm>,
 ) -> Result<Redirect, ApiError> {
@@ -6804,16 +6794,8 @@ async fn submit_bulk_delete_study_crf_fields(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), project.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks organization manager access".to_string(),
-        )));
-    }
+
+    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
     if template.status == "published" {
         return Err(ApiError::Validation(
             "Cannot modify fields on a published CRF template".to_string(),
@@ -6836,7 +6818,7 @@ async fn submit_bulk_delete_study_crf_fields(
         .map_err(ApiError::internal)?;
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&view=crf-fields&notice={}",
-        query_escape(form.admin_email.trim()),
+        query_escape(user.email.as_str()),
         project.organization_id,
         project.id,
         template.id,
