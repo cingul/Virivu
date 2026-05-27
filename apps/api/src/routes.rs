@@ -6365,6 +6365,16 @@ async fn render_study_workbench(
             .iter()
             .take(30)
             .map(|q| {
+                // Per-item aging for queries (full symmetry with patient portal reports)
+                let (age_days, _bucket) = patient_report_age(q.created_at, now);
+                let age_badge = if age_days > 30 {
+                    format!(r#"<span style="background:#c53030;color:white;padding:1px 3px;border-radius:2px;font-size:0.58rem;font-weight:600;margin-left:3px;" title="Stale query">STALE {}d</span>"#, age_days)
+                } else if age_days > 7 {
+                    format!(r#"<span style="background:#b7791f;color:white;padding:1px 3px;border-radius:2px;font-size:0.58rem;font-weight:600;margin-left:3px;" title="Aging query">AGING {}d</span>"#, age_days)
+                } else {
+                    format!(r#"<span style="background:#047857;color:white;padding:1px 3px;border-radius:2px;font-size:0.58rem;font-weight:600;margin-left:3px;" title="Recent query">{}d</span>"#, age_days)
+                };
+
                 let response_form = if q.status == "closed" {
                     "<small>closed</small>".to_string()
                 } else {
@@ -6385,11 +6395,12 @@ async fn render_study_workbench(
                     )
                 };
                 format!(
-                    "<li><strong>{}</strong> <small>submission={} field={} status={} </small><div>{}</div>{}</li>",
+                    "<li><strong>{}</strong> <small>submission={} field={} status={} {}</small><div>{}</div>{}</li>",
                     html_escape(&q.query_text),
                     q.submission_id,
                     html_escape(&q.field_key),
                     html_escape(&q.status),
+                    age_badge,
                     html_escape(&q.response_text),
                     response_form
                 )
