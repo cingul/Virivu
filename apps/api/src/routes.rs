@@ -3148,7 +3148,12 @@ async fn render_app_dashboard(
         if parts.is_empty() {
             "<span style=\"color:#718096;font-size:0.7rem;\">no open queries</span>".to_string()
         } else {
-            format!("<span style=\"margin-left:6px;\">{}</span>", parts.join(" "))
+            let orgp = selected_org_id.map(|o| format!("&organization_id={}", o)).unwrap_or_default();
+            let wb_link = format!(
+                r#"<a href="/ui/studies?admin_email={}{}&project_id={}&view=queries" style="font-size:0.65rem;color:#2b6cb0;font-weight:600;margin-left:8px;">Open in workbench →</a>"#,
+                admin_email_q, orgp, selected_project_id.unwrap_or_default()
+            );
+            format!("<span style=\"margin-left:6px;\">{}{}</span>", parts.join(" "), wb_link)
         }
     } else {
         String::new()
