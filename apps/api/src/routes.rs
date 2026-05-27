@@ -8662,6 +8662,7 @@ async fn render_dua_agreement_page(
 
 async fn submit_dua_send_hospital_link_form(
     State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
     Form(form): Form<DuaSendLinkForm>,
 ) -> Result<Html<String>, ApiError> {
@@ -8671,22 +8672,10 @@ async fn submit_dua_send_hospital_link_form(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
-    let allowed = ctx
-        .db
-        .email_has_org_manager_role(form.admin_email.trim(), agreement.organization_id)
-        .await
-        .map_err(ApiError::internal)?;
-    if !allowed {
-        return Err(ApiError::Auth(AuthError::Forbidden(
-            "admin_email lacks permission for this organization".to_string(),
-        )));
-    }
-    let requested_by = ctx
-        .db
-        .get_user_by_email(form.admin_email.trim())
-        .await
-        .map_err(ApiError::internal)?
-        .map(|u| u.id);
+
+    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+
+    let requested_by = Some(user.user_id);
     ctx.db
         .queue_hospital_signing_email(agreement_id, requested_by, &ctx.config.app_base_url)
         .await
@@ -8701,7 +8690,7 @@ async fn submit_dua_send_hospital_link_form(
 "#,
         agreement_id,
         agreement_id,
-        query_escape(form.admin_email.trim())
+        query_escape(user.email.as_str())
     );
     Ok(Html(render_cingulum_page("Email queued", body)))
 }
