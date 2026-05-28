@@ -7584,6 +7584,12 @@ async fn render_study_workbench(
         String::new()
     };
 
+    let silent_patients_pill_html = if patients_with_no_recent_structured > 0 {
+        format!(r#"<span style="background:#fee2e2; color:#991b1b; padding:2px 6px; border-radius:3px; font-weight:600;">{patients_with_no_recent_structured} silent</span>"#)
+    } else {
+        String::new()
+    };
+
     let body = format!(
         r#"
 {context_bar}
@@ -7614,6 +7620,7 @@ async fn render_study_workbench(
       </a>
       {patient_aging_html}
       {patient_query_pill_html}
+      {silent_patients_pill_html}
     </span>
     <span style="color:#854d0e;">{pending_actions_html}</span>
     <span style="font-size:0.8rem; color:#a16207;">• Lock finalized submissions to freeze answers + generate provenance</span>
@@ -7646,7 +7653,8 @@ async fn render_study_workbench(
         query_aging_html = query_aging_html,
         patient_aging_html = patient_aging_html,
         patient_query_pill_html = patient_query_pill_html,
-        patient_reports_link = patient_reports_link
+        patient_reports_link = patient_reports_link,
+        silent_patients_pill_html = silent_patients_pill_html
     );
 
     let script = r#"
