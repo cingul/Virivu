@@ -5858,7 +5858,15 @@ async fn render_study_workbench(
             patient_stale_count, patient_aging_count
         )
     } else {
-        "Patient Reports (via portal)".to_string()
+        // Add a compact health summary line in the default (non-filtered) view for immediate context
+        if patient_pending_sdv_count > 0 || patient_submitted_unlocked_count > 0 {
+            format!(
+                r#"Patient Reports (via portal) <span style="font-size:0.7rem; color:#64748b;">• {} need SDV • {} unlocked</span>"#,
+                patient_pending_sdv_count, patient_submitted_unlocked_count
+            )
+        } else {
+            "Patient Reports (via portal)".to_string()
+        }
     };
 
     let selected_study_label = selected_project_id
