@@ -7544,10 +7544,13 @@ async fn render_study_workbench(
     <strong style="color:#854d0e;">Operational Snapshot:</strong>
     <span style="background:#fef08c; color:#713f12; padding:2px 8px; border-radius:4px; font-weight:600;">{open_query_count} open queries</span>
     {query_aging_html}
-    <span style="background:#dcfce7; color:#166534; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_entered_count} patient reports</span>
-    <span style="background:#fef3c7; color:#854d0e; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_pending_sdv_count} patient reports need SDV</span>
-    {patient_aging_html}
-    {patient_query_pill_html}
+    <span style="background:#f0fdf4; border:1px solid #86efac; border-radius:4px; padding:4px 8px; display:flex; align-items:center; gap:6px; font-size:0.85rem;">
+      <strong style="color:#166534;">Patient Data Health:</strong>
+      <span style="background:#dcfce7; color:#166534; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_entered_count} reports</span>
+      <span style="background:#fef3c7; color:#854d0e; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_pending_sdv_count} need SDV</span>
+      {patient_aging_html}
+      {patient_query_pill_html}
+    </span>
     <span style="color:#854d0e;">{pending_actions_html}</span>
     <span style="font-size:0.8rem; color:#a16207;">• Lock finalized submissions to freeze answers + generate provenance</span>
   </div>
