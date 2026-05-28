@@ -5617,6 +5617,16 @@ async fn render_study_workbench(
         })
         .count();
 
+    // New at-risk signal: patients with no recent (last 30d) structured patient reports
+    let patients_with_no_recent_structured = if !patients.is_empty() {
+        patients.iter().filter(|p| {
+            !submissions.iter().any(|s| {
+                s.patient_id == p.id && s.entered_by_user_id.is_none() &&
+                (now - s.created_at).num_days() <= 30
+            })
+        }).count()
+    } else { 0 };
+
     // (patient_aging_html constructed just before the body template)
 
     let selected_submission_id = query
