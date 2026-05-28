@@ -5616,22 +5616,7 @@ async fn render_study_workbench(
         })
         .count();
 
-    let patient_aging_html = {
-        let mut parts = Vec::new();
-        if patient_stale_count > 0 {
-            parts.push(format!(r#"<span style="background:#fed7d7; color:#c53030; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">{}</span>"#, patient_stale_count));
-        }
-        if patient_aging_count > 0 {
-            parts.push(format!(r#"<span style="background:#fefcbf; color:#b7791f; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">{}</span>"#, patient_aging_count));
-        }
-        if !parts.is_empty() {
-            format!(r#"<span style="font-size:0.75rem;">patient aging: {}</span>"#, parts.join(" "))
-        } else {
-            "".to_string()
-        }
-    };
-
-    // (patient_query_pill_html computed later, after patient_related_open_queries is available)
+    // (patient_aging_html constructed just before the body template)
 
     let selected_submission_id = query
         .submission_id
@@ -5843,11 +5828,11 @@ async fn render_study_workbench(
         "/ui/studies?admin_email={}{}{}&view=submissions",
         admin_email_q, selected_org_q, selected_project_q
     );
+    let stale_patients_url = format!("{}&patient_report_age=stale", submissions_tab_url);
+    let aging_patients_url = format!("{}&patient_report_age=aging", submissions_tab_url);
     // Actionable filters for the patient reports list (wired from Recommended Next Steps cards)
     let patient_age_filter = query.patient_report_age.as_deref().unwrap_or("all").to_string();
     let query_age_filter = query.query_age.as_deref().unwrap_or("all").to_string();
-    let stale_patients_url = format!("{}&patient_report_age=stale", submissions_tab_url);
-    let aging_patients_url = format!("{}&patient_report_age=aging", submissions_tab_url);
     let queries_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=queries",
         admin_email_q, selected_org_q, selected_project_q
@@ -7528,6 +7513,22 @@ async fn render_study_workbench(
         admin_email.trim()
     );
 
+    // Reconstruct patient_aging_html here (after the filter URLs are in scope) so the aging pills in the snapshot and Recommended Next Steps are actionable links.
+    let patient_aging_html = {
+        let mut parts = Vec::new();
+        if patient_stale_count > 0 {
+            parts.push(format!(r#"<a href="{}" style="text-decoration:none;"><span style="background:#fed7d7; color:#c53030; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">{}</span></a>"#, stale_patients_url, patient_stale_count));
+        }
+        if patient_aging_count > 0 {
+            parts.push(format!(r#"<a href="{}" style="text-decoration:none;"><span style="background:#fefcbf; color:#b7791f; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">{}</span></a>"#, aging_patients_url, patient_aging_count));
+        }
+        if !parts.is_empty() {
+            format!(r#"<span style="font-size:0.75rem;">patient aging: {}</span>"#, parts.join(" "))
+        } else {
+            "".to_string()
+        }
+    };
+
     let body = format!(
         r#"
 {context_bar}
@@ -7553,7 +7554,9 @@ async fn render_study_workbench(
       <a href="{patient_reports_link}" style="text-decoration:none;">
         <span style="background:#dcfce7; color:#166534; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_entered_count} reports</span>
       </a>
-      <span style="background:#fef3c7; color:#854d0e; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_pending_sdv_count} need SDV</span>
+      <a href="{patient_reports_link}" style="text-decoration:none;">
+        <span style="background:#fef3c7; color:#854d0e; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_pending_sdv_count} need SDV</span>
+      </a>
       {patient_aging_html}
       {patient_query_pill_html}
     </span>
