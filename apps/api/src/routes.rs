@@ -6441,16 +6441,42 @@ async fn render_study_workbench(
             .join("")
     };
 
+    // Per-patient last structured patient report (for risk badges in the workbench patient list)
+    let last_structured_patient_report_by_patient: std::collections::HashMap<uuid::Uuid, chrono::DateTime<chrono::Utc>> = {
+        let mut map = std::collections::HashMap::new();
+        for s in &submissions {
+            if s.entered_by_user_id.is_none() {
+                // keep only the most recent per patient
+                if !map.contains_key(&s.patient_id) || s.created_at > *map.get(&s.patient_id).unwrap() {
+                    map.insert(s.patient_id, s.created_at);
+                }
+            }
+        }
+        map
+    };
+
     let patients_html = if patients.is_empty() {
         "<li>No patients enrolled yet.</li>".to_string()
     } else {
         patients
             .iter()
             .map(|patient| {
+                let risk_badge = last_structured_patient_report_by_patient.get(&patient.id).map(|&last_ts| {
+                    let (age_days, bucket) = patient_report_age(last_ts, now);
+                    if bucket == "stale" {
+                        format!(r#"<span style="background:#c53030;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Last structured patient report >30 days ago">STALE {}d</span>"#, age_days)
+                    } else if bucket == "aging" {
+                        format!(r#"<span style="background:#b7791f;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Last structured patient report 7-30 days ago">AGING {}d</span>"#, age_days)
+                    } else {
+                        format!(r#"<span style="background:#047857;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Recent structured patient report">{}d</span>"#, age_days)
+                    }
+                }).unwrap_or_default();
+
                 format!(
-                    "<li>{} <small>(id: {})</small></li>",
+                    "<li>{} <small>(id: {})</small>{}</li>",
                     html_escape(patient.hex_code.as_deref().unwrap_or("pending")),
-                    patient.id
+                    patient.id,
+                    risk_badge
                 )
             })
             .collect::<Vec<_>>()
