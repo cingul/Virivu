@@ -2398,6 +2398,7 @@ struct StudyWorkbenchQuery {
     patient_report_age: Option<String>, // "stale" | "aging" | "all" (or absent) to filter the Patient Reports (via portal) list
     query_age: Option<String>,          // "stale" | "aging" | "all" — mirrors patient_report_age for monitor query filtering
     patient_related_queries: Option<String>, // "1" or absent — filter queries list to only those on patient-entered submissions
+    patient_id: Option<String>,              // filter patient reports list to a specific patient (for per-patient actionability from badges)
 }
 
 #[derive(Debug, Deserialize)]
@@ -5839,6 +5840,7 @@ async fn render_study_workbench(
     let patient_age_filter = query.patient_report_age.as_deref().unwrap_or("all").to_string();
     let query_age_filter = query.query_age.as_deref().unwrap_or("all").to_string();
     let patient_related_queries_filter = query.patient_related_queries.as_deref().unwrap_or("").trim() == "1";
+    let patient_id_filter = query.patient_id.as_deref().map(|s| s.to_string());
     let queries_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=queries",
         admin_email_q, selected_org_q, selected_project_q
@@ -6499,11 +6501,25 @@ async fn render_study_workbench(
                     r#"<span style="background:#fee2e2;color:#991b1b;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="No structured patient report submitted in last 30 days">SILENT</span>"#.to_string()
                 };
 
+                let patient_filter_link = format!(
+                    "/ui/studies?admin_email={}{}{}&view=submissions&patient_id={}",
+                    admin_email_q,
+                    selected_org_q,
+                    selected_project_q,
+                    patient.id
+                );
+
+                let clickable_badge = if risk_badge.is_empty() {
+                    risk_badge
+                } else {
+                    format!(r#"<a href="{}" style="text-decoration:none;">{}</a>"#, patient_filter_link, risk_badge)
+                };
+
                 format!(
                     "<li>{} <small>(id: {})</small>{}</li>",
                     html_escape(patient.hex_code.as_deref().unwrap_or("pending")),
                     patient.id,
-                    risk_badge
+                    clickable_badge
                 )
             })
             .collect::<Vec<_>>()
@@ -6525,6 +6541,12 @@ async fn render_study_workbench(
             age > 7 && age <= 30
         });
     }
+
+    if let Some(ref pid) = patient_id_filter {
+        if let Ok(target) = pid.parse::<uuid::Uuid>() {
+            patient_submissions.retain(|s| s.patient_id == target);
+        }
+    }
     // "all" (or unknown) shows everything
 
     let other_submissions: Vec<_> = submissions
@@ -6535,6 +6557,8 @@ async fn render_study_workbench(
     let patient_reports_html = if patient_submissions.is_empty() {
         if patient_age_filter == "stale" || patient_age_filter == "aging" {
             format!("<p style=\"color:#64748b;font-size:0.85rem;margin:0.5rem 0;\">No {} patient portal reports match the current filter.</p>", patient_age_filter)
+        } else if patient_id_filter.is_some() {
+            "<p style=\"color:#64748b;font-size:0.85rem;margin:0.5rem 0;\">No patient portal reports for this patient in the current view.</p>".to_string()
         } else {
             "<p style=\"color:#64748b;font-size:0.85rem;margin:0.5rem 0;\">No patient portal reports yet for this study.</p>".to_string()
         }
