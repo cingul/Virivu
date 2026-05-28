@@ -6122,6 +6122,12 @@ async fn render_study_workbench(
                 action_card_style, patient_related_open_queries, patient_queries_url
             ));
         }
+        if patients_with_no_recent_structured > 0 {
+            actions.push(format!(
+                r#"<div style="{}"><div style="font-size:0.85rem; color:#991b1b; margin-bottom:0.35rem;"><strong>{}</strong> patients with no recent portal activity (last 30 days).</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#991b1b; text-decoration:none;">Review patient list &rarr;</a></div>"#,
+                action_card_style, patients_with_no_recent_structured, patient_reports_link
+            ));
+        }
         if close_pending_count > 0 {
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#2d3748; margin-bottom:0.35rem;"><strong>{}</strong> close checklist item(s) remain.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Prepare close-out &rarr;</a></div>"#,
