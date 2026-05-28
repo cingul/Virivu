@@ -3855,6 +3855,21 @@ async fn render_app_dashboard(
                     }
                 }).unwrap_or_default();
 
+                // Actionable link for the badge (goes to study workbench filtered to this patient's reports)
+                let patient_reports_link = format!(
+                    "/ui/studies?admin_email={}{}{}&view=submissions&patient_id={}",
+                    admin_email_q,
+                    selected_org,
+                    selected_project,
+                    patient.id
+                );
+
+                let clickable_risk_badge = if patient_risk_badge.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#"<a href="{}" style="text-decoration:none; display:inline-block; margin-top:2px;">{}</a>"#, patient_reports_link, patient_risk_badge)
+                };
+
                 format!(
                     r#"<div class="dashboard-card-mini" style="text-decoration:none; color:inherit;">
   <a href="/ui/app?admin_email={}{}{}&patient_id={}" style="display:flex; text-decoration:none; color:inherit; flex:1;">
@@ -3867,9 +3882,9 @@ async fn render_app_dashboard(
         ID: <code style="font-size:0.7rem; font-weight:bold;">{}</code>
         <br/>Site ID: <code style="font-size:0.7rem;">{}</code>
       </span>
-      <span style="font-size:0.65rem; display:block; margin-top:2px;">{}</span>
     </div>
   </a>
+  {}
   <form method="post" action="/ui/patients/{}/portal-link" style="margin-top:4px; text-align:right;">
     <button type="submit" style="font-size:0.65rem; padding:2px 8px; background:#166534; color:white; border:none; border-radius:3px; cursor:pointer; font-weight:600;">Portal Link</button>
   </form>
@@ -3885,7 +3900,7 @@ async fn render_app_dashboard(
                         .site_id
                         .map(|id| id.to_string())
                         .unwrap_or_else(|| "none".to_string()),
-                    patient_risk_badge,
+                    clickable_risk_badge,
                     patient.id
                 )
             })
