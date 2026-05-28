@@ -5839,6 +5839,10 @@ async fn render_study_workbench(
         "/ui/studies?admin_email={}{}{}&view=submissions",
         admin_email_q, selected_org_q, selected_project_q
     );
+    let patient_reports_link = format!(
+        "/ui/studies?admin_email={}{}{}&view=submissions",
+        admin_email_q, selected_org_q, selected_project_q
+    );
     // Actionable filters for the patient reports list (wired from Recommended Next Steps cards)
     let patient_age_filter = query.patient_report_age.as_deref().unwrap_or("all").to_string();
     let query_age_filter = query.query_age.as_deref().unwrap_or("all").to_string();
@@ -7546,7 +7550,9 @@ async fn render_study_workbench(
     {query_aging_html}
     <span style="background:#f0fdf4; border:1px solid #86efac; border-radius:4px; padding:4px 8px; display:flex; align-items:center; gap:6px; font-size:0.85rem;">
       <strong style="color:#166534;">Patient Data Health:</strong>
-      <span style="background:#dcfce7; color:#166534; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_entered_count} reports</span>
+      <a href="{patient_reports_link}" style="text-decoration:none;">
+        <span style="background:#dcfce7; color:#166534; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_entered_count} reports</span>
+      </a>
       <span style="background:#fef3c7; color:#854d0e; padding:2px 6px; border-radius:3px; font-weight:600;">{patient_pending_sdv_count} need SDV</span>
       {patient_aging_html}
       {patient_query_pill_html}
@@ -7581,7 +7587,8 @@ async fn render_study_workbench(
         patient_pending_sdv_count = patient_pending_sdv_count,
         query_aging_html = query_aging_html,
         patient_aging_html = patient_aging_html,
-        patient_query_pill_html = patient_query_pill_html
+        patient_query_pill_html = patient_query_pill_html,
+        patient_reports_link = patient_reports_link
     );
 
     let script = r#"
