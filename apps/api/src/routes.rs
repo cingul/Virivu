@@ -6485,7 +6485,7 @@ async fn render_study_workbench(
         patients
             .iter()
             .map(|patient| {
-                let risk_badge = last_structured_patient_report_by_patient.get(&patient.id).map(|&last_ts| {
+                let risk_badge = if let Some(&last_ts) = last_structured_patient_report_by_patient.get(&patient.id) {
                     let (age_days, bucket) = patient_report_age(last_ts, now);
                     if bucket == "stale" {
                         format!(r#"<span style="background:#c53030;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Last structured patient report >30 days ago">STALE {}d</span>"#, age_days)
@@ -6494,7 +6494,10 @@ async fn render_study_workbench(
                     } else {
                         format!(r#"<span style="background:#047857;color:white;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="Recent structured patient report">{}d</span>"#, age_days)
                     }
-                }).unwrap_or_default();
+                } else {
+                    // Silent: no structured patient report in the loaded data (or last 30 days)
+                    r#"<span style="background:#fee2e2;color:#991b1b;padding:1px 3px;border-radius:2px;font-size:0.6rem;font-weight:600;margin-left:4px;" title="No structured patient report submitted in last 30 days">SILENT</span>"#.to_string()
+                };
 
                 format!(
                     "<li>{} <small>(id: {})</small>{}</li>",
