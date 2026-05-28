@@ -2397,6 +2397,7 @@ struct StudyWorkbenchQuery {
     view: Option<String>,
     patient_report_age: Option<String>, // "stale" | "aging" | "all" (or absent) to filter the Patient Reports (via portal) list
     query_age: Option<String>,          // "stale" | "aging" | "all" — mirrors patient_report_age for monitor query filtering
+    patient_related_queries: Option<String>, // "1" or absent — filter queries list to only those on patient-entered submissions
 }
 
 #[derive(Debug, Deserialize)]
@@ -5748,12 +5749,6 @@ async fn render_study_workbench(
         })
         .count();
 
-    let patient_query_pill_html = if patient_related_open_queries > 0 {
-        format!(r#"<span style="background:#dbeafe; color:#1e40af; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_related_open_queries} patient queries</span>"#)
-    } else {
-        String::new()
-    };
-
     let query_aging_html = {
         let mut parts = Vec::new();
         if stale_queries_count > 0 {
@@ -5833,12 +5828,14 @@ async fn render_study_workbench(
     // Actionable filters for the patient reports list (wired from Recommended Next Steps cards)
     let patient_age_filter = query.patient_report_age.as_deref().unwrap_or("all").to_string();
     let query_age_filter = query.query_age.as_deref().unwrap_or("all").to_string();
+    let patient_related_queries_filter = query.patient_related_queries.as_deref().unwrap_or("").trim() == "1";
     let queries_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=queries",
         admin_email_q, selected_org_q, selected_project_q
     );
     let stale_queries_url = format!("{}&query_age=stale", queries_tab_url);
     let aging_queries_url = format!("{}&query_age=aging", queries_tab_url);
+    let patient_queries_url = format!("{}&patient_related_queries=1", queries_tab_url);
     let close_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=close",
         admin_email_q, selected_org_q, selected_project_q
@@ -6104,7 +6101,7 @@ async fn render_study_workbench(
         if patient_related_open_queries > 0 {
             actions.push(format!(
                 r#"<div style="{}"><div style="font-size:0.85rem; color:#2b6cb0; margin-bottom:0.35rem;"><strong>{}</strong> open queries on patient portal submissions.</div> <a href="{}" style="font-size:0.8rem; font-weight:700; color:#2b6cb0; text-decoration:none;">Review patient queries &rarr;</a></div>"#,
-                action_card_style, patient_related_open_queries, queries_tab_url
+                action_card_style, patient_related_open_queries, patient_queries_url
             ));
         }
         if close_pending_count > 0 {
@@ -6620,9 +6617,17 @@ async fn render_study_workbench(
         });
     }
 
+    if patient_related_queries_filter {
+        filtered_queries.retain(|q| {
+            submissions.iter().any(|s| s.id == q.submission_id && s.entered_by_user_id.is_none())
+        });
+    }
+
     let data_queries_html = if filtered_queries.is_empty() {
         if query_age_filter == "stale" || query_age_filter == "aging" {
             format!("<li style=\"color:#64748b;font-size:0.85rem;\">No {} queries match the current filter.</li>", query_age_filter)
+        } else if patient_related_queries_filter {
+            "<li style=\"color:#64748b;font-size:0.85rem;\">No patient-related queries match the current filter.</li>".to_string()
         } else {
             "<li>No monitor queries yet.</li>".to_string()
         }
@@ -7527,6 +7532,12 @@ async fn render_study_workbench(
         } else {
             "".to_string()
         }
+    };
+
+    let patient_query_pill_html = if patient_related_open_queries > 0 {
+        format!(r#"<a href="{}" style="text-decoration:none;"><span style="background:#dbeafe; color:#1e40af; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_related_open_queries} patient queries</span></a>"#, patient_queries_url)
+    } else {
+        String::new()
     };
 
     let body = format!(
