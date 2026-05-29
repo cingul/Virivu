@@ -1899,14 +1899,32 @@ impl Db {
             client
                 .execute(
                     r#"
-                    INSERT INTO site_startup_checklist_items (site_id, item_code, item_label)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO site_startup_checklist_items (site_id, item_code, item_label, completed, notes)
+                    VALUES ($1, $2, $3, false, '')
                     ON CONFLICT (site_id, item_code) DO NOTHING
                     "#,
                     &[&site_id, &item_code, &item_label],
                 )
                 .await?;
         }
+        Ok(())
+    }
+
+    pub async fn reset_site_startup_checklist_items(&self, site_id: Uuid) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute(
+                r#"
+                UPDATE site_startup_checklist_items
+                SET completed = false,
+                    completed_by_user_id = NULL,
+                    completed_at = NULL,
+                    notes = ''
+                WHERE site_id = $1
+                "#,
+                &[&site_id],
+            )
+            .await?;
         Ok(())
     }
 
@@ -2061,14 +2079,15 @@ impl Db {
     ) -> anyhow::Result<Site> {
         let client = self.pool.get().await?;
 
-        // Hex generation: prefer project hex if attached to a study, otherwise org-based
+        // Hex generation: prefer project hex if attached to a study (6-char project prefix + 3 = 9 chars for site),
+        // otherwise for true org-level sites use org prefix (3) + 6 random chars = 9 chars to satisfy
+        // the sites_hex_code_format constraint (exactly 9 uppercase hex chars containing at least one A-F).
         let hex_code = if let Some(pid) = project_id {
             let project_hex = self.ensure_project_hex_code(&client, pid).await?;
             self.generate_unique_site_hex(&client, &project_hex).await?
         } else {
-            // For org-level sites, use a simpler org-based prefix
             let org_hex = self.ensure_organization_hex_code(&client, organization_id).await?;
-            self.generate_unique_site_hex(&client, &org_hex).await?
+            self.generate_unique_org_level_site_hex(&client, &org_hex).await?
         };
 
         let row = client
@@ -3231,6 +3250,40 @@ impl Db {
         Ok(row.get("has_access"))
     }
 
+    /// For dev bypass users: ensure they have a platform_admin membership so they can see
+    /// all organizations even if no explicit seed memberships exist.
+    pub async fn ensure_dev_platform_admin(&self, user_id: &Uuid, email: &str) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        // Insert a platform-level admin membership (NULL org + NULL project)
+        let _ = client
+            .execute(
+                r#"
+                INSERT INTO user_memberships (user_id, organization_id, project_id, role, status)
+                VALUES ($1, NULL, NULL, 'platform_admin', 'active')
+                ON CONFLICT DO NOTHING
+                "#,
+                &[user_id],
+            )
+            .await;
+
+        // Also give them org_admin on the first (usually platform_root) organization so classic flows work
+        let _ = client
+            .execute(
+                r#"
+                INSERT INTO user_memberships (user_id, organization_id, project_id, role, status)
+                SELECT $1, o.id, NULL, 'org_admin', 'active'
+                FROM organizations o
+                ORDER BY o.created_at ASC
+                LIMIT 1
+                ON CONFLICT DO NOTHING
+                "#,
+                &[user_id],
+            )
+            .await;
+
+        Ok(())
+    }
+
     pub async fn list_organizations_for_email(
         &self,
         email: &str,
@@ -3814,6 +3867,29 @@ impl Db {
             }
         }
         Err(anyhow!("unable to allocate unique site hex code"))
+    }
+
+    /// For org-level sites (not attached to any project/study), we need a full 9-character
+    /// hex code to satisfy the sites_hex_code_format CHECK constraint.
+    /// We use the organization's 3-char prefix + 6 random chars (with enough letters).
+    async fn generate_unique_org_level_site_hex(
+        &self,
+        client: &deadpool_postgres::Client,
+        org_hex: &str,
+    ) -> anyhow::Result<String> {
+        for _ in 0..4096 {
+            let candidate = format!("{}{}", org_hex, random_hex_segment(6, 2));
+            let row = client
+                .query_opt(
+                    "SELECT 1 FROM sites WHERE hex_code = $1 LIMIT 1",
+                    &[&candidate],
+                )
+                .await?;
+            if row.is_none() {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow!("unable to allocate unique org-level site hex code"))
     }
 
     async fn generate_unique_patient_hex(
