@@ -10,6 +10,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d virivu"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   api:
     build:
@@ -28,9 +34,19 @@ services:
       # This is dangerous and should be false in almost all cases.
       ALLOW_UNSAFE_DEV_BYPASS: "false"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+
+# -----------------------------------------------------------------------------
+# Build Notes:
+# - The API uses a modern cargo-chef based Dockerfile for fast, cache-friendly builds.
+# - Rust version is controlled via apps/api/rust-toolchain.toml (currently 1.95).
+# - To force a clean rebuild: docker compose build --no-cache api
+# - The rust-toolchain.toml ensures both local development and Docker use the same Rust version.
+# -----------------------------------------------------------------------------

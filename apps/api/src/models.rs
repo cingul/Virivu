@@ -35,7 +35,8 @@ pub struct Project {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Site {
     pub id: Uuid,
-    pub project_id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Option<Uuid>,
     pub name: String,
     pub principal_investigator: String,
     pub co_principal_investigator: Option<String>,

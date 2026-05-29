@@ -76,6 +76,9 @@ async fn main() -> anyhow::Result<()> {
         "starting API server"
     );
 
+    // Build marker for cache debugging - if you see this in logs, the new binary is running
+    info!("VIRIVU-BUILD-2026-05-28-SITE-FIX-4 - create-site defensive fallback + logging active");
+
     axum::serve(listener, app).await?;
     Ok(())
 }

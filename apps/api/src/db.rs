@@ -294,12 +294,28 @@ impl Db {
         let rows = client
             .query(
                 r#"
-                SELECT id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
+                SELECT id, organization_id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
                 FROM sites
                 WHERE project_id = $1
                 ORDER BY created_at DESC
                 "#,
                 &[&project_id],
+            )
+            .await?;
+        Ok(rows.iter().map(row_to_site).collect())
+    }
+
+    pub async fn list_sites_by_organization(&self, organization_id: Uuid) -> anyhow::Result<Vec<Site>> {
+        let client = self.pool.get().await?;
+        let rows = client
+            .query(
+                r#"
+                SELECT id, organization_id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
+                FROM sites
+                WHERE organization_id = $1
+                ORDER BY created_at DESC
+                "#,
+                &[&organization_id],
             )
             .await?;
         Ok(rows.iter().map(row_to_site).collect())
@@ -2036,23 +2052,33 @@ impl Db {
 
     pub async fn create_site(
         &self,
-        project_id: Uuid,
+        organization_id: Uuid,
+        project_id: Option<Uuid>,
         name: &str,
         principal_investigator: &str,
         co_principal_investigator: Option<&str>,
         sub_investigator: Option<&str>,
     ) -> anyhow::Result<Site> {
         let client = self.pool.get().await?;
-        let project_hex = self.ensure_project_hex_code(&client, project_id).await?;
-        let hex_code = self.generate_unique_site_hex(&client, &project_hex).await?;
+
+        // Hex generation: prefer project hex if attached to a study, otherwise org-based
+        let hex_code = if let Some(pid) = project_id {
+            let project_hex = self.ensure_project_hex_code(&client, pid).await?;
+            self.generate_unique_site_hex(&client, &project_hex).await?
+        } else {
+            // For org-level sites, use a simpler org-based prefix
+            let org_hex = self.ensure_organization_hex_code(&client, organization_id).await?;
+            self.generate_unique_site_hex(&client, &org_hex).await?
+        };
+
         let row = client
             .query_one(
                 r#"
-                INSERT INTO sites (project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
+                INSERT INTO sites (organization_id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id, organization_id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
                 "#,
-                &[&project_id, &name, &principal_investigator, &co_principal_investigator, &sub_investigator, &hex_code],
+                &[&organization_id, &project_id, &name, &principal_investigator, &co_principal_investigator, &sub_investigator, &hex_code],
             )
             .await?;
         let site_id: Uuid = row.get("id");
@@ -2060,6 +2086,7 @@ impl Db {
 
         Ok(Site {
             id: site_id,
+            organization_id: row.get("organization_id"),
             project_id: row.get("project_id"),
             name: row.get("name"),
             principal_investigator: row.get("principal_investigator"),
@@ -2414,6 +2441,24 @@ impl Db {
         let client = self.pool.get().await?;
         client
             .execute("UPDATE sites SET status = $1, last_activity_at = NOW() WHERE id = $2", &[&status, &site_id])
+            .await?;
+        Ok(())
+    }
+
+    /// Attach an existing site (typically org-level) to a specific project/study.
+    pub async fn attach_site_to_project(&self, site_id: Uuid, project_id: Uuid) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute("UPDATE sites SET project_id = $1, last_activity_at = NOW() WHERE id = $2", &[&project_id, &site_id])
+            .await?;
+        Ok(())
+    }
+
+    /// Detach a site from its current study (makes it org-level again).
+    pub async fn detach_site_from_project(&self, site_id: Uuid) -> anyhow::Result<()> {
+        let client = self.pool.get().await?;
+        client
+            .execute("UPDATE sites SET project_id = NULL, last_activity_at = NOW() WHERE id = $1", &[&site_id])
             .await?;
         Ok(())
     }
@@ -2997,7 +3042,7 @@ impl Db {
         let row = client
             .query_opt(
                 r#"
-                SELECT id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
+                SELECT id, organization_id, project_id, name, principal_investigator, co_principal_investigator, sub_investigator, hex_code, status, last_activity_at, created_at
                 FROM sites
                 WHERE id = $1
                 "#,
@@ -3006,6 +3051,7 @@ impl Db {
             .await?;
         Ok(row.map(|r| Site {
             id: r.get("id"),
+            organization_id: r.get("organization_id"),
             project_id: r.get("project_id"),
             name: r.get("name"),
             principal_investigator: r.get("principal_investigator"),
@@ -3325,28 +3371,25 @@ impl Db {
 
     pub async fn create_patient(
         &self,
-        site_id: Uuid,
+        project_id: Uuid,
+        site_id: Option<Uuid>,
         external_subject_id: Option<&str>,
         email: Option<&str>,
         date_of_birth: Option<NaiveDate>,
     ) -> anyhow::Result<Patient> {
         let client = self.pool.get().await?;
-        let relation = client
-            .query_one(
-                r#"
-                SELECT p.id AS project_id, p.organization_id
-                FROM sites s
-                JOIN projects p ON p.id = s.project_id
-                WHERE s.id = $1
-                "#,
-                &[&site_id],
-            )
-            .await?;
+        let project = self.get_project(project_id).await?
+            .ok_or_else(|| anyhow::anyhow!("project not found for patient creation"))?;
+        let organization_id = project.organization_id;
 
-        let project_id: Uuid = relation.get("project_id");
-        let organization_id: Uuid = relation.get("organization_id");
-        let site_hex = self.ensure_site_hex_code(&client, site_id).await?;
-        let hex_code = self.generate_unique_patient_hex(&client, &site_hex).await?;
+        let hex_code = if let Some(sid) = site_id {
+            let site_hex = self.ensure_site_hex_code(&client, sid).await?;
+            self.generate_unique_patient_hex(&client, &site_hex).await?
+        } else {
+            // Fall back to project-based hex when no site is assigned yet
+            let proj_hex = self.ensure_project_hex_code(&client, project_id).await?;
+            self.generate_unique_patient_hex(&client, &proj_hex).await?
+        };
 
         let row = client
             .query_one(
@@ -3383,7 +3426,10 @@ impl Db {
                 ],
             )
             .await?;
-        self.touch_site_activity(site_id).await?;
+
+        if let Some(sid) = site_id {
+            self.touch_site_activity(sid).await?;
+        }
         Ok(row_to_patient(&row))
     }
 
@@ -4850,6 +4896,7 @@ fn row_to_encounter(row: &Row) -> Encounter {
 fn row_to_site(row: &Row) -> Site {
     Site {
         id: row.get("id"),
+        organization_id: row.get("organization_id"),
         project_id: row.get("project_id"),
         name: row.get("name"),
         principal_investigator: row.get("principal_investigator"),

@@ -181,11 +181,15 @@ async fn submit_patient_intake(
     });
 
     let site_id = if let Some(proj) = matched_project {
-        // Pick first site for the project (real flow should be smarter)
-        ctx.db.list_sites_by_project(proj.id).await
-            .ok()
-            .and_then(|sites| sites.first().map(|s| s.id))
-            .unwrap_or_else(uuid::Uuid::nil)
+        // Prefer a site attached to the project; fall back to any org-level site
+        let project_sites = ctx.db.list_sites_by_project(proj.id).await.ok().unwrap_or_default();
+        if let Some(s) = project_sites.first() {
+            s.id
+        } else if let Ok(org_sites) = ctx.db.list_sites_by_organization(proj.organization_id).await {
+            org_sites.first().map(|s| s.id).unwrap_or_else(uuid::Uuid::nil)
+        } else {
+            uuid::Uuid::nil()
+        }
     } else {
         uuid::Uuid::nil()
     };
@@ -193,7 +197,8 @@ async fn submit_patient_intake(
     let patient = ctx
         .db
         .create_patient(
-            site_id,
+            matched_project.map(|p| p.id).unwrap_or_else(uuid::Uuid::nil),
+            Some(site_id),
             Some(&format!("intake:{}", study_code)),
             Some(form.email.trim()),
             None,
@@ -832,6 +837,14 @@ pub fn router(ctx: AppContext) -> Router {
             post(submit_app_site_toggle_dormancy),
         )
         .route(
+            "/ui/app/sites/{site_id}/attach-to-project",
+            post(submit_attach_site_to_project),
+        )
+        .route(
+            "/ui/app/sites/{site_id}/detach-from-project",
+            post(submit_detach_site_from_project),
+        )
+        .route(
             "/ui/app/projects/{project_id}/toggle-dormancy",
             post(submit_app_project_toggle_dormancy),
         )
@@ -1221,7 +1234,8 @@ async fn create_project(
 
 #[derive(Debug, Deserialize)]
 struct CreateSiteRequest {
-    project_id: Uuid,
+    organization_id: Uuid,
+    project_id: Option<Uuid>,
     name: String,
     principal_investigator: String,
     co_principal_investigator: Option<String>,
@@ -1233,17 +1247,12 @@ async fn create_site(
     user: AuthenticatedUser,
     Json(payload): Json<CreateSiteRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let project = ctx
-        .db
-        .get_project(payload.project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    require_org_role(&user, payload.organization_id, ROLE_ORG_MANAGERS)?;
 
     let site = ctx
         .db
         .create_site(
+            payload.organization_id,
             payload.project_id,
             payload.name.trim(),
             payload.principal_investigator.trim(),
@@ -2079,18 +2088,30 @@ async fn create_patient(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+
+    let project_id = site.project_id
+        .ok_or_else(|| ApiError::Validation("This endpoint currently requires the site to be attached to a study".to_string()))?;
     let project = ctx
         .db
-        .get_project(site.project_id)
+        .get_project(project_id)
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
+    // For the v1 API, we still require a site for now (can relax later)
+    let site = ctx
+        .db
+        .get_site(payload.site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+
     let patient = ctx
         .db
         .create_patient(
-            payload.site_id,
+            site.project_id.unwrap_or_else(|| uuid::Uuid::nil()), // fallback if somehow null
+            Some(payload.site_id),
             payload.external_subject_id.as_deref().map(str::trim),
             payload.email.as_deref().map(str::trim),
             payload.date_of_birth,
@@ -2328,7 +2349,8 @@ struct AppCreateProjectForm {
 #[derive(Debug, Deserialize)]
 struct AppCreateSiteForm {
     admin_email: String,
-    project_id: String,
+    organization_id: String,
+    project_id: String, // optional - can be empty for org-level sites
     site_name: String,
     principal_investigator: String,
     co_principal_investigator: Option<String>,
@@ -2338,7 +2360,8 @@ struct AppCreateSiteForm {
 #[derive(Debug, Deserialize)]
 struct AppCreatePatientForm {
     admin_email: String,
-    site_id: String,
+    project_id: String,   // required for patient enrollment
+    site_id: String,      // optional
     external_subject_id: String,
     email: String,
     date_of_birth: String,
@@ -2640,14 +2663,13 @@ async fn render_foundation_command_center(
             .await
             .map_err(ApiError::internal)?;
         total_projects += projects.len();
-        for project in projects {
-            total_sites += ctx
-                .db
-                .list_sites_by_project(project.id)
-                .await
-                .map_err(ApiError::internal)?
-                .len();
-        }
+        // Count all sites under the org (including org-level sites with no project)
+        total_sites += ctx
+            .db
+            .list_sites_by_organization(org_id)
+            .await
+            .map_err(ApiError::internal)?
+            .len();
         let org_duas = ctx
             .db
             .list_data_use_agreements(org_id)
@@ -2805,7 +2827,7 @@ async fn render_foundation_command_center(
 </div>
 
 <h1>Cingulum Foundation Command Center</h1>
-<p class="muted">Administer all partner sites, coordinate legal and operational workflows, and accelerate research delivery through a single digital control plane.</p>
+<p class="muted">Manage sites at the organization level or attach them to specific studies. Sites can exist independently of any project.</p>
 {}
 
 <section class="card">
@@ -2855,7 +2877,7 @@ async fn render_foundation_command_center(
   <ul style="margin:8px 0; line-height:1.5;">
     <li><strong>1.</strong> Create or select an Organization (hospital, sponsor, or research network)</li>
     <li><strong>2.</strong> Create a Project (study) under the organization</li>
-    <li><strong>3.</strong> Add Site(s) and assign investigators</li>
+    <li><strong>3.</strong> Add or attach sites — org-level sites are available to any study; you can attach them specifically to this one</li>
     <li><strong>4.</strong> Design &amp; publish CRF template(s) in the Study Workbench</li>
     <li><strong>5.</strong> Complete startup checklist → Activate study</li>
     <li><strong>6.</strong> Enroll patients and schedule visits</li>
@@ -2994,9 +3016,11 @@ async fn render_app_dashboard(
             .or_else(|| projects.first().map(|project| project.id))
     };
 
-    let sites = if let Some(project_id) = selected_project_id {
+    // Load sites by organization (primary) so we can support org-level sites independent of projects.
+    // If a project is selected we can still show them (future: filter or highlight study-specific sites).
+    let sites = if let Some(org_id) = selected_org_id {
         ctx.db
-            .list_sites_by_project(project_id)
+            .list_sites_by_organization(org_id)
             .await
             .map_err(ApiError::internal)?
     } else {
@@ -3012,6 +3036,34 @@ async fn render_app_dashboard(
             .map_err(ApiError::internal)?;
         site_checklists.insert(site.id, items);
     }
+
+    // For the current study context, separate attached sites vs other org sites
+    let (study_attached_sites, other_org_sites): (Vec<_>, Vec<_>) = if let Some(pid) = selected_project_id {
+        sites.iter().partition(|s| s.project_id == Some(pid))
+    } else {
+        (vec![], sites.iter().collect())
+    };
+
+    let study_attached_site_count = study_attached_sites.len();
+
+    let study_sites_summary_html = if let Some(pid) = selected_project_id {
+        let org_qs = selected_org_id
+            .map(|id| format!("&organization_id={}", id))
+            .unwrap_or_default();
+        let proj_qs = format!("&project_id={}", pid);
+        format!(
+            r#"<div style="margin: 0.75rem 0; padding: 0.5rem 0.75rem; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px; font-size: 0.85rem;">
+                <strong>Sites for this study:</strong> {} attached
+                <a href="/ui/app?admin_email={}{}{}&view=sites" style="margin-left: 0.5rem; color: #0369a1; font-weight: 600;">Manage / attach org sites →</a>
+            </div>"#,
+            study_attached_site_count,
+            html_escape(admin_email.trim()),
+            org_qs,
+            proj_qs
+        )
+    } else {
+        "".to_string()
+    };
 
     let duas = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -3392,7 +3444,7 @@ async fn render_app_dashboard(
   
   <div>
     <h4 style="margin:0 0 0.25rem 0; font-size:1.1rem; font-weight:700; color:#02182b;">
-      <a href="/ui/app?admin_email={}{}&project_id={}&view=sites" style="{}">{}</a>
+      <a href="/ui/app?admin_email={}{}&project_id={}&view=sites" style="{}">Manage Sites (attach org sites or create study-specific ones) →</a>
     </h4>
     <div style="font-size:0.8rem; color:#718096; margin-bottom:0.5rem;">
       Area: <strong>{}</strong> · ID: <code style="background:#e7e5da; color:#02182b; padding:0.1rem 0.3rem; border-radius:3px; font-weight:bold;">{}</code>
@@ -3440,7 +3492,11 @@ async fn render_app_dashboard(
     };
 
     let sites_html = if sites.is_empty() {
-        "<p style=\"color:#718096;font-style:italic;\">No sites yet for selected project.</p>".to_string()
+        if selected_project_id.is_some() {
+            "<p style=\"color:#718096;font-style:italic;\">No sites attached to this study yet. You can create a new site (it will attach here) or attach an existing org-level site from the list below.</p>".to_string()
+        } else {
+            "<p style=\"color:#718096;font-style:italic;\">No sites yet for this organization. Create your first site below.</p>".to_string()
+        }
     } else {
         sites
             .iter()
@@ -3589,9 +3645,14 @@ async fn render_app_dashboard(
         <input type="hidden" name="admin_email" value="{}" />
         <button type="submit" style="background:#e53e3e; color:white; padding:0.25rem 0.6rem; font-size:0.8rem; border:none; border-radius:4px; cursor:pointer;">Delete Site</button>
       </form>
+      {}
+      {}
     </div>
     <div style="font-size:0.7rem; color:#718096; text-align:right;">
       {}
+      <div style="margin-top:2px;">
+        {}
+      </div>
     </div>
   </div>
 </div>"#,
@@ -3607,9 +3668,20 @@ async fn render_app_dashboard(
                     html_escape(admin_email.trim()),
                     toggle_style,
                     toggle_label,
+                    if selected_project_id.is_some() && site.project_id != selected_project_id {
+                        format!(r#"<form method="post" action="/ui/app/sites/{}/attach-to-project" style="margin:0;"><input type="hidden" name="admin_email" value="{}" /><input type="hidden" name="project_id" value="{}" /><button type="submit" style="font-size:0.65rem; padding:2px 6px; background:#166534; color:white; border:none; border-radius:3px; cursor:pointer;">Attach to this study</button></form>"#, site.id, html_escape(admin_email.trim()), selected_project_id.unwrap())
+                    } else { "".to_string() },
+                    if site.project_id.is_some() {
+                        format!(r#"<form method="post" action="/ui/app/sites/{}/detach-from-project" style="margin:0;"><input type="hidden" name="admin_email" value="{}" /><button type="submit" style="font-size:0.65rem; padding:2px 6px; background:#854d0e; color:white; border:none; border-radius:3px; cursor:pointer;">Detach from study</button></form>"#, site.id, html_escape(admin_email.trim()))
+                    } else { "".to_string() },
                     site.id,
                     html_escape(admin_email.trim()),
-                    last_act
+                    last_act,
+                    if site.project_id.is_some() {
+                        "<span style=\"color:#166534; font-size:0.65rem;\">Attached to study</span>"
+                    } else {
+                        "<span style=\"color:#854d0e; font-size:0.65rem;\">Org-level site</span>"
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -3707,7 +3779,7 @@ async fn render_app_dashboard(
 
     <a href="?view=sites&admin_email={}&organization_id={}" style="text-decoration:none; display:block; background:white; border:1px solid #e2e8f0; border-radius:10px; padding:1.25rem; box-shadow:0 4px 6px rgba(0,0,0,0.02); position:relative; overflow:hidden;">
       <div style="position:absolute; top:0; left:0; width:4px; height:100%; background:#c5b7ab;"></div>
-      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Sites</div>
+      <div style="color:#718096; font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Total Sites (org + study)</div>
       <div style="color:#02182b; font-size:2.25rem; font-weight:800; margin-top:0.25rem;">{}</div>
     </a>
 
@@ -4080,14 +4152,27 @@ async fn render_app_dashboard(
         })
         .collect::<Vec<_>>()
         .join("");
-    let site_options_html = sites
+    let mut sorted_sites = sites.clone();
+    if let Some(current_proj) = selected_project_id {
+        sorted_sites.sort_by_key(|s| if s.project_id == Some(current_proj) { 0 } else { 1 });
+    }
+
+    let site_options_html = sorted_sites
         .iter()
         .map(|site| {
+            let attachment = if selected_project_id.is_some() && site.project_id == selected_project_id {
+                " (this study)"
+            } else if site.project_id.is_some() {
+                " (other study)"
+            } else {
+                " (org-level)"
+            };
             format!(
-                r#"<option value="{}" data-id="{}">{}</option>"#,
+                r#"<option value="{}" data-id="{}">{}{}</option>"#,
                 site.id.to_string().chars().take(8).collect::<String>(),
                 site.id,
-                html_escape(&site.name)
+                html_escape(&site.name),
+                attachment
             )
         })
         .collect::<Vec<_>>()
@@ -4256,10 +4341,12 @@ async fn render_app_dashboard(
   </p>
   
   <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700;">Sites</h3>
+  <p style="font-size:0.8rem; color:#64748b;">Sites live at the organization level by default. You can attach them to specific studies as needed. Creating a site while viewing a study will attach it to that study by default.</p>
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:1.5rem; margin-top:1rem;">
     <div id="add-site-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:220px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('site-create-modal').showModal()">
       <span style="font-size:3rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
       <span style="font-size:0.95rem; font-weight:600; color:#718096; margin-top:0.5rem;">Create New Site</span>
+      <span style="font-size:0.7rem; color:#64748b;">(will attach to current study if selected)</span>
     </div>
     {}
   </div>
@@ -4273,6 +4360,8 @@ async fn render_app_dashboard(
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
       <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; background:#f7fafc;" readonly />
       
+      <input type="hidden" name="organization_id" value="{}" />
+      <!-- project_id is optional: leave empty to create an org-level site not tied to a specific study -->
       <input type="hidden" name="project_id" value="{}" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Site name</label>
@@ -4293,7 +4382,8 @@ async fn render_app_dashboard(
 </section>"#,
             sites_html,
             html_escape(admin_email.trim()),
-            selected_project_hex.clone()
+            selected_org_value.clone(),
+            selected_project_value.clone()
         ),
         "patients" => format!(
             r#"<section class="card">
@@ -4368,8 +4458,8 @@ async fn render_app_dashboard(
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
       <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; background:#f7fafc;" readonly />
       
-      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Site ID</label>
-      <input name="site_id" list="app-site-options" placeholder="site-uuid" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Site (optional)</label>
+      <input name="site_id" list="app-site-options" placeholder="site-uuid (leave blank for now)" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">External subject label (optional)</label>
       <input name="external_subject_id" placeholder="SUBJ-001" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
@@ -5044,18 +5134,44 @@ async fn submit_app_create_site(
     user: AuthenticatedUser,
     Form(form): Form<AppCreateSiteForm>,
 ) -> Result<Redirect, ApiError> {
-    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
-    let project = ctx
-        .db
-        .get_project(project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    tracing::warn!(
+        admin_email = %form.admin_email,
+        organization_id_raw = %form.organization_id,
+        project_id_raw = %form.project_id,
+        "submit_app_create_site received form submission"
+    );
 
-    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    // organization_id is now required for site creation (sites live under orgs)
+    if form.organization_id.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "organization_id is required to create a site.".to_string(),
+        ));
+    }
+
+    let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
+    require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
+
+    // project_id is now optional (you can create org-level sites without a study)
+    let project_id = if form.project_id.trim().is_empty() {
+        None
+    } else {
+        match form.project_id.trim().parse::<Uuid>() {
+            Ok(id) => Some(id),
+            Err(_) => {
+                // try prefix resolution within the chosen org
+                let prefix = form.project_id.trim();
+                if let Ok(projs) = ctx.db.list_projects_by_organization(organization_id).await {
+                    projs.into_iter().find(|p| p.id.to_string().starts_with(prefix)).map(|p| p.id)
+                } else {
+                    None
+                }
+            }
+        }
+    };
 
     ctx.db
         .create_site(
+            organization_id,
             project_id,
             form.site_name.trim(),
             form.principal_investigator.trim(),
@@ -5065,11 +5181,17 @@ async fn submit_app_create_site(
         .await
         .map_err(ApiError::internal)?;
 
+    // Redirect back to the org sites view; include project only if one was chosen
+    let redirect_qs = if let Some(pid) = project_id {
+        format!("&project_id={}", pid)
+    } else {
+        String::new()
+    };
     Ok(Redirect::to(&format!(
-        "/ui/app?admin_email={}&organization_id={}&project_id={}&notice={}",
+        "/ui/app?admin_email={}&organization_id={}{}&notice={}",
         query_escape(user.email.as_str()),
-        project.organization_id,
-        project_id,
+        organization_id,
+        redirect_qs,
         query_escape("Site created")
     )))
 }
@@ -5091,25 +5213,27 @@ async fn submit_app_delete_site(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
-    let project = ctx
-        .db
-        .get_project(site.project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
 
-    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    // For actions that need the project, fall back gracefully if the site is org-level
+    if let Some(pid) = site.project_id {
+        if let Ok(Some(proj)) = ctx.db.get_project(pid).await {
+            require_org_role(&user, proj.organization_id, ROLE_ORG_MANAGERS)?;
+        }
+    } else {
+        require_org_role(&user, site.organization_id, ROLE_ORG_MANAGERS)?;
+    }
 
     ctx.db
         .delete_site(site_id)
         .await
         .map_err(ApiError::internal)?;
 
+    let redirect_project = site.project_id.unwrap_or_default();
     Ok(Redirect::to(&format!(
         "/ui/app?admin_email={}&organization_id={}&project_id={}&notice={}",
         query_escape(user.email.as_str()),
-        project.organization_id,
-        project.id,
+        site.organization_id,
+        redirect_project,
         query_escape("Site deleted successfully")
     )))
 }
@@ -5131,14 +5255,8 @@ async fn submit_app_site_toggle_dormancy(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
-    let project = ctx
-        .db
-        .get_project(site.project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
 
-    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
+    require_org_role(&user, site.organization_id, ROLE_ORG_MANAGERS)?;
     
     let next_status = if site.status == "dormant" { "active" } else { "dormant" };
     ctx.db
@@ -5150,9 +5268,72 @@ async fn submit_app_site_toggle_dormancy(
     Ok(Redirect::to(&format!(
         "/ui/app?admin_email={}&organization_id={}&project_id={}&view=sites&notice={}",
         query_escape(user.email.as_str()),
-        project.organization_id,
-        project.id,
+        site.organization_id,
+        site.project_id.unwrap_or_default(),
         query_escape(&notice)
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachSiteToProjectForm {
+    admin_email: String,
+    project_id: Uuid,
+}
+
+async fn submit_attach_site_to_project(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(site_id): Path<Uuid>,
+    Form(form): Form<AttachSiteToProjectForm>,
+) -> Result<Redirect, ApiError> {
+    let site = ctx
+        .db
+        .get_site(site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+
+    require_org_role(&user, site.organization_id, ROLE_ORG_MANAGERS)?;
+
+    ctx.db
+        .attach_site_to_project(site_id, form.project_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&project_id={}&view=sites&notice={}",
+        query_escape(user.email.as_str()),
+        site.organization_id,
+        form.project_id,
+        query_escape("Site attached to study")
+    )))
+}
+
+async fn submit_detach_site_from_project(
+    State(ctx): State<AppContext>,
+    user: AuthenticatedUser,
+    Path(site_id): Path<Uuid>,
+    Form(form): Form<AttachSiteToProjectForm>, // reuse for admin_email
+) -> Result<Redirect, ApiError> {
+    let site = ctx
+        .db
+        .get_site(site_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+
+    require_org_role(&user, site.organization_id, ROLE_ORG_MANAGERS)?;
+
+    ctx.db
+        .detach_site_from_project(site_id)
+        .await
+        .map_err(ApiError::internal)?;
+
+    Ok(Redirect::to(&format!(
+        "/ui/app?admin_email={}&organization_id={}&view=sites&notice={}",
+        query_escape(user.email.as_str()),
+        site.organization_id,
+        query_escape("Site detached from study (now org-level)")
     )))
 }
 
@@ -5214,21 +5395,25 @@ async fn submit_app_create_patient(
     user: AuthenticatedUser,
     Form(form): Form<AppCreatePatientForm>,
 ) -> Result<Redirect, ApiError> {
-    let site_id = parse_uuid_field(&form.site_id, "site_id")?;
-    let site = ctx
-        .db
-        .get_site(site_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
     let project = ctx
         .db
-        .get_project(site.project_id)
+        .get_project(project_id)
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+
+    // Site is now optional
+    let site_id = if form.site_id.trim().is_empty() {
+        None
+    } else {
+        match parse_uuid_field(&form.site_id, "site_id") {
+            Ok(id) => Some(id),
+            Err(_) => None,
+        }
+    };
 
     let external_subject_id = if form.external_subject_id.trim().is_empty() {
         None
@@ -5241,9 +5426,10 @@ async fn submit_app_create_patient(
         Some(form.email.trim())
     };
     let date_of_birth = parse_optional_date(&form.date_of_birth)?;
+
     let patient = ctx
         .db
-        .create_patient(site_id, external_subject_id, patient_email, date_of_birth)
+        .create_patient(project_id, site_id, external_subject_id, patient_email, date_of_birth)
         .await
         .map_err(ApiError::internal)?;
 
@@ -6193,7 +6379,7 @@ async fn render_study_workbench(
             r#"<section class="card" style="margin:0.75rem 0;">
   <h3>Phase readiness gates</h3>
   <ul>
-    <li><strong>To initiate:</strong> site configured {} · CRF published {} · startup checklist complete {}</li>
+    <li><strong>To initiate:</strong> at least one site configured (org-level or study-specific) · CRF published {} · startup checklist complete {}</li>
     <li><strong>To set active:</strong> at least one enrolled patient {}</li>
     <li><strong>To close:</strong> no open queries {} · close checklist complete {}</li>
   </ul>
@@ -6254,9 +6440,9 @@ async fn render_study_workbench(
             if readiness.total_sites < 1 {
                 cards.push(format!(
                     r#"<a class="action-card is-blocked" href="{}">
-  <div class="action-title">Configure first site</div>
-  <div class="action-desc">A study cannot be initiated until at least one site is configured.</div>
-  <div class="action-tag">Go to Operations Workspace</div>
+  <div class="action-title">Configure or attach first site</div>
+  <div class="action-desc">A study needs at least one site (attach an existing org-level site or create a new one for this study).</div>
+  <div class="action-tag">Go to Operations Workspace → Sites</div>
 </a>"#,
                     app_dashboard_url
                 ));
@@ -7521,7 +7707,7 @@ async fn render_study_workbench(
         "startup" => format!(
             r#"<section class="card">
   <h2>8) Study Startup Checklist</h2>
-  <p class="muted">Use this checklist to move from setup to launch. Work through pending tasks and mark them complete.</p>
+  <p class="muted">Use this checklist to move from setup to launch. Sites can be org-level or attached specifically to this study — use the Operations workspace to manage them.</p>
   {}
   {}
   {}
@@ -9053,9 +9239,10 @@ async fn submit_set_site_startup_checklist_item(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+    let project_id = site.project_id.ok_or_else(|| ApiError::Validation("Site must be attached to a study for this action".to_string()))?;
     let project = ctx
         .db
-        .get_project(site.project_id)
+        .get_project(project_id)
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
@@ -10441,9 +10628,10 @@ fn parse_optional_date(raw: &str) -> Result<Option<chrono::NaiveDate>, ApiError>
 }
 
 fn parse_uuid_field(raw: &str, field_name: &str) -> Result<Uuid, ApiError> {
-    raw.trim()
+    let trimmed = raw.trim();
+    trimmed
         .parse::<Uuid>()
-        .map_err(|_| ApiError::Validation(format!("{field_name} must be a valid UUID")))
+        .map_err(|_| ApiError::Validation(format!("{field_name} must be a valid UUID (got '{}')", trimmed)))
 }
 
 fn optional_non_empty(input: &str) -> Option<&str> {
