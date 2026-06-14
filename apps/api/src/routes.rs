@@ -3417,6 +3417,44 @@ async fn render_app_dashboard(
     } else {
         String::new()
     };
+    let project_actions_disabled = selected_project_id.is_none();
+    let project_actions_disabled_attr = if project_actions_disabled {
+        "disabled"
+    } else {
+        ""
+    };
+    let project_actions_disabled_btn_style = if project_actions_disabled {
+        "opacity:0.55; cursor:not-allowed;"
+    } else {
+        ""
+    };
+    let patient_modal_onclick = if project_actions_disabled {
+        "return false;"
+    } else {
+        "document.getElementById('patient-create-modal').showModal()"
+    };
+    let patient_modal_blocked_note = if project_actions_disabled {
+        "<div style=\"margin-bottom:0.6rem;font-size:0.8rem;color:#9a3412;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:0.45rem 0.55rem;\">Study not selected. Choose active study first.</div>".to_string()
+    } else {
+        String::new()
+    };
+    let org_actions_disabled = selected_org_id.is_none();
+    let org_actions_disabled_attr = if org_actions_disabled { "disabled" } else { "" };
+    let org_actions_disabled_btn_style = if org_actions_disabled {
+        "opacity:0.55; cursor:not-allowed;"
+    } else {
+        ""
+    };
+    let site_modal_onclick = if org_actions_disabled {
+        "return false;"
+    } else {
+        "document.getElementById('site-create-modal').showModal()"
+    };
+    let sites_org_notice_html = if org_actions_disabled {
+        "<div style=\"margin-bottom:0.8rem;padding:0.65rem 0.8rem;border:1px solid #fbcfe8;background:#fdf2f8;border-left:4px solid #db2777;border-radius:8px;color:#9d174d;font-size:0.82rem;\"><strong>Select organization first.</strong> Site creation and attachment are organization-scoped.</div>".to_string()
+    } else {
+        String::new()
+    };
 
     let notice_html = query
         .notice
@@ -3854,6 +3892,11 @@ async fn render_app_dashboard(
     let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
     let selected_project_value = selected_project_id.map(|id| id.to_string()).unwrap_or_default();
     let selected_patient_value = selected_patient_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_project_qs = if selected_project_value.is_empty() {
+        String::new()
+    } else {
+        format!("&project_id={selected_project_value}")
+    };
 
     let selected_org_hex = selected_org_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
     let selected_project_hex = selected_project_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
@@ -4489,9 +4532,10 @@ async fn render_app_dashboard(
   
   <h3 style="margin-top:1.5rem; color:#02182b; font-weight:700;">Sites</h3>
   <p style="font-size:0.8rem; color:#64748b;">Sites live at the organization level by default. You can attach them to specific studies as needed. Creating a site while viewing a study will attach it to that study by default.</p>
+  {}
   {study_context_sites_note}
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:1.5rem; margin-top:1rem;">
-    <div id="add-site-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:220px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('site-create-modal').showModal()">
+    <div id="add-site-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:220px; transition:all 0.2s; position:relative; box-shadow:none; {}" onclick="{}">
       <span style="font-size:3rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
       <span style="font-size:0.95rem; font-weight:600; color:#718096; margin-top:0.5rem;">Create New Site</span>
       <span style="font-size:0.7rem; color:#64748b;">(will attach to current study if selected)</span>
@@ -4505,6 +4549,7 @@ async fn render_app_dashboard(
       <p style="font-size:0.75rem; color:#64748b; margin:0.25rem 0;">Will be attached to the current study if one is selected in context.</p>
       <button onclick="document.getElementById('site-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer; line-height:1;">&times;</button>
     </div>
+    {}
     <form method="post" action="/ui/app/create-site" style="display:flex; flex-direction:column; gap:0.85rem; margin:0;">
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
       <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; background:#f7fafc;" readonly />
@@ -4526,14 +4571,28 @@ async fn render_app_dashboard(
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Sub-Investigator (optional)</label>
       <input name="sub_investigator" placeholder="Dr. Doe" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
       
-      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Site</button>
+      <button type="submit" {} style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; margin-top:0.75rem; transition:background 0.2s; {}">Create Site</button>
     </form>
   </dialog>
 </section>"#,
             sites_html,
+            sites_org_notice_html,
+            if org_actions_disabled {
+                "opacity:0.6;cursor:not-allowed;".to_string()
+            } else {
+                "cursor:pointer;".to_string()
+            },
+            site_modal_onclick,
+            if org_actions_disabled {
+                "<div style=\"margin-bottom:0.6rem;font-size:0.8rem;color:#9d174d;background:#fdf2f8;border:1px solid #fbcfe8;border-radius:6px;padding:0.45rem 0.55rem;\">Organization not selected. Choose an organization first.</div>".to_string()
+            } else {
+                String::new()
+            },
             html_escape(admin_email.trim()),
             selected_org_value.clone(),
-            create_site_project_id_value.clone()
+            create_site_project_id_value.clone(),
+            org_actions_disabled_attr,
+            org_actions_disabled_btn_style
         ),
         "patients" => format!(
             r#"<section class="card">
@@ -4555,12 +4614,12 @@ async fn render_app_dashboard(
         <input type="hidden" name="project_id" value="{}" />
         
         <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Patient email</label>
-        <input type="email" name="patient_email" placeholder="patient@example.org" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        <input type="email" name="patient_email" placeholder="patient@example.org" required {} style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
         
         <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Form type</label>
-        <input name="form_type" placeholder="demographics-intake" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        <input name="form_type" placeholder="demographics-intake" required {} style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
         
-        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Send Form Invite</button>
+        <button type="submit" {} style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; margin-top:0.5rem; transition:background 0.2s; {}">Send Form Invite</button>
       </form>
     </div>
 
@@ -4575,12 +4634,12 @@ async fn render_app_dashboard(
         <input type="hidden" name="project_id" value="{}" />
         
         <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Patient ID</label>
-        <input name="patient_id" list="app-patient-options" placeholder="subject-001" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        <input name="patient_id" list="app-patient-options" placeholder="subject-001" required {} style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
         
         <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">MIME type</label>
-        <input name="mime_type" placeholder="video/mp4" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+        <input name="mime_type" placeholder="video/mp4" required {} style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
         
-        <button type="submit" style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.5rem; transition:background 0.2s;">Generate Upload Link</button>
+        <button type="submit" {} style="background:#02182b; color:white; border:none; padding:0.6rem; border-radius:6px; font-weight:600; margin-top:0.5rem; transition:background 0.2s; {}">Generate Upload Link</button>
       </form>
     </div>
   </div>
@@ -4593,7 +4652,7 @@ async fn render_app_dashboard(
   {}
   {}
   <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1.25rem; margin-top:1rem;">
-    <div id="add-patient-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100px; cursor:pointer; transition:all 0.2s; position:relative; box-shadow:none;" onclick="document.getElementById('patient-create-modal').showModal()">
+    <div id="add-patient-card" class="dashboard-card" style="border:2px dashed #cbd5e0; background:#f8fafc; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100px; transition:all 0.2s; position:relative; box-shadow:none; {}" onclick="{}">
       <span style="font-size:2.5rem; color:#a0aec0; font-weight:300; line-height:1;">+</span>
       <span style="font-size:0.85rem; font-weight:600; color:#718096; margin-top:0.25rem;">Create New Patient</span>
     </div>
@@ -4605,40 +4664,62 @@ async fn render_app_dashboard(
       <h3 style="margin:0; color:#02182b; font-size:1.25rem; font-weight:700;">Create New Patient</h3>
       <button onclick="document.getElementById('patient-create-modal').close()" style="background:none; border:none; font-size:1.5rem; color:#a0aec0; cursor:pointer; line-height:1;">&times;</button>
     </div>
+    {}
     <form method="post" action="/ui/app/create-patient" style="display:flex; flex-direction:column; gap:0.85rem; margin:0;">
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
       <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; background:#f7fafc;" readonly />
       <input type="hidden" name="project_id" value="{}" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Site (optional)</label>
-      <input name="site_id" list="app-site-options" placeholder="site-uuid (study-attached shown first)" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      <input name="site_id" list="app-site-options" placeholder="site-uuid (study-attached shown first)" {} style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">External subject label (optional)</label>
-      <input name="external_subject_id" placeholder="SUBJ-001" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      <input name="external_subject_id" placeholder="SUBJ-001" {} style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Patient email (optional)</label>
-      <input type="email" name="email" placeholder="patient@example.org" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      <input type="email" name="email" placeholder="patient@example.org" {} style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Date of birth (optional, YYYY-MM-DD)</label>
-      <input name="date_of_birth" placeholder="1980-01-01" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
+      <input name="date_of_birth" placeholder="1980-01-01" {} style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
       
-      <button type="submit" style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; cursor:pointer; margin-top:0.75rem; transition:background 0.2s;">Create Patient + ID</button>
+      <button type="submit" {} style="background:#02182b; color:white; border:none; padding:0.75rem; border-radius:6px; font-weight:600; margin-top:0.75rem; transition:background 0.2s; {}">Create Patient + ID</button>
     </form>
   </dialog>
 </section>"#,
-            html_escape(admin_email.trim()),
-            selected_org_value,
-            selected_project_value,
             patients_study_notice_html,
             html_escape(admin_email.trim()),
             selected_org_value,
             selected_project_value,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_btn_style,
+            html_escape(admin_email.trim()),
+            selected_org_value,
+            selected_project_value,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_btn_style,
             pending_intakes_html,
             recent_pro_reports_html,
             if queries_health_html.is_empty() { "".to_string() } else { format!(r#"<div style="margin-top:0.75rem; padding:6px 10px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; font-size:0.82rem;"><strong style="color:#0369a1;">Queries Health</strong> {}</div>"#, queries_health_html) },
+            if project_actions_disabled {
+                "opacity:0.6;cursor:not-allowed;".to_string()
+            } else {
+                "cursor:pointer;".to_string()
+            },
+            patient_modal_onclick,
             patients_html,
+            patient_modal_blocked_note,
             html_escape(admin_email.trim()),
-            selected_project_value
+            selected_project_value,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_attr,
+            project_actions_disabled_btn_style
         ),
         "providers" => format!(
             r##"<section class="card">
@@ -5332,46 +5413,46 @@ document.addEventListener('DOMContentLoaded', () => {{
 
   <nav class="sidebar-nav">
     <div class="sidebar-section-label">Workspace</div>
-    <a class="sidebar-item {active_overview}" href="?view=overview&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_overview}" href="?view=overview&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">⬡</span> Overview
     </a>
-    <a class="sidebar-item {active_workflow}" href="?view=workflow&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_workflow}" href="?view=workflow&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">🧭</span> Workflow
     </a>
-    <a class="sidebar-item {active_analytics}" href="?view=analytics&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_analytics}" href="?view=analytics&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">📊</span> Analytics
     </a>
 
     <div class="sidebar-section-label">Clinical</div>
-    <a class="sidebar-item {active_orgs}" href="?view=orgs&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_orgs}" href="?view=orgs&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">🏢</span> Organizations
     </a>
-    <a class="sidebar-item {active_projects}" href="?view=projects&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_projects}" href="?view=projects&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">🔬</span> Studies
     </a>
-    <a class="sidebar-item {active_sites}" href="?view=sites&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_sites}" href="?view=sites&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">🏥</span> Sites
     </a>
-    <a class="sidebar-item {active_patients}" href="?view=patients&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_patients}" href="?view=patients&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">👤</span> Patients
     </a>
-    <a class="sidebar-item {active_providers}" href="?view=providers&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_providers}" href="?view=providers&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">🩺</span> Providers
     </a>
-    <a class="sidebar-item {active_encounters}" href="?view=encounters&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_encounters}" href="?view=encounters&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">📝</span> Encounters
     </a>
 
     <div class="sidebar-section-label">Research</div>
-    <a class="sidebar-item" href="/ui/studies?admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item" href="/ui/studies?admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">📋</span> Study Workbench
     </a>
-    <a class="sidebar-item {active_media}" href="?view=media&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_media}" href="?view=media&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">📁</span> Media Vault
     </a>
 
     <div class="sidebar-section-label">Compliance</div>
-    <a class="sidebar-item {active_legal}" href="?view=legal&admin_email={admin}&organization_id={org}">
+    <a class="sidebar-item {active_legal}" href="?view=legal&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">📜</span> Legal / DUA
     </a>
     <a class="sidebar-item" href="/ui/foundation?admin_email={admin}&organization_id={org}">
@@ -5410,7 +5491,8 @@ document.addEventListener('DOMContentLoaded', () => {{
         active_workflow = is_active("workflow"),
         admin_display = html_escape(admin_email.trim()),
         auto_archive = auto_archive_banner,
-        workflow_sidebar = workflow_sidebar_html
+        workflow_sidebar = workflow_sidebar_html,
+        project_qs = selected_project_qs
     );
 
     let body = format!(
