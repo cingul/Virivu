@@ -3400,6 +3400,24 @@ async fn render_app_dashboard(
         Vec::new()
     };
 
+    let patients_study_notice_html = if selected_project_id.is_none() {
+        format!(
+            r#"<div style="margin-bottom:1rem;padding:0.75rem 0.9rem;border:1px solid #fed7aa;background:#fff7ed;border-left:4px solid #f97316;border-radius:8px;">
+  <strong style="color:#9a3412;">Select an active study to unlock patient actions.</strong>
+  <div style="font-size:0.82rem;color:#7c2d12;margin-top:0.25rem;">
+    Patient enrollment, form invites, and media tickets are study-scoped.
+    <a href="/ui/app?view=projects&admin_email={}{}" style="font-weight:700;color:#9a3412;">Choose a study now →</a>
+  </div>
+</div>"#,
+            admin_email_q,
+            selected_org_id
+                .map(|id| format!("&organization_id={id}"))
+                .unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+
     let notice_html = query
         .notice
         .map(|notice| format!(r#"<p class="notice">{}</p>"#, html_escape(notice.trim())))
@@ -4478,6 +4496,7 @@ async fn render_app_dashboard(
   <p style="color:#718096; margin-bottom:1.5rem; font-size:0.9rem;">
     Manage clinical trial subjects, deploy digital intake forms, and generate secure media upload channels.
   </p>
+  {}
 
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1.5rem; margin-bottom:2rem;">
     <!-- Send Patient Form Invite Card -->
@@ -4544,6 +4563,7 @@ async fn render_app_dashboard(
     <form method="post" action="/ui/app/create-patient" style="display:flex; flex-direction:column; gap:0.85rem; margin:0;">
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Admin email</label>
       <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px; background:#f7fafc;" readonly />
+      <input type="hidden" name="project_id" value="{}" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Site (optional)</label>
       <input name="site_id" list="app-site-options" placeholder="site-uuid (study-attached shown first)" style="border:1px solid #cbd5e0; padding:0.55rem; border-radius:6px;" />
@@ -4564,6 +4584,7 @@ async fn render_app_dashboard(
             html_escape(admin_email.trim()),
             selected_org_value,
             selected_project_value,
+            patients_study_notice_html,
             html_escape(admin_email.trim()),
             selected_org_value,
             selected_project_value,
@@ -4571,7 +4592,8 @@ async fn render_app_dashboard(
             recent_pro_reports_html,
             if queries_health_html.is_empty() { "".to_string() } else { format!(r#"<div style="margin-top:0.75rem; padding:6px 10px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; font-size:0.82rem;"><strong style="color:#0369a1;">Queries Health</strong> {}</div>"#, queries_health_html) },
             patients_html,
-            html_escape(admin_email.trim())
+            html_escape(admin_email.trim()),
+            selected_project_value
         ),
         "providers" => format!(
             r##"<section class="card">
@@ -4801,12 +4823,93 @@ async fn render_app_dashboard(
                 )
             };
 
+            let org_qs = selected_org_id
+                .map(|id| format!("&organization_id={id}"))
+                .unwrap_or_default();
+            let project_qs = selected_project_id
+                .map(|id| format!("&project_id={id}"))
+                .unwrap_or_default();
+            let has_project_site = selected_project_id
+                .map(|pid| sites.iter().any(|site| site.project_id == Some(pid)))
+                .unwrap_or(false);
+            let quickstart_html = format!(
+                r#"<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:1rem 1.1rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+    <h3 style="margin:0;color:#02182b;font-size:1.02rem;">Guided setup path</h3>
+    <span style="font-size:0.72rem;color:#475569;">Follow left to right for a frictionless start</span>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0.65rem;margin-top:0.8rem;">
+    <a href="/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}" style="text-decoration:none;border:1px solid #e2e8f0;border-radius:8px;padding:0.65rem;background:#f8fafc;">
+      <div style="font-size:0.7rem;color:#64748b;">Step 1</div>
+      <div style="font-weight:700;color:#02182b;">Organization</div>
+      <div style="font-size:0.72rem;color:{org_status_color};">{org_status}</div>
+    </a>
+    <a href="/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}" style="text-decoration:none;border:1px solid #e2e8f0;border-radius:8px;padding:0.65rem;background:#f8fafc;">
+      <div style="font-size:0.7rem;color:#64748b;">Step 2</div>
+      <div style="font-weight:700;color:#02182b;">Study</div>
+      <div style="font-size:0.72rem;color:{study_status_color};">{study_status}</div>
+    </a>
+    <a href="/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}" style="text-decoration:none;border:1px solid #e2e8f0;border-radius:8px;padding:0.65rem;background:#f8fafc;">
+      <div style="font-size:0.7rem;color:#64748b;">Step 3</div>
+      <div style="font-weight:700;color:#02182b;">Site</div>
+      <div style="font-size:0.72rem;color:{site_status_color};">{site_status}</div>
+    </a>
+    <a href="/ui/app?view=patients&admin_email={admin_email_q}{org_qs}{project_qs}" style="text-decoration:none;border:1px solid #e2e8f0;border-radius:8px;padding:0.65rem;background:#f8fafc;">
+      <div style="font-size:0.7rem;color:#64748b;">Step 4</div>
+      <div style="font-weight:700;color:#02182b;">Patient + Intake</div>
+      <div style="font-size:0.72rem;color:{patient_status_color};">{patient_status}</div>
+    </a>
+  </div>
+</div>"#,
+                org_status = if selected_org_id.is_some() {
+                    "Complete"
+                } else {
+                    "Select organization first"
+                },
+                org_status_color = if selected_org_id.is_some() {
+                    "#166534"
+                } else {
+                    "#b45309"
+                },
+                study_status = if selected_project_id.is_some() {
+                    "Complete"
+                } else {
+                    "Select active study"
+                },
+                study_status_color = if selected_project_id.is_some() {
+                    "#166534"
+                } else {
+                    "#b45309"
+                },
+                site_status = if has_project_site {
+                    "Complete"
+                } else {
+                    "Attach or create a site"
+                },
+                site_status_color = if has_project_site {
+                    "#166534"
+                } else {
+                    "#b45309"
+                },
+                patient_status = if !patients.is_empty() {
+                    "Complete"
+                } else {
+                    "Enroll first patient"
+                },
+                patient_status_color = if !patients.is_empty() {
+                    "#166534"
+                } else {
+                    "#b45309"
+                },
+            );
+
             format!(
                 r#"<section style="display:flex; flex-direction:column; gap:1.5rem;">
   <div>
     <h2 style="color:#02182b; margin:0 0 0.5rem 0; font-size:1.5rem; font-weight:700;">Workspace Overview</h2>
     <p style="color:#718096; margin:0; font-size:0.9rem;">High-level clinical trial environment diagnostics and active telemetry context.</p>
   </div>
+  {quickstart_html}
 
   <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1.25rem;">
     <!-- Admin Context Card -->
@@ -4873,7 +4976,8 @@ async fn render_app_dashboard(
                 child_organizations_html,
                 foundation_hub_url,
                 html_escape(admin_val),
-                html_escape(admin_val)
+                html_escape(admin_val),
+                quickstart_html = quickstart_html
             )
         },
     };
@@ -4920,6 +5024,72 @@ async fn render_app_dashboard(
         .map(|proj| html_escape(&proj.name))
         .unwrap_or_else(|| "— Select Study —".to_string());
 
+    let workflow_sidebar_html = {
+        let org_qs = selected_org_id
+            .map(|id| format!("&organization_id={id}"))
+            .unwrap_or_default();
+        let project_qs = selected_project_id
+            .map(|id| format!("&project_id={id}"))
+            .unwrap_or_default();
+        let has_project_site = selected_project_id
+            .map(|pid| sites.iter().any(|site| site.project_id == Some(pid)))
+            .unwrap_or(false);
+        let setup_steps = [
+            (
+                selected_org_id.is_some(),
+                "1) Select organization",
+                format!("/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}"),
+            ),
+            (
+                selected_project_id.is_some(),
+                "2) Select study",
+                format!("/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}"),
+            ),
+            (
+                has_project_site,
+                "3) Attach/create study site",
+                format!("/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}"),
+            ),
+            (
+                !patients.is_empty(),
+                "4) Enroll first patient",
+                format!("/ui/app?view=patients&admin_email={admin_email_q}{org_qs}{project_qs}"),
+            ),
+            (
+                !duas.is_empty(),
+                "5) Launch DUA + signatures",
+                format!("/ui/app?view=legal&admin_email={admin_email_q}{org_qs}"),
+            ),
+        ];
+        let completed = setup_steps.iter().filter(|(done, _, _)| *done).count();
+        let items = setup_steps
+            .iter()
+            .map(|(done, label, url)| {
+                let badge = if *done {
+                    r#"<span style="background:#166534;color:#fff;padding:1px 6px;border-radius:999px;font-size:0.62rem;font-weight:700;">DONE</span>"#
+                } else {
+                    r#"<span style="background:#f59e0b;color:#fff;padding:1px 6px;border-radius:999px;font-size:0.62rem;font-weight:700;">NEXT</span>"#
+                };
+                format!(
+                    r#"<a href="{url}" style="display:flex;justify-content:space-between;align-items:center;gap:0.6rem;padding:0.42rem 0.45rem;border-radius:6px;color:#e2e8f0;text-decoration:none;background:rgba(255,255,255,0.03);">
+  <span style="font-size:0.74rem;line-height:1.2;">{label}</span>
+  {badge}
+</a>"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!(
+            r#"<div style="margin:0.35rem 0.8rem 0.9rem;padding:0.7rem;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:8px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.45rem;">
+    <div style="font-size:0.7rem;font-weight:700;letter-spacing:0.4px;color:#fbd38d;text-transform:uppercase;">Workflow Coach</div>
+    <div style="font-size:0.68rem;color:#cbd5e0;">{completed}/5 complete</div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:0.35rem;">{items}</div>
+</div>"#
+        )
+    };
+
     let sidebar_proj_options = projects
         .iter()
         .map(|proj| {
@@ -4947,9 +5117,7 @@ window.addEventListener('click', () => {{
 
 document.addEventListener('DOMContentLoaded', () => {{
     document.querySelectorAll('form').forEach(form => {{
-        form.addEventListener('submit', async (e) => {{
-            e.preventDefault();
-            
+        form.addEventListener('submit', () => {{
             const visibleInputs = form.querySelectorAll('input[list]');
             visibleInputs.forEach(input => {{
                 const listId = input.getAttribute('list');
@@ -4969,27 +5137,6 @@ document.addEventListener('DOMContentLoaded', () => {{
                     }}
                 }}
             }});
-
-            const formData = new FormData(form);
-            const res = await fetch(form.action, {{
-                method: form.method || 'POST',
-                body: new URLSearchParams(formData)
-            }});
-
-            if (!res.ok) {{
-                try {{
-                    const data = await res.json();
-                    alert("Error: " + (data.error || "Validation failed"));
-                }} catch {{
-                    alert("Error: Validation failed");
-                }}
-            }} else {{
-                if (res.redirected) {{
-                    window.location.href = res.url;
-                }} else {{
-                    window.location.reload();
-                }}
-            }}
         }});
     }});
 }});
@@ -5027,6 +5174,8 @@ document.addEventListener('DOMContentLoaded', () => {{
       </div>
     </div>
   </div>
+
+  {workflow_sidebar}
 
   <nav class="sidebar-nav">
     <div class="sidebar-section-label">Workspace</div>
@@ -5103,7 +5252,8 @@ document.addEventListener('DOMContentLoaded', () => {{
         active_media = is_active("media"),
         active_legal = is_active("legal"),
         admin_display = html_escape(admin_email.trim()),
-        auto_archive = auto_archive_banner
+        auto_archive = auto_archive_banner,
+        workflow_sidebar = workflow_sidebar_html
     );
 
     let body = format!(
@@ -5551,7 +5701,26 @@ async fn submit_app_create_patient(
     user: AuthenticatedUser,
     Form(form): Form<AppCreatePatientForm>,
 ) -> Result<Redirect, ApiError> {
-    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
+    let project_id = if form.project_id.trim().is_empty() {
+        return Ok(Redirect::to(&format!(
+            "/ui/app?admin_email={}&view=patients&notice={}",
+            query_escape(user.email.as_str()),
+            query_escape("Select an active study first, then create a patient.")
+        )));
+    } else {
+        match parse_uuid_field(&form.project_id, "project_id") {
+            Ok(pid) => pid,
+            Err(_) => {
+                return Ok(Redirect::to(&format!(
+                    "/ui/app?admin_email={}&view=patients&notice={}",
+                    query_escape(user.email.as_str()),
+                    query_escape(
+                        "Study context is invalid. Re-select the study and try patient creation again."
+                    )
+                )));
+            }
+        }
+    };
     let project = ctx
         .db
         .get_project(project_id)
@@ -5692,7 +5861,28 @@ async fn submit_app_send_invite(
     Form(form): Form<AppSendInviteForm>,
 ) -> Result<Redirect, ApiError> {
     let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
-    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
+    let project_id = if form.project_id.trim().is_empty() {
+        return Ok(Redirect::to(&format!(
+            "/ui/app?admin_email={}&organization_id={}&view=patients&notice={}",
+            query_escape(user.email.as_str()),
+            organization_id,
+            query_escape("Select an active study before sending patient form invites.")
+        )));
+    } else {
+        match parse_uuid_field(&form.project_id, "project_id") {
+            Ok(pid) => pid,
+            Err(_) => {
+                return Ok(Redirect::to(&format!(
+                    "/ui/app?admin_email={}&organization_id={}&view=patients&notice={}",
+                    query_escape(user.email.as_str()),
+                    organization_id,
+                    query_escape(
+                        "Study context is invalid. Re-select the study and retry invite."
+                    )
+                )));
+            }
+        }
+    };
 
     require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
 
@@ -5719,9 +5909,32 @@ async fn submit_app_create_media_ticket(
     State(ctx): State<AppContext>,
     user: AuthenticatedUser,
     Form(form): Form<AppCreateMediaTicketForm>,
-) -> Result<Html<String>, ApiError> {
+) -> Result<Response, ApiError> {
     let organization_id = parse_uuid_field(&form.organization_id, "organization_id")?;
-    let project_id = parse_uuid_field(&form.project_id, "project_id")?;
+    let project_id = if form.project_id.trim().is_empty() {
+        return Ok(Redirect::to(&format!(
+            "/ui/app?admin_email={}&organization_id={}&view=patients&notice={}",
+            query_escape(user.email.as_str()),
+            organization_id,
+            query_escape("Select an active study before generating media upload links.")
+        ))
+        .into_response());
+    } else {
+        match parse_uuid_field(&form.project_id, "project_id") {
+            Ok(pid) => pid,
+            Err(_) => {
+                return Ok(Redirect::to(&format!(
+                    "/ui/app?admin_email={}&organization_id={}&view=patients&notice={}",
+                    query_escape(user.email.as_str()),
+                    organization_id,
+                    query_escape(
+                        "Study context is invalid. Re-select the study and retry media link generation."
+                    )
+                ))
+                .into_response());
+            }
+        }
+    };
 
     require_org_role(&user, organization_id, ROLE_COORDINATOR_OR_BETTER)?;
     let ticket = ctx
@@ -5754,7 +5967,8 @@ async fn submit_app_create_media_ticket(
     Ok(Html(render_cingulum_page(
         "Media Upload Ticket Created",
         body,
-    )))
+    ))
+    .into_response())
 }
 
 /// Compute age in whole days + standardized bucket for patient-entered reports and queries.
