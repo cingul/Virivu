@@ -4360,7 +4360,7 @@ async fn render_app_dashboard(
         })
         .unwrap_or_else(|| format!("/ui/foundation?admin_email={}", admin_email_q));
 
-    let view = query.view.as_deref().unwrap_or("overview");
+    let view = query.view.as_deref().unwrap_or("workflow");
     let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
     let _global_nav = format!(
@@ -4400,45 +4400,155 @@ async fn render_app_dashboard(
             let has_project_site = selected_project_id
                 .map(|pid| sites.iter().any(|site| site.project_id == Some(pid)))
                 .unwrap_or(false);
-            let done_steps = [
-                selected_org_id.is_some(),
-                selected_project_id.is_some(),
-                has_project_site,
-                !patients.is_empty(),
-                !duas.is_empty(),
-            ]
-            .into_iter()
-            .filter(|done| *done)
-            .count();
+            let org_done = selected_org_id.is_some();
+            let study_done = selected_project_id.is_some();
+            let site_done = has_project_site;
+            let patient_done = !patients.is_empty();
+            let legal_done = !duas.is_empty();
+            let done_steps = [org_done, study_done, site_done, patient_done, legal_done]
+                .into_iter()
+                .filter(|done| *done)
+                .count();
             let org_qs = selected_org_id
                 .map(|id| format!("&organization_id={id}"))
                 .unwrap_or_default();
             let project_qs = selected_project_id
                 .map(|id| format!("&project_id={id}"))
                 .unwrap_or_default();
+            let org_disabled_attr = if org_done { "" } else { "disabled" };
+            let study_disabled_attr = if study_done { "" } else { "disabled" };
+            let disabled_style = "opacity:0.55; cursor:not-allowed;";
+            let enabled_style = "";
             format!(
                 r#"<section class="card">
-  <h2>Research Workflow Navigator</h2>
-  <p class="muted">Use this linear flow to reduce setup errors and finish end-to-end execution.</p>
-  <p style="font-size:0.82rem;"><strong>Progress:</strong> {done_steps}/5 core setup steps complete</p>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0.7rem;margin-top:0.8rem;">
-    <a href="/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}" class="dashboard-card-mini" style="text-decoration:none;">
-      <strong>1) Organization</strong><br><small>Select tenant workspace and admin scope.</small>
-    </a>
-    <a href="/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
-      <strong>2) Study</strong><br><small>Select/create active study context.</small>
-    </a>
-    <a href="/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
-      <strong>3) Site readiness</strong><br><small>Create/attach site and complete startup checklist.</small>
-    </a>
-    <a href="/ui/app?view=patients&admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
-      <strong>4) Enrollment + intake</strong><br><small>Enroll patient, send invite, issue media ticket.</small>
-    </a>
-    <a href="/ui/studies?admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
-      <strong>5) Execution + closeout</strong><br><small>CRFs, visits, submissions, queries, close checklist.</small>
-    </a>
+  <h2>End-to-End Research Workflow Wizard</h2>
+  <p class="muted">Run the full study lifecycle in order. Actions unlock as context is selected.</p>
+  <p style="font-size:0.82rem;"><strong>Progress:</strong> {done_steps}/5 setup steps complete</p>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:0.9rem;margin-top:0.8rem;">
+    <div class="dashboard-card-mini">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>Step 1: Organization</strong>
+        <span class="status-chip" style="background:{org_badge_bg};color:{org_badge_fg};">{org_badge}</span>
+      </div>
+      <small>Select active organization context first.</small>
+      <div style="margin-top:0.5rem;">
+        <a href="/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}" style="font-weight:700;text-decoration:none;">Open Organizations →</a>
+      </div>
+    </div>
+
+    <div class="dashboard-card-mini">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>Step 2: Study</strong>
+        <span class="status-chip" style="background:{study_badge_bg};color:{study_badge_fg};">{study_badge}</span>
+      </div>
+      <small>Create or select active study for this org.</small>
+      <form method="post" action="/ui/app/create-project" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
+        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
+        <input type="hidden" name="organization_id" value="{selected_org_value}" />
+        <input name="project_name" placeholder="Stroke Registry 2027" required {org_disabled_attr} />
+        <input name="therapeutic_area" placeholder="Neurology" required {org_disabled_attr} />
+        <button type="submit" {org_disabled_attr} style="{project_btn_style}">Create Study</button>
+      </form>
+      <div style="margin-top:0.35rem;">
+        <a href="/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}" style="font-weight:700;text-decoration:none;">Open Studies →</a>
+      </div>
+    </div>
+
+    <div class="dashboard-card-mini">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>Step 3: Site readiness</strong>
+        <span class="status-chip" style="background:{site_badge_bg};color:{site_badge_fg};">{site_badge}</span>
+      </div>
+      <small>Create/attach at least one site to active study.</small>
+      <form method="post" action="/ui/app/create-site" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
+        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
+        <input type="hidden" name="organization_id" value="{selected_org_value}" />
+        <input type="hidden" name="project_id" value="{selected_project_value}" />
+        <input name="site_name" placeholder="North Campus Site A" required {org_disabled_attr} />
+        <input name="principal_investigator" placeholder="Dr. Example" required {org_disabled_attr} />
+        <input name="co_principal_investigator" placeholder="Co-PI (optional)" {org_disabled_attr} />
+        <input name="sub_investigator" placeholder="Sub-I (optional)" {org_disabled_attr} />
+        <button type="submit" {org_disabled_attr} style="{site_btn_style}">Create Site</button>
+      </form>
+      <div style="margin-top:0.35rem;">
+        <a href="/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}" style="font-weight:700;text-decoration:none;">Open Sites →</a>
+      </div>
+    </div>
+
+    <div class="dashboard-card-mini">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>Step 4: Enrollment + Intake</strong>
+        <span class="status-chip" style="background:{patient_badge_bg};color:{patient_badge_fg};">{patient_badge}</span>
+      </div>
+      <small>Enroll patient, send intake invite, and issue media link.</small>
+      <form method="post" action="/ui/app/create-patient" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
+        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
+        <input type="hidden" name="project_id" value="{selected_project_value}" />
+        <input name="site_id" list="app-site-options" placeholder="Site (optional)" {study_disabled_attr} />
+        <input name="external_subject_id" placeholder="SUBJ-001 (optional)" {study_disabled_attr} />
+        <input type="email" name="email" placeholder="patient@example.org (optional)" {study_disabled_attr} />
+        <input name="date_of_birth" placeholder="1980-01-01 (optional)" {study_disabled_attr} />
+        <button type="submit" {study_disabled_attr} style="{patient_btn_style}">Enroll Patient</button>
+      </form>
+      <form method="post" action="/ui/app/send-invite" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
+        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
+        <input type="hidden" name="organization_id" value="{selected_org_value}" />
+        <input type="hidden" name="project_id" value="{selected_project_value}" />
+        <input type="email" name="patient_email" placeholder="patient@example.org" required {study_disabled_attr} />
+        <input name="form_type" placeholder="demographics-intake" required {study_disabled_attr} />
+        <button type="submit" {study_disabled_attr} style="{patient_btn_style}">Send Intake Invite</button>
+      </form>
+      <form method="post" action="/ui/app/create-media-ticket" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
+        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
+        <input type="hidden" name="organization_id" value="{selected_org_value}" />
+        <input type="hidden" name="project_id" value="{selected_project_value}" />
+        <input name="patient_id" list="app-patient-options" placeholder="Patient ID" required {study_disabled_attr} />
+        <input name="mime_type" placeholder="video/mp4" required {study_disabled_attr} />
+        <button type="submit" {study_disabled_attr} style="{patient_btn_style}">Generate Media Link</button>
+      </form>
+    </div>
+
+    <div class="dashboard-card-mini">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>Step 5: Execute + Closeout</strong>
+        <span class="status-chip" style="background:{legal_badge_bg};color:{legal_badge_fg};">{legal_badge}</span>
+      </div>
+      <small>Run CRFs/visits/queries and complete legal signatures.</small>
+      <div style="margin-top:0.6rem;display:flex;flex-wrap:wrap;gap:0.4rem;">
+        <a href="/ui/studies?admin_email={admin_email_q}{org_qs}{project_qs}" class="status-chip" style="background:#02182b;color:#fff;text-decoration:none;">Open Study Workbench</a>
+        <a href="/ui/app?view=legal&admin_email={admin_email_q}{org_qs}" class="status-chip" style="background:#283e28;color:#fff;text-decoration:none;">Open DUA Console</a>
+      </div>
+      <div style="margin-top:0.55rem;font-size:0.78rem;color:#475569;">
+        Complete startup checklist → collect CRFs/visits → close queries → close study.
+      </div>
+    </div>
   </div>
 </section>"#
+                ,
+                org_badge_bg = if org_done { "#dcfce7" } else { "#ffedd5" },
+                org_badge_fg = if org_done { "#166534" } else { "#9a3412" },
+                org_badge = if org_done { "complete" } else { "pending" },
+                study_badge_bg = if study_done { "#dcfce7" } else { "#ffedd5" },
+                study_badge_fg = if study_done { "#166534" } else { "#9a3412" },
+                study_badge = if study_done { "complete" } else { "pending" },
+                site_badge_bg = if site_done { "#dcfce7" } else { "#ffedd5" },
+                site_badge_fg = if site_done { "#166534" } else { "#9a3412" },
+                site_badge = if site_done { "complete" } else { "pending" },
+                patient_badge_bg = if patient_done { "#dcfce7" } else { "#ffedd5" },
+                patient_badge_fg = if patient_done { "#166534" } else { "#9a3412" },
+                patient_badge = if patient_done { "complete" } else { "pending" },
+                legal_badge_bg = if legal_done { "#dcfce7" } else { "#ffedd5" },
+                legal_badge_fg = if legal_done { "#166534" } else { "#9a3412" },
+                legal_badge = if legal_done { "ready" } else { "pending" },
+                admin_email_esc = html_escape(admin_email.trim()),
+                selected_org_value = selected_org_value,
+                selected_project_value = selected_project_value,
+                org_disabled_attr = org_disabled_attr,
+                study_disabled_attr = study_disabled_attr,
+                project_btn_style = if org_done { enabled_style } else { disabled_style },
+                site_btn_style = if org_done { enabled_style } else { disabled_style },
+                patient_btn_style = if study_done { enabled_style } else { disabled_style }
             )
         }
         "orgs" => format!(
