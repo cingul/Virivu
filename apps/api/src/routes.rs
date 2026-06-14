@@ -4353,6 +4353,51 @@ async fn render_app_dashboard(
     );
 
     let panel_content = match view {
+        "workflow" => {
+            let has_project_site = selected_project_id
+                .map(|pid| sites.iter().any(|site| site.project_id == Some(pid)))
+                .unwrap_or(false);
+            let done_steps = [
+                selected_org_id.is_some(),
+                selected_project_id.is_some(),
+                has_project_site,
+                !patients.is_empty(),
+                !duas.is_empty(),
+            ]
+            .into_iter()
+            .filter(|done| *done)
+            .count();
+            let org_qs = selected_org_id
+                .map(|id| format!("&organization_id={id}"))
+                .unwrap_or_default();
+            let project_qs = selected_project_id
+                .map(|id| format!("&project_id={id}"))
+                .unwrap_or_default();
+            format!(
+                r#"<section class="card">
+  <h2>Research Workflow Navigator</h2>
+  <p class="muted">Use this linear flow to reduce setup errors and finish end-to-end execution.</p>
+  <p style="font-size:0.82rem;"><strong>Progress:</strong> {done_steps}/5 core setup steps complete</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0.7rem;margin-top:0.8rem;">
+    <a href="/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}" class="dashboard-card-mini" style="text-decoration:none;">
+      <strong>1) Organization</strong><br><small>Select tenant workspace and admin scope.</small>
+    </a>
+    <a href="/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
+      <strong>2) Study</strong><br><small>Select/create active study context.</small>
+    </a>
+    <a href="/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
+      <strong>3) Site readiness</strong><br><small>Create/attach site and complete startup checklist.</small>
+    </a>
+    <a href="/ui/app?view=patients&admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
+      <strong>4) Enrollment + intake</strong><br><small>Enroll patient, send invite, issue media ticket.</small>
+    </a>
+    <a href="/ui/studies?admin_email={admin_email_q}{org_qs}{project_qs}" class="dashboard-card-mini" style="text-decoration:none;">
+      <strong>5) Execution + closeout</strong><br><small>CRFs, visits, submissions, queries, close checklist.</small>
+    </a>
+  </div>
+</section>"#
+            )
+        }
         "orgs" => format!(
             r#"<section class="card">
   <h2>1) Organizations</h2>
@@ -5090,6 +5135,114 @@ async fn render_app_dashboard(
         )
     };
 
+    let _workflow_board_html = {
+        let org_qs = selected_org_id
+            .map(|id| format!("&organization_id={id}"))
+            .unwrap_or_default();
+        let project_qs = selected_project_id
+            .map(|id| format!("&project_id={id}"))
+            .unwrap_or_default();
+        let has_project_site = selected_project_id
+            .map(|pid| sites.iter().any(|site| site.project_id == Some(pid)))
+            .unwrap_or(false);
+        let workflow_steps = vec![
+            (
+                "1",
+                "Organization workspace selected",
+                selected_org_id.is_some(),
+                format!("/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}"),
+                "Choose the organization where the study will run.",
+            ),
+            (
+                "2",
+                "Active study selected",
+                selected_project_id.is_some(),
+                format!("/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}"),
+                "Select or create the study context before study-scoped actions.",
+            ),
+            (
+                "3",
+                "At least one site attached",
+                has_project_site,
+                format!("/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}"),
+                "Create/attach a site for operational readiness and screening.",
+            ),
+            (
+                "4",
+                "At least one patient enrolled",
+                !patients.is_empty(),
+                format!("/ui/app?view=patients&admin_email={admin_email_q}{org_qs}{project_qs}"),
+                "Enroll first patient, then send intake invite and media link.",
+            ),
+            (
+                "5",
+                "DUA records in organization",
+                !duas.is_empty(),
+                format!("/ui/app?view=legal&admin_email={admin_email_q}{org_qs}"),
+                "Create and track DUA signatures for legal/compliance flow.",
+            ),
+            (
+                "6",
+                "Open study workbench execution",
+                selected_project_id.is_some(),
+                format!("/ui/studies?admin_email={admin_email_q}{org_qs}{project_qs}"),
+                "Build CRFs, schedule visits, monitor queries, and close the study.",
+            ),
+        ];
+        let done_count = workflow_steps.iter().filter(|(_, _, done, _, _)| *done).count();
+        let next_step = workflow_steps
+            .iter()
+            .find(|(_, _, done, _, _)| !done)
+            .map(|(_, label, _, link, _)| {
+                format!(
+                    r#"<div style="margin:0.6rem 0 1rem;padding:0.75rem 0.85rem;border:1px solid #bfdbfe;background:#eff6ff;border-left:4px solid #2563eb;border-radius:8px;">
+  <strong style="color:#1e3a8a;">Next recommended action:</strong>
+  <a href="{link}" style="color:#1d4ed8;font-weight:700;text-decoration:none;">{label} →</a>
+</div>"#
+                )
+            })
+            .unwrap_or_else(|| {
+                r#"<div style="margin:0.6rem 0 1rem;padding:0.75rem 0.85rem;border:1px solid #bbf7d0;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:8px;color:#166534;font-weight:700;">
+Workflow baseline is complete. Continue in Study Workbench for CRFs, visits, submissions, and closeout.
+</div>"#
+                    .to_string()
+            });
+        let steps_html = workflow_steps
+            .iter()
+            .map(|(idx, label, done, link, hint)| {
+                let status = if *done { "Complete" } else { "Pending" };
+                let badge_style = if *done {
+                    "background:#166534;color:#fff;"
+                } else {
+                    "background:#b45309;color:#fff;"
+                };
+                let card_bg = if *done { "#f0fdf4" } else { "#fff7ed" };
+                let card_border = if *done { "#bbf7d0" } else { "#fed7aa" };
+                format!(
+                    r#"<a href="{link}" style="text-decoration:none;color:inherit;border:1px solid {card_border};background:{card_bg};border-radius:10px;padding:0.75rem;display:block;">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;">
+    <div style="font-weight:800;color:#1f2937;">Step {idx}: {label}</div>
+    <span style="font-size:0.7rem;font-weight:700;padding:2px 8px;border-radius:999px;{badge_style}">{status}</span>
+  </div>
+  <div style="margin-top:0.32rem;font-size:0.8rem;color:#475569;">{hint}</div>
+</a>"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!(
+            r#"<section class="card">
+  <h2 style="margin-bottom:0.25rem;">End-to-end Research Workflow</h2>
+  <p style="color:#475569;font-size:0.86rem;margin:0;">Follow this sequence to avoid invalid context and blocked actions.</p>
+  <p style="margin-top:0.45rem;font-size:0.78rem;color:#334155;">Progress: <strong>{done_count}/6 steps complete</strong></p>
+  {next_step}
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.7rem;">
+    {steps_html}
+  </div>
+</section>"#
+        )
+    };
+
     let sidebar_proj_options = projects
         .iter()
         .map(|proj| {
@@ -5182,6 +5335,9 @@ document.addEventListener('DOMContentLoaded', () => {{
     <a class="sidebar-item {active_overview}" href="?view=overview&admin_email={admin}&organization_id={org}">
       <span class="sidebar-icon">⬡</span> Overview
     </a>
+    <a class="sidebar-item {active_workflow}" href="?view=workflow&admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">🧭</span> Workflow
+    </a>
     <a class="sidebar-item {active_analytics}" href="?view=analytics&admin_email={admin}&organization_id={org}">
       <span class="sidebar-icon">📊</span> Analytics
     </a>
@@ -5251,6 +5407,7 @@ document.addEventListener('DOMContentLoaded', () => {{
         active_encounters = is_active("encounters"),
         active_media = is_active("media"),
         active_legal = is_active("legal"),
+        active_workflow = is_active("workflow"),
         admin_display = html_escape(admin_email.trim()),
         auto_archive = auto_archive_banner,
         workflow_sidebar = workflow_sidebar_html
@@ -5736,9 +5893,51 @@ async fn submit_app_create_patient(
     } else {
         match parse_uuid_field(&form.site_id, "site_id") {
             Ok(id) => Some(id),
-            Err(_) => None,
+            Err(_) => {
+                return Ok(Redirect::to(&format!(
+                    "/ui/app?admin_email={}&organization_id={}&project_id={}&view=patients&notice={}",
+                    query_escape(user.email.as_str()),
+                    project.organization_id,
+                    project.id,
+                    query_escape(
+                        "Invalid site selection. Choose a site from the list, then retry patient enrollment."
+                    )
+                )));
+            }
         }
     };
+    if let Some(sid) = site_id {
+        let site = ctx
+            .db
+            .get_site(sid)
+            .await
+            .map_err(ApiError::internal)?
+            .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
+        if site.organization_id != project.organization_id {
+            return Ok(Redirect::to(&format!(
+                "/ui/app?admin_email={}&organization_id={}&project_id={}&view=patients&notice={}",
+                query_escape(user.email.as_str()),
+                project.organization_id,
+                project.id,
+                query_escape(
+                    "Selected site belongs to a different organization. Please choose a site in this workspace."
+                )
+            )));
+        }
+        if let Some(site_project_id) = site.project_id {
+            if site_project_id != project.id {
+                return Ok(Redirect::to(&format!(
+                    "/ui/app?admin_email={}&organization_id={}&project_id={}&view=sites&notice={}",
+                    query_escape(user.email.as_str()),
+                    project.organization_id,
+                    project.id,
+                    query_escape(
+                        "Selected site is attached to another study. Attach it to this study first in Sites."
+                    )
+                )));
+            }
+        }
+    }
 
     let external_subject_id = if form.external_subject_id.trim().is_empty() {
         None
@@ -5885,6 +6084,22 @@ async fn submit_app_send_invite(
     };
 
     require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    if project.organization_id != organization_id {
+        return Ok(Redirect::to(&format!(
+            "/ui/app?admin_email={}&organization_id={}&view=patients&notice={}",
+            query_escape(user.email.as_str()),
+            organization_id,
+            query_escape(
+                "Selected study does not belong to the current organization. Re-select context and retry invite."
+            )
+        )));
+    }
 
     ctx.db
         .create_form_invite(
@@ -5937,12 +6152,60 @@ async fn submit_app_create_media_ticket(
     };
 
     require_org_role(&user, organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    let project = ctx
+        .db
+        .get_project(project_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
+    if project.organization_id != organization_id {
+        return Ok(Redirect::to(&format!(
+            "/ui/app?admin_email={}&organization_id={}&view=patients&notice={}",
+            query_escape(user.email.as_str()),
+            organization_id,
+            query_escape(
+                "Selected study does not belong to this organization. Re-select study context first."
+            )
+        ))
+        .into_response());
+    }
+    let patient_uuid = match parse_uuid_field(&form.patient_id, "patient_id") {
+        Ok(pid) => pid,
+        Err(_) => {
+            return Ok(Redirect::to(&format!(
+                "/ui/app?admin_email={}&organization_id={}&project_id={}&view=patients&notice={}",
+                query_escape(user.email.as_str()),
+                organization_id,
+                project_id,
+                query_escape("Select a valid patient from the dropdown before generating media upload links.")
+            ))
+            .into_response());
+        }
+    };
+    let patient = ctx
+        .db
+        .get_patient(patient_uuid)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::NotFound("patient not found".to_string()))?;
+    if patient.organization_id != organization_id || patient.project_id != project_id {
+        return Ok(Redirect::to(&format!(
+            "/ui/app?admin_email={}&organization_id={}&project_id={}&view=patients&notice={}",
+            query_escape(user.email.as_str()),
+            organization_id,
+            project_id,
+            query_escape(
+                "Patient is outside the selected study context. Re-select patient after choosing the active study."
+            )
+        ))
+        .into_response());
+    }
     let ticket = ctx
         .db
         .create_media_upload_ticket(
             organization_id,
             project_id,
-            form.patient_id.trim(),
+            &patient.id.to_string(),
             form.mime_type.trim(),
         )
         .await
