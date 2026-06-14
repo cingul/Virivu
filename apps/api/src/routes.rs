@@ -4415,114 +4415,119 @@ async fn render_app_dashboard(
             let project_qs = selected_project_id
                 .map(|id| format!("&project_id={id}"))
                 .unwrap_or_default();
-            let org_disabled_attr = if org_done { "" } else { "disabled" };
-            let study_disabled_attr = if study_done { "" } else { "disabled" };
-            let disabled_style = "opacity:0.55; cursor:not-allowed;";
-            let enabled_style = "";
+            let current_step_title = if !org_done {
+                "Step 1: Select organization context"
+            } else if !study_done {
+                "Step 2: Select or create a study"
+            } else if !site_done {
+                "Step 3: Add at least one site"
+            } else if !patient_done {
+                "Step 4: Enroll the first patient"
+            } else if !legal_done {
+                "Step 5: Complete DUA and execution handoff"
+            } else {
+                "All setup stages completed"
+            };
+            let current_step_note = if !org_done {
+                "Start by picking the active organization workspace."
+            } else if !study_done {
+                "Open Studies to create/select the protocol you are running."
+            } else if !site_done {
+                "Open Sites and attach at least one site to the selected study."
+            } else if !patient_done {
+                "Open Patients to enroll a participant and launch intake."
+            } else if !legal_done {
+                "Open Legal to draft/sign DUAs, then move into Study Workbench."
+            } else {
+                "You can now execute operations in Study Workbench and monitor progress."
+            };
+            let step1_url = format!("/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}");
+            let step2_url = if org_done {
+                format!("/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}")
+            } else {
+                step1_url.clone()
+            };
+            let step3_url = if study_done {
+                format!("/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}")
+            } else {
+                step2_url.clone()
+            };
+            let step4_url = if site_done {
+                format!("/ui/app?view=patients&admin_email={admin_email_q}{org_qs}{project_qs}")
+            } else {
+                step3_url.clone()
+            };
+            let step5_url = if patient_done {
+                format!("/ui/studies?admin_email={admin_email_q}{org_qs}{project_qs}")
+            } else {
+                step4_url.clone()
+            };
+            let legal_url = format!("/ui/app?view=legal&admin_email={admin_email_q}{org_qs}");
             format!(
                 r#"<section class="card">
   <h2>End-to-End Research Workflow Wizard</h2>
-  <p class="muted">Run the full study lifecycle in order. Actions unlock as context is selected.</p>
-  <p style="font-size:0.82rem;"><strong>Progress:</strong> {done_steps}/5 setup steps complete</p>
+  <p class="muted">Use the cards below as your single navigation path. Each card takes you to the right workspace for that stage.</p>
+  <div class="workflow-current-step">
+    <span class="status-chip">Current focus</span>
+    <strong>{current_step_title}</strong>
+    <p>{current_step_note}</p>
+  </div>
+  <p class="workflow-progress"><strong>Progress:</strong> {done_steps}/5 setup stages complete</p>
+  <p class="muted" style="font-size:0.8rem; margin-top:-0.35rem;">Detailed forms stay inside each tab to keep this wizard clean and easy to scan.</p>
 
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:0.9rem;margin-top:0.8rem;">
-    <div class="dashboard-card-mini">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>Step 1: Organization</strong>
+  <div class="workflow-stage-grid">
+    <a href="{step1_url}" class="{step1_class}">
+      <div class="workflow-stage-head">
+        <span class="workflow-stage-index">Step 1</span>
         <span class="status-chip" style="background:{org_badge_bg};color:{org_badge_fg};">{org_badge}</span>
       </div>
-      <small>Select active organization context first.</small>
-      <div style="margin-top:0.5rem;">
-        <a href="/ui/app?view=orgs&admin_email={admin_email_q}{org_qs}" style="font-weight:700;text-decoration:none;">Open Organizations →</a>
-      </div>
-    </div>
+      <h3>Organization</h3>
+      <p>Choose the active organization workspace for this session.</p>
+      <span class="workflow-stage-cta">Open Organizations →</span>
+    </a>
 
-    <div class="dashboard-card-mini">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>Step 2: Study</strong>
+    <a href="{step2_url}" class="{step2_class}">
+      <div class="workflow-stage-head">
+        <span class="workflow-stage-index">Step 2</span>
         <span class="status-chip" style="background:{study_badge_bg};color:{study_badge_fg};">{study_badge}</span>
       </div>
-      <small>Create or select active study for this org.</small>
-      <form method="post" action="/ui/app/create-project" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
-        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
-        <input type="hidden" name="organization_id" value="{selected_org_value}" />
-        <input name="project_name" placeholder="Stroke Registry 2027" required {org_disabled_attr} />
-        <input name="therapeutic_area" placeholder="Neurology" required {org_disabled_attr} />
-        <button type="submit" {org_disabled_attr} style="{project_btn_style}">Create Study</button>
-      </form>
-      <div style="margin-top:0.35rem;">
-        <a href="/ui/app?view=projects&admin_email={admin_email_q}{org_qs}{project_qs}" style="font-weight:700;text-decoration:none;">Open Studies →</a>
-      </div>
-    </div>
+      <h3>Study</h3>
+      <p>Create or select the active study for this organization.</p>
+      <span class="workflow-stage-cta">Open Studies →</span>
+    </a>
 
-    <div class="dashboard-card-mini">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>Step 3: Site readiness</strong>
+    <a href="{step3_url}" class="{step3_class}">
+      <div class="workflow-stage-head">
+        <span class="workflow-stage-index">Step 3</span>
         <span class="status-chip" style="background:{site_badge_bg};color:{site_badge_fg};">{site_badge}</span>
       </div>
-      <small>Create/attach at least one site to active study.</small>
-      <form method="post" action="/ui/app/create-site" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
-        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
-        <input type="hidden" name="organization_id" value="{selected_org_value}" />
-        <input type="hidden" name="project_id" value="{selected_project_value}" />
-        <input name="site_name" placeholder="North Campus Site A" required {org_disabled_attr} />
-        <input name="principal_investigator" placeholder="Dr. Example" required {org_disabled_attr} />
-        <input name="co_principal_investigator" placeholder="Co-PI (optional)" {org_disabled_attr} />
-        <input name="sub_investigator" placeholder="Sub-I (optional)" {org_disabled_attr} />
-        <button type="submit" {org_disabled_attr} style="{site_btn_style}">Create Site</button>
-      </form>
-      <div style="margin-top:0.35rem;">
-        <a href="/ui/app?view=sites&admin_email={admin_email_q}{org_qs}{project_qs}" style="font-weight:700;text-decoration:none;">Open Sites →</a>
-      </div>
-    </div>
+      <h3>Site readiness</h3>
+      <p>Add or attach at least one site to the active study.</p>
+      <span class="workflow-stage-cta">Open Sites →</span>
+    </a>
 
-    <div class="dashboard-card-mini">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>Step 4: Enrollment + Intake</strong>
+    <a href="{step4_url}" class="{step4_class}">
+      <div class="workflow-stage-head">
+        <span class="workflow-stage-index">Step 4</span>
         <span class="status-chip" style="background:{patient_badge_bg};color:{patient_badge_fg};">{patient_badge}</span>
       </div>
-      <small>Enroll patient, send intake invite, and issue media link.</small>
-      <form method="post" action="/ui/app/create-patient" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
-        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
-        <input type="hidden" name="project_id" value="{selected_project_value}" />
-        <input name="site_id" list="app-site-options" placeholder="Site (optional)" {study_disabled_attr} />
-        <input name="external_subject_id" placeholder="SUBJ-001 (optional)" {study_disabled_attr} />
-        <input type="email" name="email" placeholder="patient@example.org (optional)" {study_disabled_attr} />
-        <input name="date_of_birth" placeholder="1980-01-01 (optional)" {study_disabled_attr} />
-        <button type="submit" {study_disabled_attr} style="{patient_btn_style}">Enroll Patient</button>
-      </form>
-      <form method="post" action="/ui/app/send-invite" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
-        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
-        <input type="hidden" name="organization_id" value="{selected_org_value}" />
-        <input type="hidden" name="project_id" value="{selected_project_value}" />
-        <input type="email" name="patient_email" placeholder="patient@example.org" required {study_disabled_attr} />
-        <input name="form_type" placeholder="demographics-intake" required {study_disabled_attr} />
-        <button type="submit" {study_disabled_attr} style="{patient_btn_style}">Send Intake Invite</button>
-      </form>
-      <form method="post" action="/ui/app/create-media-ticket" style="margin-top:0.5rem;display:grid;gap:0.45rem;">
-        <input type="hidden" name="admin_email" value="{admin_email_esc}" />
-        <input type="hidden" name="organization_id" value="{selected_org_value}" />
-        <input type="hidden" name="project_id" value="{selected_project_value}" />
-        <input name="patient_id" list="app-patient-options" placeholder="Patient ID" required {study_disabled_attr} />
-        <input name="mime_type" placeholder="video/mp4" required {study_disabled_attr} />
-        <button type="submit" {study_disabled_attr} style="{patient_btn_style}">Generate Media Link</button>
-      </form>
-    </div>
+      <h3>Enrollment + intake</h3>
+      <p>Enroll a patient, send intake, and issue secure media links.</p>
+      <span class="workflow-stage-cta">Open Patients →</span>
+    </a>
 
-    <div class="dashboard-card-mini">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <strong>Step 5: Execute + Closeout</strong>
+    <a href="{step5_url}" class="{step5_class}">
+      <div class="workflow-stage-head">
+        <span class="workflow-stage-index">Step 5</span>
         <span class="status-chip" style="background:{legal_badge_bg};color:{legal_badge_fg};">{legal_badge}</span>
       </div>
-      <small>Run CRFs/visits/queries and complete legal signatures.</small>
-      <div style="margin-top:0.6rem;display:flex;flex-wrap:wrap;gap:0.4rem;">
-        <a href="/ui/studies?admin_email={admin_email_q}{org_qs}{project_qs}" class="status-chip" style="background:#02182b;color:#fff;text-decoration:none;">Open Study Workbench</a>
-        <a href="/ui/app?view=legal&admin_email={admin_email_q}{org_qs}" class="status-chip" style="background:#283e28;color:#fff;text-decoration:none;">Open DUA Console</a>
-      </div>
-      <div style="margin-top:0.55rem;font-size:0.78rem;color:#475569;">
-        Complete startup checklist → collect CRFs/visits → close queries → close study.
-      </div>
-    </div>
+      <h3>Execution + closeout</h3>
+      <p>Move into Study Workbench for operations and close with legal sign-off.</p>
+      <span class="workflow-stage-cta">Open Study Workbench →</span>
+    </a>
+  </div>
+  <div style="margin-top:0.75rem;">
+    <a href="{legal_url}" class="status-chip" style="background:#283e28;color:#fff;text-decoration:none;">Open DUA Console</a>
   </div>
 </section>"#
                 ,
@@ -4541,14 +4546,47 @@ async fn render_app_dashboard(
                 legal_badge_bg = if legal_done { "#dcfce7" } else { "#ffedd5" },
                 legal_badge_fg = if legal_done { "#166534" } else { "#9a3412" },
                 legal_badge = if legal_done { "ready" } else { "pending" },
-                admin_email_esc = html_escape(admin_email.trim()),
-                selected_org_value = selected_org_value,
-                selected_project_value = selected_project_value,
-                org_disabled_attr = org_disabled_attr,
-                study_disabled_attr = study_disabled_attr,
-                project_btn_style = if org_done { enabled_style } else { disabled_style },
-                site_btn_style = if org_done { enabled_style } else { disabled_style },
-                patient_btn_style = if study_done { enabled_style } else { disabled_style }
+                current_step_title = current_step_title,
+                current_step_note = current_step_note,
+                step1_url = html_escape(&step1_url),
+                step2_url = html_escape(&step2_url),
+                step3_url = html_escape(&step3_url),
+                step4_url = html_escape(&step4_url),
+                step5_url = html_escape(&step5_url),
+                legal_url = html_escape(&legal_url),
+                step1_class = if org_done {
+                    "workflow-stage-card is-complete"
+                } else {
+                    "workflow-stage-card is-active"
+                },
+                step2_class = if study_done {
+                    "workflow-stage-card is-complete"
+                } else if org_done {
+                    "workflow-stage-card is-active"
+                } else {
+                    "workflow-stage-card is-locked"
+                },
+                step3_class = if site_done {
+                    "workflow-stage-card is-complete"
+                } else if study_done {
+                    "workflow-stage-card is-active"
+                } else {
+                    "workflow-stage-card is-locked"
+                },
+                step4_class = if patient_done {
+                    "workflow-stage-card is-complete"
+                } else if site_done {
+                    "workflow-stage-card is-active"
+                } else {
+                    "workflow-stage-card is-locked"
+                },
+                step5_class = if legal_done {
+                    "workflow-stage-card is-complete"
+                } else if patient_done {
+                    "workflow-stage-card is-active"
+                } else {
+                    "workflow-stage-card is-locked"
+                }
             )
         }
         "orgs" => format!(
@@ -13605,6 +13643,94 @@ fn cingulum_theme_css() -> &'static str {
     }
     .dashboard-card-mini:hover {
       border-color: var(--cg-navy) !important;
+    }
+    .workflow-current-step {
+      margin-top: 0.65rem;
+      padding: 0.85rem 0.95rem;
+      border-radius: 14px;
+      border: 1px solid rgba(47, 88, 120, 0.2);
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      display: grid;
+      gap: 0.28rem;
+    }
+    .workflow-current-step p {
+      margin: 0;
+      font-size: 0.84rem;
+      color: #334e68;
+    }
+    .workflow-progress {
+      font-size: 0.84rem;
+      margin-top: 0.7rem;
+      margin-bottom: 0.45rem;
+    }
+    .workflow-stage-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 0.95rem;
+      margin-top: 0.45rem;
+    }
+    .workflow-stage-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      min-height: 220px;
+      border: 1px solid rgba(197, 183, 171, 0.95);
+      border-radius: 15px;
+      padding: 1rem;
+      background: #fffefb;
+      text-decoration: none;
+      color: var(--cg-navy);
+      box-shadow: 0 10px 20px rgba(2, 24, 43, 0.08);
+      transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+    }
+    .workflow-stage-card h3 {
+      margin: 0;
+      font-size: 1.03rem;
+    }
+    .workflow-stage-card p {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #2f4a64;
+      line-height: 1.45;
+      max-width: 45ch;
+    }
+    .workflow-stage-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.7rem;
+      flex-wrap: wrap;
+    }
+    .workflow-stage-index {
+      display: inline-block;
+      font-size: 0.74rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #5b728a;
+    }
+    .workflow-stage-cta {
+      margin-top: auto;
+      font-weight: 800;
+      color: #1f4f73;
+      font-size: 0.84rem;
+    }
+    .workflow-stage-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(240, 87, 8, 0.45);
+      box-shadow: 0 14px 24px rgba(2, 24, 43, 0.13);
+    }
+    .workflow-stage-card.is-complete {
+      border-left: 5px solid #166534;
+      background: linear-gradient(180deg, #f9fff7 0%, #f3fff1 100%);
+    }
+    .workflow-stage-card.is-active {
+      border-left: 5px solid #f05708;
+      background: linear-gradient(180deg, #fffefb 0%, #fff8f2 100%);
+    }
+    .workflow-stage-card.is-locked {
+      border-left: 5px solid #8b98a7;
+      background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%);
     }
     .action-card:hover {
       transform: translateY(-1px);
