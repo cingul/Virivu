@@ -8132,7 +8132,7 @@ async fn render_study_workbench(
         .map(|id| format!("/ui/studies/{id}/close-checklist"))
         .unwrap_or_else(|| "#".to_string());
 
-    let view = query.view.as_deref().unwrap_or("overview");
+    let view = query.view.as_deref().unwrap_or("workflow");
     let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
     let foundation_hub_url = selected_org_id
@@ -8168,6 +8168,7 @@ async fn render_study_workbench(
   
   <nav class="sidebar-nav" style="padding: 1rem 0.5rem; display: flex; flex-direction: column; gap: 0.25rem;">
     <div class="sidebar-section-label" style="font-size:0.65rem; font-weight:800; text-transform:uppercase; letter-spacing:1px; margin:0.5rem 0.5rem 0.25rem;">Workspace</div>
+    <a class="sidebar-item {}" href="?view=workflow&admin_email={}&organization_id={}&project_id={}">Workflow</a>
     <a class="sidebar-item {}" href="?view=overview&admin_email={}&organization_id={}&project_id={}">Overview</a>
     <a class="sidebar-item {}" href="?view=setup&admin_email={}&organization_id={}&project_id={}">Study Setup</a>
     <a class="sidebar-item {}" href="?view=lifecycle&admin_email={}&organization_id={}&project_id={}">Lifecycle</a>
@@ -8189,6 +8190,7 @@ async fn render_study_workbench(
   </div>
 </aside>"#,
         app_dashboard_url,
+        is_active("workflow"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
         is_active("overview"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
         is_active("setup"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
         is_active("lifecycle"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
@@ -8203,6 +8205,188 @@ async fn render_study_workbench(
     );
 
     let panel_content = match view {
+        "workflow" => {
+            let has_project = selected_project_id.is_some();
+            let startup_pending_count = startup_checklist_items
+                .iter()
+                .filter(|item| !item.completed)
+                .count();
+            let published_template_count = templates
+                .iter()
+                .filter(|template| template.status == "published")
+                .count();
+            let visit_template_count = visit_templates.len();
+            let enrolled_patient_count = patients.len();
+            let close_pending_count = checklist_items
+                .iter()
+                .filter(|item| !item.completed)
+                .count();
+            let project_disabled_attr = if has_project { "" } else { "disabled" };
+            let project_disabled_style = if has_project {
+                ""
+            } else {
+                "opacity:0.55; cursor:not-allowed;"
+            };
+            let org_qs = if selected_org_value.is_empty() {
+                String::new()
+            } else {
+                format!("&organization_id={}", selected_org_value)
+            };
+            let project_qs = if selected_project_value.is_empty() {
+                String::new()
+            } else {
+                format!("&project_id={}", selected_project_value)
+            };
+            let next_action_html = if !has_project {
+                format!(
+                    r#"<div class="notice"><strong>Next step:</strong> Select or create a study first in <a href="/ui/studies?admin_email={}{}&view=setup">Study Setup</a>.</div>"#,
+                    admin_email_q, org_qs
+                )
+            } else if startup_pending_count > 0 {
+                format!(
+                    r#"<div class="notice"><strong>Next step:</strong> Complete startup checklist items in <a href="/ui/studies?admin_email={}{}{}&view=startup">Startup</a> before initiation.</div>"#,
+                    admin_email_q, org_qs, project_qs
+                )
+            } else if published_template_count == 0 {
+                format!(
+                    r#"<div class="notice"><strong>Next step:</strong> Publish at least one CRF template in <a href="/ui/studies?admin_email={}{}{}&view=crf-templates">CRF Templates</a>.</div>"#,
+                    admin_email_q, org_qs, project_qs
+                )
+            } else if enrolled_patient_count == 0 {
+                format!(
+                    r#"<div class="notice"><strong>Next step:</strong> Enroll first patient from <a href="/ui/app?admin_email={}{}{}&view=patients">Command Center Patients</a>.</div>"#,
+                    admin_email_q, org_qs, project_qs
+                )
+            } else if open_query_count > 0 {
+                format!(
+                    r#"<div class="notice"><strong>Next step:</strong> Resolve open data queries in <a href="/ui/studies?admin_email={}{}{}&view=queries">Queries</a>.</div>"#,
+                    admin_email_q, org_qs, project_qs
+                )
+            } else if close_pending_count > 0 {
+                format!(
+                    r#"<div class="notice"><strong>Next step:</strong> Finish close checklist in <a href="/ui/studies?admin_email={}{}{}&view=close">Close</a>.</div>"#,
+                    admin_email_q, org_qs, project_qs
+                )
+            } else {
+                "<div class=\"notice\"><strong>Ready:</strong> Study appears operationally ready for closure once final governance approvals are complete.</div>".to_string()
+            };
+            format!(
+                r#"<section class="card">
+  <h2>End-to-End Study Workflow Wizard</h2>
+  <p class="muted">Run these steps in sequence to execute study operations with fewer errors.</p>
+  {}
+  <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:0.75rem; margin-top:0.9rem;">
+    <div class="dashboard-card-mini">
+      <strong>1) Setup</strong><br>
+      <small>Study + metadata + startup checklist preparation.</small>
+      <div style="margin-top:0.45rem;"><a href="/ui/studies?admin_email={}{}{}&view=setup">Open setup →</a></div>
+    </div>
+    <div class="dashboard-card-mini">
+      <strong>2) Lifecycle</strong><br>
+      <small>Phase gating and transition controls.</small>
+      <div style="margin-top:0.45rem;"><a href="/ui/studies?admin_email={}{}{}&view=lifecycle">Open lifecycle →</a></div>
+    </div>
+    <div class="dashboard-card-mini">
+      <strong>3) CRF Build</strong><br>
+      <small>Template design + field builder + publish.</small>
+      <div style="margin-top:0.45rem;"><a href="/ui/studies?admin_email={}{}{}&view=crf-templates">Open CRFs →</a></div>
+    </div>
+    <div class="dashboard-card-mini">
+      <strong>4) Visits & Enrollment</strong><br>
+      <small>Visit templates + patient scheduling + intake.</small>
+      <div style="margin-top:0.45rem;"><a href="/ui/studies?admin_email={}{}{}&view=visits">Open visits →</a></div>
+    </div>
+    <div class="dashboard-card-mini">
+      <strong>5) Data Quality & Close</strong><br>
+      <small>Submissions, queries, startup/close checklist.</small>
+      <div style="margin-top:0.45rem;"><a href="/ui/studies?admin_email={}{}{}&view=queries">Open quality controls →</a></div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h3>Quick actions (context-gated)</h3>
+  <p class="muted">These actions run directly from the wizard. Select a study first to unlock them.</p>
+  <form method="post" action="{}" style="margin-top:0.5rem;">
+    <input type="hidden" name="project_id" value="{}" />
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Next phase</label>
+    <select name="next_phase" {}><option value="initiated">initiated</option><option value="active">active</option><option value="monitoring">monitoring</option><option value="closed">closed</option></select>
+    <label>Notes</label>
+    <input name="notes" placeholder="Phase transition note" {} />
+    <button type="submit" {} style="{}">Apply phase transition</button>
+  </form>
+  <form method="post" action="{}" style="margin-top:0.8rem;">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Template name</label>
+    <input name="name" placeholder="Baseline CRF" required {} />
+    <label>Description</label>
+    <input name="description" placeholder="Core baseline clinical fields" {} />
+    <label>Applicable phase</label>
+    <select name="applicable_phase" {}><option value="pre_study">pre_study</option><option value="initiated">initiated</option><option value="active">active</option><option value="monitoring">monitoring</option><option value="closed">closed</option></select>
+    <button type="submit" {} style="{}">Create CRF template</button>
+  </form>
+  <form method="post" action="{}" style="margin-top:0.8rem;">
+    <label>Admin email</label>
+    <input name="admin_email" value="{}" required />
+    <label>Visit code</label>
+    <input name="visit_code" placeholder="SCREENING" required {} />
+    <label>Visit name</label>
+    <input name="visit_name" placeholder="Screening Visit" required {} />
+    <label>Target day</label>
+    <input name="target_day" value="0" {} />
+    <label>Window before (days)</label>
+    <input name="window_before_days" value="0" {} />
+    <label>Window after (days)</label>
+    <input name="window_after_days" value="7" {} />
+    <label>Required</label>
+    <input type="checkbox" name="required" value="true" checked {} />
+    <button type="submit" {} style="{}">Create visit template</button>
+  </form>
+  <div style="margin-top:0.8rem; font-size:0.82rem; color:#475569;">
+    Current signals: <strong>{}</strong> pending startup items, <strong>{}</strong> published CRF templates, <strong>{}</strong> visit templates, <strong>{}</strong> enrolled patients, <strong>{}</strong> open queries, <strong>{}</strong> pending close items.
+  </div>
+</section>"#,
+                next_action_html,
+                admin_email_q, org_qs, project_qs,
+                admin_email_q, org_qs, project_qs,
+                admin_email_q, org_qs, project_qs,
+                admin_email_q, org_qs, project_qs,
+                admin_email_q, org_qs, project_qs,
+                phase_action,
+                selected_project_value,
+                html_escape(admin_email.trim()),
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_style,
+                crf_template_action,
+                html_escape(admin_email.trim()),
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_style,
+                visit_template_action,
+                html_escape(admin_email.trim()),
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_attr,
+                project_disabled_style,
+                startup_pending_count,
+                published_template_count,
+                visit_template_count,
+                enrolled_patient_count,
+                open_query_count,
+                close_pending_count
+            )
+        }
         "setup" => format!(
             r#"<section class="card">
   <h2>1) Create Study (clinicaltrials.gov-style metadata + internal ops)</h2>
@@ -8667,7 +8851,7 @@ async fn render_study_workbench(
 
   <div style="margin: 0.5rem 0; padding: 0.4rem 0.6rem; background:#f0f9ff; border:1px solid #bae6fd; border-radius:4px; font-size:0.85rem;">
     <strong>Study sites:</strong> org-level sites + study-specific attachments supported (decoupled model).
-    <a href="/ui/app?view=sites" style="margin-left:0.5rem; color:#0369a1; font-weight:600;">Manage / attach sites →</a>
+    <a href="/ui/app?admin_email={app_admin}&organization_id={app_org}&project_id={app_project}&view=sites" style="margin-left:0.5rem; color:#0369a1; font-weight:600;">Manage / attach sites →</a>
   </div>
 
   <div style="background:#fefce8; border:1px solid #fde047; border-radius:6px; padding:12px 16px; margin-bottom:1rem; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
@@ -8718,7 +8902,10 @@ async fn render_study_workbench(
         patient_aging_html = patient_aging_html,
         patient_query_pill_html = patient_query_pill_html,
         patient_reports_link = patient_reports_link,
-        silent_patients_pill_html = silent_patients_pill_html
+        silent_patients_pill_html = silent_patients_pill_html,
+        app_admin = html_escape(admin_email.trim()),
+        app_org = selected_org_value,
+        app_project = selected_project_value
     );
 
     let script = r#"
