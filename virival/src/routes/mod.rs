@@ -13,9 +13,9 @@ use crate::{
     error::ApiError,
     models::{
         AppRole, AuthenticatedUser, CreateCrfSubmissionRequest, CreateCrfTemplateRequest,
-        CreateDataQueryRequest, CreateDuaRequest, CreateOrganizationRequest, CreateSiteRequest,
-        CreateStudyRequest, CreateVisitRequest, HealthResponse, MarkSiteStartupRequest,
-        StudyReadiness, TransitionStudyPhaseRequest,
+        CreateDataQueryRequest, CreateDuaRequest, CreateMembershipRequest,
+        CreateOrganizationRequest, CreateSiteRequest, CreateStudyRequest, CreateVisitRequest,
+        HealthResponse, MarkSiteStartupRequest, StudyReadiness, TransitionStudyPhaseRequest,
     },
     state::AppState,
     workflow::validate_phase_transition,
@@ -67,6 +67,11 @@ pub fn router(state: AppState, app_name: String) -> Router {
         )
         .route("/api/v1/duas", get(list_duas).post(create_dua))
         .route("/api/v1/duas/{dua_id}/activate", post(activate_dua))
+        .route("/api/v1/admin/memberships", post(create_membership))
+        .route(
+            "/api/v1/admin/organizations/{organization_id}/memberships",
+            get(list_organization_memberships),
+        )
         .route_layer(from_fn_with_state(state.clone(), require_auth))
         .with_state(state);
 
@@ -109,6 +114,51 @@ fn can_write(user: &AuthenticatedUser) -> Result<(), ApiError> {
 
 fn can_admin(user: &AuthenticatedUser) -> Result<(), ApiError> {
     require_any_role(user, &[AppRole::PlatformAdmin, AppRole::OrgAdmin])
+}
+
+async fn create_membership(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(input): Json<CreateMembershipRequest>,
+) -> Result<Json<crate::models::OrganizationMembership>, ApiError> {
+    can_admin(&user)?;
+    if input.subject.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "subject is required to create membership".to_string(),
+        ));
+    }
+    state
+        .repository
+        .get_organization(input.organization_id)
+        .await?;
+    let managed_user = state
+        .repository
+        .upsert_user(
+            input.subject.trim(),
+            input.email.as_deref(),
+            input.display_name.as_deref(),
+            AppRole::Investigator,
+        )
+        .await?;
+    let membership = state
+        .repository
+        .upsert_organization_membership(managed_user.id, input.organization_id, input.role)
+        .await?;
+    Ok(Json(membership))
+}
+
+async fn list_organization_memberships(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(organization_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::models::OrganizationMembership>>, ApiError> {
+    can_admin(&user)?;
+    Ok(Json(
+        state
+            .repository
+            .list_organization_memberships(organization_id)
+            .await?,
+    ))
 }
 
 async fn create_organization(
@@ -502,6 +552,15 @@ async fn activate_dua(
 }
 
 async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> Html<String> {
+    let email = user
+        .email
+        .as_deref()
+        .map(escape_html)
+        .unwrap_or_else(|| "not provided".to_string());
+    let org_scope = user
+        .organization_scope
+        .map(|org_id| org_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
     let body = format!(
         r#"<!doctype html>
 <html lang="en">
@@ -575,25 +634,29 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival · Phase 2 Wizard Shell</h1>
-      <p class="muted">Authenticated as <strong>{subject}</strong> with role <strong>{role}</strong>. This shell is now backed by PostgreSQL + repository layer + RBAC middleware skeleton.</p>
+      <h1>Virival · Phase 3 Wizard Shell</h1>
+      <p class="muted">Authenticated as <strong>{subject}</strong> (<strong>{email}</strong>) with role <strong>{role}</strong>. Source: <strong>{auth_source}</strong>. Organization scope: <strong>{org_scope}</strong>.</p>
       <span class="chip">workflow-first architecture mode</span>
     </section>
     <section class="grid">
       <div class="card"><h3>1. Setup organization</h3><p>Create an organization via <code>POST /api/v1/organizations</code>.</p></div>
-      <div class="card"><h3>2. Launch study</h3><p>Create study, publish CRF template, and attach startup-ready site.</p></div>
-      <div class="card"><h3>3. Enroll & execute</h3><p>Enroll patient, create visit, submit/lock CRFs, track data queries.</p></div>
-      <div class="card"><h3>4. Govern lifecycle</h3><p>Use readiness + gated phase transitions to advance and close safely.</p></div>
+      <div class="card"><h3>2. Assign membership</h3><p>Use <code>POST /api/v1/admin/memberships</code> to persist org roles and then pass <code>x-virival-organization-id</code>.</p></div>
+      <div class="card"><h3>3. Launch study</h3><p>Create study, publish CRF template, and attach startup-ready site.</p></div>
+      <div class="card"><h3>4. Enroll & execute</h3><p>Enroll patient, create visit, submit/lock CRFs, track data queries.</p></div>
+      <div class="card"><h3>5. Govern lifecycle</h3><p>Use readiness + gated phase transitions to advance and close safely.</p></div>
     </section>
     <section class="api">
-      <strong>Auth headers (dev mode)</strong>
-      <p class="muted">Send <code>x-virival-user</code> and optional <code>x-virival-role</code> (platform_admin, org_admin, investigator, site_coordinator, analyst, monitor).</p>
+      <strong>Auth options</strong>
+      <p class="muted">Use Google OIDC bearer token in <code>Authorization: Bearer ...</code> or dev headers <code>x-virival-user</code>, <code>x-virival-role</code>, and optional <code>x-virival-organization-id</code>.</p>
     </section>
   </div>
 </body>
 </html>"#,
         subject = escape_html(&user.subject),
-        role = user.role.as_str()
+        email = email,
+        role = user.role.as_str(),
+        auth_source = escape_html(&user.auth_source),
+        org_scope = escape_html(&org_scope)
     );
     Html(body)
 }

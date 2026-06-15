@@ -6,6 +6,8 @@ pub struct Config {
     pub bind_address: String,
     pub database_url: String,
     pub allow_dev_auth_bypass: bool,
+    pub google_workspace_domain: Option<String>,
+    pub google_client_id: Option<String>,
 }
 
 impl Config {
@@ -18,11 +20,21 @@ impl Config {
             .ok()
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(true);
+        let google_workspace_domain = env::var("GOOGLE_WORKSPACE_DOMAIN")
+            .ok()
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        let google_client_id = env::var("GOOGLE_CLIENT_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         Self {
             app_name,
             bind_address,
             database_url,
             allow_dev_auth_bypass,
+            google_workspace_domain,
+            google_client_id,
         }
     }
 }

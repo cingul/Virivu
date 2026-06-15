@@ -8,9 +8,9 @@ use crate::{
     db::DbPool,
     error::ApiError,
     models::{
-        AgreementStatus, CrfSubmission, CrfTemplate, DataQuery, DuaAgreement, Organization,
-        Patient, QueryStatus, Site, Study, StudyPhase, StudyReadiness, SubmissionStatus, Visit,
-        VisitStatus,
+        AgreementStatus, AppRole, CrfSubmission, CrfTemplate, DataQuery, DuaAgreement,
+        NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus, Site, Study,
+        StudyPhase, StudyReadiness, SubmissionStatus, User, Visit, VisitStatus,
     },
 };
 
@@ -22,6 +22,7 @@ pub trait Repository: Send + Sync {
         workspace_slug: &str,
     ) -> Result<Organization, ApiError>;
     async fn list_organizations(&self) -> Result<Vec<Organization>, ApiError>;
+    async fn get_organization(&self, organization_id: Uuid) -> Result<Organization, ApiError>;
 
     async fn create_study(
         &self,
@@ -110,6 +111,30 @@ pub trait Repository: Send + Sync {
     async fn activate_dua(&self, dua_id: Uuid) -> Result<DuaAgreement, ApiError>;
 
     async fn compute_readiness(&self, study_id: Uuid) -> Result<StudyReadiness, ApiError>;
+
+    async fn upsert_user(
+        &self,
+        subject: &str,
+        email: Option<&str>,
+        display_name: Option<&str>,
+        platform_role: AppRole,
+    ) -> Result<User, ApiError>;
+    async fn upsert_organization_membership(
+        &self,
+        user_id: Uuid,
+        organization_id: Uuid,
+        role: AppRole,
+    ) -> Result<OrganizationMembership, ApiError>;
+    async fn list_organization_memberships(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<Vec<OrganizationMembership>, ApiError>;
+    async fn get_membership_role(
+        &self,
+        user_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<Option<AppRole>, ApiError>;
+    async fn insert_audit_log(&self, entry: NewAuditLogEntry) -> Result<(), ApiError>;
 }
 
 #[derive(Clone)]
@@ -160,6 +185,21 @@ impl Repository for PgRepository {
             .await
             .map_err(map_query_err)?;
         rows.iter().map(map_organization).collect()
+    }
+
+    async fn get_organization(&self, organization_id: Uuid) -> Result<Organization, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "SELECT id, name, workspace_slug, created_at
+                 FROM organizations
+                 WHERE id = $1",
+                &[&organization_id],
+            )
+            .await
+            .map_err(map_query_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("organization {organization_id}")))?;
+        map_organization(&row)
     }
 
     async fn create_study(
@@ -715,6 +755,126 @@ impl Repository for PgRepository {
             next_recommended_action,
         })
     }
+
+    async fn upsert_user(
+        &self,
+        subject: &str,
+        email: Option<&str>,
+        display_name: Option<&str>,
+        platform_role: AppRole,
+    ) -> Result<User, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO users(id, subject, email, display_name, platform_role, created_at)
+                 VALUES ($1, $2, $3, $4, $5, NOW())
+                 ON CONFLICT(subject) DO UPDATE SET
+                     email = COALESCE(EXCLUDED.email, users.email),
+                     display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+                     platform_role = EXCLUDED.platform_role
+                 RETURNING id, subject, email, display_name, platform_role, created_at",
+                &[
+                    &Uuid::new_v4(),
+                    &subject,
+                    &email,
+                    &display_name,
+                    &platform_role.as_str(),
+                ],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_user(&row)
+    }
+
+    async fn upsert_organization_membership(
+        &self,
+        user_id: Uuid,
+        organization_id: Uuid,
+        role: AppRole,
+    ) -> Result<OrganizationMembership, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO organization_memberships(id, user_id, organization_id, role, created_at)
+                 VALUES ($1, $2, $3, $4, NOW())
+                 ON CONFLICT(user_id, organization_id) DO UPDATE SET role = EXCLUDED.role
+                 RETURNING id, user_id, organization_id, role, created_at",
+                &[&Uuid::new_v4(), &user_id, &organization_id, &role.as_str()],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_membership(&row)
+    }
+
+    async fn list_organization_memberships(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<Vec<OrganizationMembership>, ApiError> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT id, user_id, organization_id, role, created_at
+                 FROM organization_memberships
+                 WHERE organization_id = $1
+                 ORDER BY created_at DESC",
+                &[&organization_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_membership).collect()
+    }
+
+    async fn get_membership_role(
+        &self,
+        user_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<Option<AppRole>, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "SELECT role
+                 FROM organization_memberships
+                 WHERE user_id = $1 AND organization_id = $2",
+                &[&user_id, &organization_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        row.map(|row| AppRole::from_str(row.get::<_, &str>("role")).map_err(ApiError::BadRequest))
+            .transpose()
+    }
+
+    async fn insert_audit_log(&self, entry: NewAuditLogEntry) -> Result<(), ApiError> {
+        let client = self.client().await?;
+        client
+            .execute(
+                "INSERT INTO audit_logs(
+                    id,
+                    actor_user_id,
+                    actor_subject,
+                    actor_role,
+                    actor_email,
+                    auth_source,
+                    method,
+                    path,
+                    status_code,
+                    happened_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())",
+                &[
+                    &Uuid::new_v4(),
+                    &entry.actor_user_id,
+                    &entry.actor_subject,
+                    &entry.actor_role.map(|role| role.as_str().to_string()),
+                    &entry.actor_email,
+                    &entry.auth_source,
+                    &entry.method,
+                    &entry.path,
+                    &entry.status_code,
+                ],
+            )
+            .await
+            .map_err(map_write_err)?;
+        Ok(())
+    }
 }
 
 fn map_write_err(err: tokio_postgres::Error) -> ApiError {
@@ -837,6 +997,31 @@ fn map_dua(row: &Row) -> Result<DuaAgreement, ApiError> {
         organization_id: row.get("organization_id"),
         counterparty: row.get("counterparty"),
         status,
+        created_at: row.get("created_at"),
+    })
+}
+
+fn map_user(row: &Row) -> Result<User, ApiError> {
+    let platform_role = AppRole::from_str(row.get("platform_role"))
+        .map_err(|err| ApiError::Internal(format!("invalid platform role in database: {err}")))?;
+    Ok(User {
+        id: row.get("id"),
+        subject: row.get("subject"),
+        email: row.get("email"),
+        display_name: row.get("display_name"),
+        platform_role,
+        created_at: row.get("created_at"),
+    })
+}
+
+fn map_membership(row: &Row) -> Result<OrganizationMembership, ApiError> {
+    let role = AppRole::from_str(row.get("role"))
+        .map_err(|err| ApiError::Internal(format!("invalid membership role in database: {err}")))?;
+    Ok(OrganizationMembership {
+        id: row.get("id"),
+        user_id: row.get("user_id"),
+        organization_id: row.get("organization_id"),
+        role,
         created_at: row.get("created_at"),
     })
 }

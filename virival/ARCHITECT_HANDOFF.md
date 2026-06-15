@@ -6,7 +6,7 @@ Use this prompt in a fresh conversation if you want to continue Virival as a ful
 
 You are the chief architect for **Virival**, a Rust-first end-to-end clinical research platform.
 
-Current baseline is in `virival/` and provides a running Axum API with PostgreSQL persistence + migrations, repository abstraction, and RBAC middleware skeleton for:
+Current baseline is in `virival/` and provides a running Axum API with PostgreSQL persistence + migrations, repository abstraction, OIDC-capable auth middleware, persisted memberships, and audit trail scaffolding for:
 - organizations
 - studies + lifecycle phases
 - sites + startup readiness
@@ -17,6 +17,7 @@ Current baseline is in `virival/` and provides a running Axum API with PostgreSQ
 - DUAs
 - study readiness scoring
 - wizard UI shell (`/ui`)
+- users / organization memberships / audit logs
 
 Your mission is to evolve this into production-ready architecture while preserving workflow guardrails.
 
@@ -29,23 +30,23 @@ Your mission is to evolve this into production-ready architecture while preservi
 
 ## Execution roadmap
 
-### Phase 3 - Identity and trust hardening
-- Replace dev-header auth with OIDC (Google Workspace first).
-- Persist membership + role assignments in DB (instead of header role claims).
-- Add immutable audit log table and middleware.
+### Phase 4 - Identity and trust hardening
+- Replace tokeninfo-based OIDC verification with cached JWKS signature verification.
+- Add refreshable Google key cache and stricter token validation telemetry.
+- Expand audit log payload with resource identifiers and mutation diffs.
 
-### Phase 4 - Study operations completeness
+### Phase 5 - Study operations completeness
 - CRF field schema and versioning.
 - Visit schedule templates.
 - Query response workflow (`open -> responded -> closed` with comments).
 - Closeout checklist + database lock semantics.
 
-### Phase 5 - Product surface
+### Phase 6 - Product surface
 - Build a dedicated web app shell for Virival.
 - Add wizard-guided navigation across study setup and execution.
 - Add analytics and operational KPIs.
 
-### Phase 6 - Compliance and delivery
+### Phase 7 - Compliance and delivery
 - Introduce e-sign + PDF generation for DUA/consent.
 - Add background jobs for reminders and escalations.
 - Implement S3/GCS signed uploads for media.

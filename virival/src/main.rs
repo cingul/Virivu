@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod error;
 mod models;
+mod oidc;
 mod repository;
 mod routes;
 mod state;
@@ -37,6 +38,8 @@ async fn main() {
     let state = AppState {
         repository,
         allow_dev_auth_bypass: config.allow_dev_auth_bypass,
+        google_workspace_domain: config.google_workspace_domain.clone(),
+        google_client_id: config.google_client_id.clone(),
     };
     let app = routes::router(state, config.app_name.clone()).layer(TraceLayer::new_for_http());
 
@@ -54,6 +57,8 @@ async fn main() {
         app_name = %config.app_name,
         bind_address = %config.bind_address,
         database_url = %config.database_url,
+        google_workspace_domain = ?config.google_workspace_domain,
+        google_client_id_configured = config.google_client_id.is_some(),
         "starting Virival API server"
     );
     if config.allow_dev_auth_bypass {

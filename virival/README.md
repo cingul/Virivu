@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 2 baseline)
+## Current scope (Phase 3 baseline)
 
 Virival now includes:
 
@@ -33,7 +33,9 @@ Virival now includes:
 - Study readiness summary
 - PostgreSQL-backed persistence with boot-time SQL migrations
 - Repository interface + PostgreSQL implementation (domain logic decoupled from handlers)
-- Auth/RBAC middleware skeleton (`x-virival-user`, `x-virival-role`)
+- Auth/RBAC middleware with Google OIDC claims validation path + dev fallback
+- Persisted users + organization memberships (role assignments in DB)
+- Audit log trail for protected requests
 - First wizard UI shell at `/ui`
 
 ## Run locally
@@ -49,6 +51,8 @@ Defaults:
 - `BIND_ADDRESS=0.0.0.0:8090`
 - `DATABASE_URL=postgres://postgres:postgres@localhost:5432/virival`
 - `ALLOW_DEV_AUTH_BYPASS=true`
+- `GOOGLE_WORKSPACE_DOMAIN=cingulum.org`
+- `GOOGLE_CLIENT_ID=` (set for strict audience validation)
 
 Health:
 
@@ -79,14 +83,18 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 - `POST /api/v1/duas/{dua_id}/activate`
 - `GET /api/v1/studies/{study_id}/readiness`
 - `POST /api/v1/studies/{study_id}/phase`
+- `POST /api/v1/admin/memberships`
+- `GET /api/v1/admin/organizations/{organization_id}/memberships`
 
-## Auth / RBAC skeleton
+## Auth / RBAC
 
 - Middleware protects `/ui` and all `/api/v1/*` routes.
+- Preferred path: Google OIDC `Authorization: Bearer <id_token>` with issuer/audience/expiry/domain claim checks.
 - Dev default (if `ALLOW_DEV_AUTH_BYPASS=true`): automatic `platform_admin` identity when headers are missing.
 - Explicit headers for testing:
   - `x-virival-user: you@org.tld`
   - `x-virival-role: platform_admin|org_admin|investigator|site_coordinator|analyst|monitor`
+  - `x-virival-organization-id: <org_uuid>` (optional scope to resolve membership role)
 
 ## Phase transition rules (opinionated)
 

@@ -6,4 +6,6 @@ use crate::repository::Repository;
 pub struct AppState {
     pub repository: Arc<dyn Repository>,
     pub allow_dev_auth_bypass: bool,
+    pub google_workspace_domain: Option<String>,
+    pub google_client_id: Option<String>,
 }

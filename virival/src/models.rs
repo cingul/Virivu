@@ -206,8 +206,12 @@ impl FromStr for AppRole {
 
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser {
+    pub user_id: Uuid,
     pub subject: String,
+    pub email: Option<String>,
     pub role: AppRole,
+    pub organization_scope: Option<Uuid>,
+    pub auth_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,6 +315,37 @@ pub struct StudyReadiness {
     pub next_recommended_action: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: Uuid,
+    pub subject: String,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub platform_role: AppRole,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrganizationMembership {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub organization_id: Uuid,
+    pub role: AppRole,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewAuditLogEntry {
+    pub actor_user_id: Option<Uuid>,
+    pub actor_subject: String,
+    pub actor_role: Option<AppRole>,
+    pub actor_email: Option<String>,
+    pub auth_source: Option<String>,
+    pub method: String,
+    pub path: String,
+    pub status_code: i32,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateOrganizationRequest {
     pub name: String,
@@ -383,6 +418,15 @@ pub struct CreateDataQueryRequest {
 pub struct CreateDuaRequest {
     pub organization_id: Uuid,
     pub counterparty: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMembershipRequest {
+    pub subject: String,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub organization_id: Uuid,
+    pub role: AppRole,
 }
 
 #[derive(Debug, Serialize)]
