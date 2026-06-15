@@ -36,11 +36,11 @@ Your mission is to evolve this into production-ready architecture while preservi
 - Audit payload now carries action/resource metadata.
 - JWKS retrieval currently shells out to `curl`; replace with native async HTTP client when toolchain constraints are relaxed.
 
-### Phase 5 - Study operations completeness
-- CRF field schema and versioning.
-- Visit schedule templates.
-- Query response workflow (`open -> responded -> closed` with comments).
-- Closeout checklist + database lock semantics.
+### Phase 5 completed (study operations completeness)
+- CRF template schema versioning is implemented with publishable versions.
+- Visit schedule templates are implemented per study.
+- Query response workflow supports `open -> responded -> closed` with comments.
+- Required closeout checklist items are enforced in `monitoring -> closed` gate.
 
 ### Phase 6 - Product surface
 - Build a dedicated web app shell for Virival.

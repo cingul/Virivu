@@ -66,6 +66,11 @@ pub fn validate_phase_transition(
                     "cannot close study with unresolved data queries".to_string(),
                 ));
             }
+            if readiness.pending_closeout_items > 0 {
+                return Err(ApiError::Conflict(
+                    "cannot close study with pending required closeout checklist items".to_string(),
+                ));
+            }
             Ok(())
         }
         _ => Err(ApiError::BadRequest(format!(

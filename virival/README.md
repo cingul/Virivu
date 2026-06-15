@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 4 baseline)
+## Current scope (Phase 5 baseline)
 
 Virival now includes:
 
@@ -27,8 +27,11 @@ Virival now includes:
 - Sites + startup readiness
 - Patients + enrollment
 - Visits
-- CRF templates + submissions
-- Data queries
+- CRF templates + versioned schemas
+- CRF submissions
+- Visit schedule templates
+- Data queries with response/comment workflow
+- Study closeout checklist tracking
 - DUAs
 - Study readiness summary
 - PostgreSQL-backed persistence with boot-time SQL migrations
@@ -76,11 +79,22 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 - `POST /api/v1/sites/{site_id}/startup`
 - `POST /api/v1/patients`
 - `POST /api/v1/crf-templates`
+- `POST /api/v1/crf-templates/{template_id}/versions`
+- `GET /api/v1/crf-templates/{template_id}/versions`
+- `POST /api/v1/crf-template-versions/{version_id}/publish`
 - `POST /api/v1/crf-templates/{template_id}/publish`
 - `POST /api/v1/crf-submissions`
 - `POST /api/v1/crf-submissions/{submission_id}/lock`
 - `POST /api/v1/data-queries`
+- `POST /api/v1/data-queries/{query_id}/respond`
+- `GET /api/v1/data-queries/{query_id}/comments`
+- `POST /api/v1/data-queries/{query_id}/comments`
 - `POST /api/v1/data-queries/{query_id}/close`
+- `POST /api/v1/studies/{study_id}/visit-schedule-templates`
+- `GET /api/v1/studies/{study_id}/visit-schedule-templates`
+- `POST /api/v1/studies/{study_id}/closeout-checklist`
+- `GET /api/v1/studies/{study_id}/closeout-checklist`
+- `POST /api/v1/closeout-checklist/{item_id}/complete`
 - `POST /api/v1/duas`
 - `POST /api/v1/duas/{dua_id}/activate`
 - `GET /api/v1/studies/{study_id}/readiness`
@@ -116,6 +130,8 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
   - at least one published CRF template
 - `initiation -> active` requires at least one enrolled patient
 - `active -> monitoring` requires at least one locked CRF submission
-- `monitoring -> closed` requires zero unresolved data queries
+- `monitoring -> closed` requires:
+  - zero unresolved data queries
+  - zero pending required closeout checklist items
 
 This is the first layer of enforcement for a frictionless, compliant study workflow.

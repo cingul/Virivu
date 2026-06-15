@@ -273,6 +273,16 @@ pub struct CrfTemplate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrfTemplateVersion {
+    pub id: Uuid,
+    pub template_id: Uuid,
+    pub version_number: i32,
+    pub schema_json: serde_json::Value,
+    pub is_published: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrfSubmission {
     pub id: Uuid,
     pub study_id: Uuid,
@@ -294,6 +304,39 @@ pub struct DataQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataQueryComment {
+    pub id: Uuid,
+    pub query_id: Uuid,
+    pub author_user_id: Option<Uuid>,
+    pub comment_text: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisitScheduleTemplate {
+    pub id: Uuid,
+    pub study_id: Uuid,
+    pub name: String,
+    pub day_offset: i32,
+    pub window_before_days: i32,
+    pub window_after_days: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloseoutChecklistItem {
+    pub id: Uuid,
+    pub study_id: Uuid,
+    pub item_key: String,
+    pub item_label: String,
+    pub is_required: bool,
+    pub is_complete: bool,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub completed_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuaAgreement {
     pub id: Uuid,
     pub organization_id: Uuid,
@@ -311,6 +354,7 @@ pub struct StudyReadiness {
     pub has_enrolled_patient: bool,
     pub has_locked_submission: bool,
     pub open_query_count: usize,
+    pub pending_closeout_items: usize,
     pub has_active_dua: bool,
     pub next_recommended_action: String,
 }
@@ -422,6 +466,11 @@ pub struct CreateCrfTemplateRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateCrfTemplateVersionRequest {
+    pub schema_json: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CreateCrfSubmissionRequest {
     pub study_id: Uuid,
     pub patient_id: Uuid,
@@ -434,6 +483,36 @@ pub struct CreateDataQueryRequest {
     pub study_id: Uuid,
     pub submission_id: Uuid,
     pub summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateDataQueryCommentRequest {
+    pub comment_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RespondDataQueryRequest {
+    pub comment_text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateVisitScheduleTemplateRequest {
+    pub name: String,
+    pub day_offset: i32,
+    pub window_before_days: i32,
+    pub window_after_days: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateCloseoutChecklistItemRequest {
+    pub item_key: String,
+    pub item_label: String,
+    pub is_required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompleteCloseoutChecklistItemRequest {
+    pub is_complete: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -56,6 +56,12 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), ApiError> {
         include_str!("../migrations/0003_audit_enrichment.sql"),
     )
     .await?;
+    apply_migration(
+        &client,
+        "0004_phase5_operations",
+        include_str!("../migrations/0004_phase5_operations.sql"),
+    )
+    .await?;
     Ok(())
 }
 

@@ -8,9 +8,11 @@ use crate::{
     db::DbPool,
     error::ApiError,
     models::{
-        AgreementStatus, AppRole, AuditLogRecord, CrfSubmission, CrfTemplate, DataQuery,
-        DuaAgreement, NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus,
-        Site, Study, StudyPhase, StudyReadiness, SubmissionStatus, User, Visit, VisitStatus,
+        AgreementStatus, AppRole, AuditLogRecord, CloseoutChecklistItem, CrfSubmission,
+        CrfTemplate, CrfTemplateVersion, DataQuery, DataQueryComment, DuaAgreement,
+        NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus, Site, Study,
+        StudyPhase, StudyReadiness, SubmissionStatus, User, Visit, VisitScheduleTemplate,
+        VisitStatus,
     },
 };
 
@@ -81,6 +83,19 @@ pub trait Repository: Send + Sync {
     async fn list_crf_templates(&self) -> Result<Vec<CrfTemplate>, ApiError>;
     async fn get_crf_template(&self, template_id: Uuid) -> Result<CrfTemplate, ApiError>;
     async fn publish_crf_template(&self, template_id: Uuid) -> Result<CrfTemplate, ApiError>;
+    async fn create_crf_template_version(
+        &self,
+        template_id: Uuid,
+        schema_json: &serde_json::Value,
+    ) -> Result<CrfTemplateVersion, ApiError>;
+    async fn list_crf_template_versions(
+        &self,
+        template_id: Uuid,
+    ) -> Result<Vec<CrfTemplateVersion>, ApiError>;
+    async fn publish_crf_template_version(
+        &self,
+        version_id: Uuid,
+    ) -> Result<CrfTemplateVersion, ApiError>;
 
     async fn create_crf_submission(
         &self,
@@ -100,7 +115,49 @@ pub trait Repository: Send + Sync {
         summary: &str,
     ) -> Result<DataQuery, ApiError>;
     async fn list_data_queries(&self) -> Result<Vec<DataQuery>, ApiError>;
+    async fn respond_data_query(&self, query_id: Uuid) -> Result<DataQuery, ApiError>;
     async fn close_data_query(&self, query_id: Uuid) -> Result<DataQuery, ApiError>;
+    async fn create_data_query_comment(
+        &self,
+        query_id: Uuid,
+        author_user_id: Option<Uuid>,
+        comment_text: &str,
+    ) -> Result<DataQueryComment, ApiError>;
+    async fn list_data_query_comments(
+        &self,
+        query_id: Uuid,
+    ) -> Result<Vec<DataQueryComment>, ApiError>;
+
+    async fn create_visit_schedule_template(
+        &self,
+        study_id: Uuid,
+        name: &str,
+        day_offset: i32,
+        window_before_days: i32,
+        window_after_days: i32,
+    ) -> Result<VisitScheduleTemplate, ApiError>;
+    async fn list_visit_schedule_templates(
+        &self,
+        study_id: Uuid,
+    ) -> Result<Vec<VisitScheduleTemplate>, ApiError>;
+
+    async fn create_closeout_checklist_item(
+        &self,
+        study_id: Uuid,
+        item_key: &str,
+        item_label: &str,
+        is_required: bool,
+    ) -> Result<CloseoutChecklistItem, ApiError>;
+    async fn list_closeout_checklist_items(
+        &self,
+        study_id: Uuid,
+    ) -> Result<Vec<CloseoutChecklistItem>, ApiError>;
+    async fn set_closeout_checklist_item_completion(
+        &self,
+        item_id: Uuid,
+        is_complete: bool,
+        completed_by_user_id: Option<Uuid>,
+    ) -> Result<CloseoutChecklistItem, ApiError>;
 
     async fn create_dua(
         &self,
@@ -491,6 +548,108 @@ impl Repository for PgRepository {
         map_template(&row)
     }
 
+    async fn create_crf_template_version(
+        &self,
+        template_id: Uuid,
+        schema_json: &serde_json::Value,
+    ) -> Result<CrfTemplateVersion, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "WITH next_version AS (
+                    SELECT COALESCE(MAX(version_number), 0) + 1 AS version_number
+                    FROM crf_template_versions
+                    WHERE template_id = $1
+                )
+                INSERT INTO crf_template_versions(
+                    id,
+                    template_id,
+                    version_number,
+                    schema_json,
+                    is_published,
+                    created_at
+                )
+                SELECT
+                    $2,
+                    $1,
+                    next_version.version_number,
+                    $3,
+                    FALSE,
+                    NOW()
+                FROM next_version
+                RETURNING id, template_id, version_number, schema_json, is_published, created_at",
+                &[&template_id, &Uuid::new_v4(), &schema_json],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_template_version(&row)
+    }
+
+    async fn list_crf_template_versions(
+        &self,
+        template_id: Uuid,
+    ) -> Result<Vec<CrfTemplateVersion>, ApiError> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT id, template_id, version_number, schema_json, is_published, created_at
+                 FROM crf_template_versions
+                 WHERE template_id = $1
+                 ORDER BY version_number DESC",
+                &[&template_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_template_version).collect()
+    }
+
+    async fn publish_crf_template_version(
+        &self,
+        version_id: Uuid,
+    ) -> Result<CrfTemplateVersion, ApiError> {
+        let mut client = self.client().await?;
+        let transaction = client
+            .transaction()
+            .await
+            .map_err(|err| ApiError::Internal(format!("failed opening transaction: {err}")))?;
+        let version_row = transaction
+            .query_opt(
+                "SELECT template_id
+                 FROM crf_template_versions
+                 WHERE id = $1",
+                &[&version_id],
+            )
+            .await
+            .map_err(map_write_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("template version {version_id}")))?;
+        let template_id: Uuid = version_row.get("template_id");
+        transaction
+            .execute(
+                "UPDATE crf_template_versions
+                 SET is_published = FALSE
+                 WHERE template_id = $1",
+                &[&template_id],
+            )
+            .await
+            .map_err(map_write_err)?;
+        let row = transaction
+            .query_opt(
+                "UPDATE crf_template_versions
+                 SET is_published = TRUE
+                 WHERE id = $1
+                 RETURNING id, template_id, version_number, schema_json, is_published, created_at",
+                &[&version_id],
+            )
+            .await
+            .map_err(map_write_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("template version {version_id}")))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|err| ApiError::Internal(format!("failed committing transaction: {err}")))?;
+        map_template_version(&row)
+    }
+
     async fn create_crf_submission(
         &self,
         study_id: Uuid,
@@ -588,12 +747,45 @@ impl Repository for PgRepository {
         rows.iter().map(map_data_query).collect()
     }
 
-    async fn close_data_query(&self, query_id: Uuid) -> Result<DataQuery, ApiError> {
+    async fn respond_data_query(&self, query_id: Uuid) -> Result<DataQuery, ApiError> {
         let client = self.client().await?;
         let row = client
             .query_opt(
                 "UPDATE data_queries SET status = $2
-                 WHERE id = $1
+                 WHERE id = $1 AND status <> 'closed'
+                 RETURNING id, study_id, submission_id, summary, status, raised_at",
+                &[&query_id, &QueryStatus::Responded.as_db()],
+            )
+            .await
+            .map_err(map_write_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("query {query_id}")))?;
+        map_data_query(&row)
+    }
+
+    async fn close_data_query(&self, query_id: Uuid) -> Result<DataQuery, ApiError> {
+        let client = self.client().await?;
+        let existing = client
+            .query_opt(
+                "SELECT status
+                 FROM data_queries
+                 WHERE id = $1",
+                &[&query_id],
+            )
+            .await
+            .map_err(map_query_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("query {query_id}")))?;
+        let status = QueryStatus::from_str(existing.get::<_, &str>("status")).map_err(|err| {
+            ApiError::Internal(format!("invalid query status in database: {err}"))
+        })?;
+        if status == QueryStatus::Open {
+            return Err(ApiError::Conflict(
+                "query must be responded before closure".to_string(),
+            ));
+        }
+        let row = client
+            .query_opt(
+                "UPDATE data_queries SET status = $2
+                 WHERE id = $1 AND status <> 'closed'
                  RETURNING id, study_id, submission_id, summary, status, raised_at",
                 &[&query_id, &QueryStatus::Closed.as_db()],
             )
@@ -601,6 +793,167 @@ impl Repository for PgRepository {
             .map_err(map_write_err)?
             .ok_or_else(|| ApiError::NotFound(format!("query {query_id}")))?;
         map_data_query(&row)
+    }
+
+    async fn create_data_query_comment(
+        &self,
+        query_id: Uuid,
+        author_user_id: Option<Uuid>,
+        comment_text: &str,
+    ) -> Result<DataQueryComment, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO data_query_comments(id, query_id, author_user_id, comment_text, created_at)
+                 VALUES ($1, $2, $3, $4, NOW())
+                 RETURNING id, query_id, author_user_id, comment_text, created_at",
+                &[&Uuid::new_v4(), &query_id, &author_user_id, &comment_text],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_data_query_comment(&row)
+    }
+
+    async fn list_data_query_comments(
+        &self,
+        query_id: Uuid,
+    ) -> Result<Vec<DataQueryComment>, ApiError> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT id, query_id, author_user_id, comment_text, created_at
+                 FROM data_query_comments
+                 WHERE query_id = $1
+                 ORDER BY created_at ASC",
+                &[&query_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_data_query_comment).collect()
+    }
+
+    async fn create_visit_schedule_template(
+        &self,
+        study_id: Uuid,
+        name: &str,
+        day_offset: i32,
+        window_before_days: i32,
+        window_after_days: i32,
+    ) -> Result<VisitScheduleTemplate, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO visit_schedule_templates(
+                    id,
+                    study_id,
+                    name,
+                    day_offset,
+                    window_before_days,
+                    window_after_days,
+                    created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                RETURNING id, study_id, name, day_offset, window_before_days, window_after_days, created_at",
+                &[
+                    &Uuid::new_v4(),
+                    &study_id,
+                    &name,
+                    &day_offset,
+                    &window_before_days,
+                    &window_after_days,
+                ],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_visit_schedule_template(&row)
+    }
+
+    async fn list_visit_schedule_templates(
+        &self,
+        study_id: Uuid,
+    ) -> Result<Vec<VisitScheduleTemplate>, ApiError> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT id, study_id, name, day_offset, window_before_days, window_after_days, created_at
+                 FROM visit_schedule_templates
+                 WHERE study_id = $1
+                 ORDER BY day_offset ASC, created_at ASC",
+                &[&study_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_visit_schedule_template).collect()
+    }
+
+    async fn create_closeout_checklist_item(
+        &self,
+        study_id: Uuid,
+        item_key: &str,
+        item_label: &str,
+        is_required: bool,
+    ) -> Result<CloseoutChecklistItem, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO study_closeout_checklist_items(
+                    id,
+                    study_id,
+                    item_key,
+                    item_label,
+                    is_required,
+                    is_complete,
+                    completed_at,
+                    completed_by_user_id,
+                    created_at
+                ) VALUES ($1, $2, $3, $4, $5, FALSE, NULL, NULL, NOW())
+                RETURNING id, study_id, item_key, item_label, is_required, is_complete, completed_at, completed_by_user_id, created_at",
+                &[&Uuid::new_v4(), &study_id, &item_key, &item_label, &is_required],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_closeout_checklist_item(&row)
+    }
+
+    async fn list_closeout_checklist_items(
+        &self,
+        study_id: Uuid,
+    ) -> Result<Vec<CloseoutChecklistItem>, ApiError> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT id, study_id, item_key, item_label, is_required, is_complete, completed_at, completed_by_user_id, created_at
+                 FROM study_closeout_checklist_items
+                 WHERE study_id = $1
+                 ORDER BY created_at ASC",
+                &[&study_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_closeout_checklist_item).collect()
+    }
+
+    async fn set_closeout_checklist_item_completion(
+        &self,
+        item_id: Uuid,
+        is_complete: bool,
+        completed_by_user_id: Option<Uuid>,
+    ) -> Result<CloseoutChecklistItem, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "UPDATE study_closeout_checklist_items
+                 SET
+                    is_complete = $2,
+                    completed_at = CASE WHEN $2 THEN NOW() ELSE NULL::timestamptz END,
+                    completed_by_user_id = CASE WHEN $2 THEN CAST($3 AS UUID) ELSE NULL::UUID END
+                 WHERE id = $1
+                 RETURNING id, study_id, item_key, item_label, is_required, is_complete, completed_at, completed_by_user_id, created_at",
+                &[&item_id, &is_complete, &completed_by_user_id],
+            )
+            .await
+            .map_err(map_write_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("closeout checklist item {item_id}")))?;
+        map_closeout_checklist_item(&row)
     }
 
     async fn create_dua(
@@ -680,7 +1033,18 @@ impl Repository for PgRepository {
         let has_published_crf: bool = client
             .query_one(
                 "SELECT EXISTS(
-                    SELECT 1 FROM crf_templates WHERE study_id = $1 AND published = TRUE
+                    SELECT 1
+                    FROM crf_templates t
+                    WHERE t.study_id = $1
+                      AND (
+                        t.published = TRUE
+                        OR EXISTS (
+                            SELECT 1
+                            FROM crf_template_versions v
+                            WHERE v.template_id = t.id
+                              AND v.is_published = TRUE
+                        )
+                      )
                 ) AS present",
                 &[&study_id],
             )
@@ -717,6 +1081,18 @@ impl Repository for PgRepository {
             .await
             .map_err(map_query_err)?
             .get("count");
+        let pending_closeout_items: i64 = client
+            .query_one(
+                "SELECT COUNT(*) AS count
+                 FROM study_closeout_checklist_items
+                 WHERE study_id = $1
+                   AND is_required = TRUE
+                   AND is_complete = FALSE",
+                &[&study_id],
+            )
+            .await
+            .map_err(map_query_err)?
+            .get("count");
         let has_active_dua: bool = client
             .query_one(
                 "SELECT EXISTS(
@@ -740,6 +1116,8 @@ impl Repository for PgRepository {
             "Capture and lock at least one CRF submission".to_string()
         } else if open_query_count > 0 {
             "Resolve all open data queries before closure".to_string()
+        } else if pending_closeout_items > 0 {
+            "Complete required closeout checklist items before closure".to_string()
         } else {
             "Study is ready for operational closeout".to_string()
         };
@@ -752,6 +1130,7 @@ impl Repository for PgRepository {
             has_enrolled_patient,
             has_locked_submission,
             open_query_count: open_query_count as usize,
+            pending_closeout_items: pending_closeout_items as usize,
             has_active_dua,
             next_recommended_action,
         })
@@ -1000,6 +1379,17 @@ fn map_template(row: &Row) -> Result<CrfTemplate, ApiError> {
     })
 }
 
+fn map_template_version(row: &Row) -> Result<CrfTemplateVersion, ApiError> {
+    Ok(CrfTemplateVersion {
+        id: row.get("id"),
+        template_id: row.get("template_id"),
+        version_number: row.get("version_number"),
+        schema_json: row.get("schema_json"),
+        is_published: row.get("is_published"),
+        created_at: row.get("created_at"),
+    })
+}
+
 fn map_submission(row: &Row) -> Result<CrfSubmission, ApiError> {
     let status = SubmissionStatus::from_str(row.get("status")).map_err(|err| {
         ApiError::Internal(format!("invalid submission status in database: {err}"))
@@ -1025,6 +1415,42 @@ fn map_data_query(row: &Row) -> Result<DataQuery, ApiError> {
         summary: row.get("summary"),
         status,
         raised_at: row.get("raised_at"),
+    })
+}
+
+fn map_data_query_comment(row: &Row) -> Result<DataQueryComment, ApiError> {
+    Ok(DataQueryComment {
+        id: row.get("id"),
+        query_id: row.get("query_id"),
+        author_user_id: row.get("author_user_id"),
+        comment_text: row.get("comment_text"),
+        created_at: row.get("created_at"),
+    })
+}
+
+fn map_visit_schedule_template(row: &Row) -> Result<VisitScheduleTemplate, ApiError> {
+    Ok(VisitScheduleTemplate {
+        id: row.get("id"),
+        study_id: row.get("study_id"),
+        name: row.get("name"),
+        day_offset: row.get("day_offset"),
+        window_before_days: row.get("window_before_days"),
+        window_after_days: row.get("window_after_days"),
+        created_at: row.get("created_at"),
+    })
+}
+
+fn map_closeout_checklist_item(row: &Row) -> Result<CloseoutChecklistItem, ApiError> {
+    Ok(CloseoutChecklistItem {
+        id: row.get("id"),
+        study_id: row.get("study_id"),
+        item_key: row.get("item_key"),
+        item_label: row.get("item_label"),
+        is_required: row.get("is_required"),
+        is_complete: row.get("is_complete"),
+        completed_at: row.get("completed_at"),
+        completed_by_user_id: row.get("completed_by_user_id"),
+        created_at: row.get("created_at"),
     })
 }
 

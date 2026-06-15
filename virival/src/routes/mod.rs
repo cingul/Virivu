@@ -13,10 +13,13 @@ use crate::{
     auth::{require_any_role, require_auth},
     error::ApiError,
     models::{
-        AppRole, AuthenticatedUser, CreateCrfSubmissionRequest, CreateCrfTemplateRequest,
-        CreateDataQueryRequest, CreateDuaRequest, CreateMembershipRequest,
-        CreateOrganizationRequest, CreateSiteRequest, CreateStudyRequest, CreateVisitRequest,
-        HealthResponse, MarkSiteStartupRequest, StudyReadiness, TransitionStudyPhaseRequest,
+        AppRole, AuthenticatedUser, CompleteCloseoutChecklistItemRequest,
+        CreateCloseoutChecklistItemRequest, CreateCrfSubmissionRequest, CreateCrfTemplateRequest,
+        CreateCrfTemplateVersionRequest, CreateDataQueryCommentRequest, CreateDataQueryRequest,
+        CreateDuaRequest, CreateMembershipRequest, CreateOrganizationRequest, CreateSiteRequest,
+        CreateStudyRequest, CreateVisitRequest, CreateVisitScheduleTemplateRequest, HealthResponse,
+        MarkSiteStartupRequest, RespondDataQueryRequest, StudyReadiness,
+        TransitionStudyPhaseRequest,
     },
     state::AppState,
     workflow::validate_phase_transition,
@@ -50,8 +53,16 @@ pub fn router(state: AppState, app_name: String) -> Router {
             get(list_crf_templates).post(create_crf_template),
         )
         .route(
+            "/api/v1/crf-templates/{template_id}/versions",
+            get(list_crf_template_versions).post(create_crf_template_version),
+        )
+        .route(
             "/api/v1/crf-templates/{template_id}/publish",
             post(publish_crf_template),
+        )
+        .route(
+            "/api/v1/crf-template-versions/{version_id}/publish",
+            post(publish_crf_template_version),
         )
         .route(
             "/api/v1/crf-submissions",
@@ -66,8 +77,28 @@ pub fn router(state: AppState, app_name: String) -> Router {
             get(list_data_queries).post(create_data_query),
         )
         .route(
+            "/api/v1/data-queries/{query_id}/comments",
+            get(list_data_query_comments).post(create_data_query_comment),
+        )
+        .route(
+            "/api/v1/data-queries/{query_id}/respond",
+            post(respond_data_query),
+        )
+        .route(
             "/api/v1/data-queries/{query_id}/close",
             post(close_data_query),
+        )
+        .route(
+            "/api/v1/studies/{study_id}/visit-schedule-templates",
+            get(list_visit_schedule_templates).post(create_visit_schedule_template),
+        )
+        .route(
+            "/api/v1/studies/{study_id}/closeout-checklist",
+            get(list_closeout_checklist_items).post(create_closeout_checklist_item),
+        )
+        .route(
+            "/api/v1/closeout-checklist/{item_id}/complete",
+            post(complete_closeout_checklist_item),
         )
         .route("/api/v1/duas", get(list_duas).post(create_dua))
         .route("/api/v1/duas/{dua_id}/activate", post(activate_dua))
@@ -711,6 +742,51 @@ async fn publish_crf_template(
     ))
 }
 
+async fn create_crf_template_version(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(template_id): Path<Uuid>,
+    Json(input): Json<CreateCrfTemplateVersionRequest>,
+) -> Result<Json<crate::models::CrfTemplateVersion>, ApiError> {
+    can_write(&user)?;
+    state.repository.get_crf_template(template_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .create_crf_template_version(template_id, &input.schema_json)
+            .await?,
+    ))
+}
+
+async fn list_crf_template_versions(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(template_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::models::CrfTemplateVersion>>, ApiError> {
+    can_read(&user)?;
+    state.repository.get_crf_template(template_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .list_crf_template_versions(template_id)
+            .await?,
+    ))
+}
+
+async fn publish_crf_template_version(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(version_id): Path<Uuid>,
+) -> Result<Json<crate::models::CrfTemplateVersion>, ApiError> {
+    can_write(&user)?;
+    Ok(Json(
+        state
+            .repository
+            .publish_crf_template_version(version_id)
+            .await?,
+    ))
+}
+
 async fn create_crf_submission(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -730,10 +806,22 @@ async fn create_crf_submission(
         ));
     }
     let template = state.repository.get_crf_template(input.template_id).await?;
-    if template.study_id != input.study_id || !template.published {
+    if template.study_id != input.study_id {
         return Err(ApiError::Conflict(
-            "template must be published and belong to study".to_string(),
+            "template must belong to study".to_string(),
         ));
+    }
+    if !template.published {
+        let versions = state
+            .repository
+            .list_crf_template_versions(template.id)
+            .await?;
+        let has_published_version = versions.iter().any(|version| version.is_published);
+        if !has_published_version {
+            return Err(ApiError::Conflict(
+                "template must be published or have a published version".to_string(),
+            ));
+        }
     }
     Ok(Json(
         state
@@ -801,6 +889,54 @@ async fn list_data_queries(
     Ok(Json(state.repository.list_data_queries().await?))
 }
 
+async fn create_data_query_comment(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(query_id): Path<Uuid>,
+    Json(input): Json<CreateDataQueryCommentRequest>,
+) -> Result<Json<crate::models::DataQueryComment>, ApiError> {
+    can_write(&user)?;
+    if input.comment_text.trim().is_empty() {
+        return Err(ApiError::BadRequest("comment_text is required".to_string()));
+    }
+    Ok(Json(
+        state
+            .repository
+            .create_data_query_comment(query_id, Some(user.user_id), input.comment_text.trim())
+            .await?,
+    ))
+}
+
+async fn list_data_query_comments(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(query_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::models::DataQueryComment>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(
+        state.repository.list_data_query_comments(query_id).await?,
+    ))
+}
+
+async fn respond_data_query(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(query_id): Path<Uuid>,
+    Json(input): Json<RespondDataQueryRequest>,
+) -> Result<Json<crate::models::DataQuery>, ApiError> {
+    can_write(&user)?;
+    let response = state.repository.respond_data_query(query_id).await?;
+    if let Some(comment_text) = input.comment_text.as_deref() {
+        if !comment_text.trim().is_empty() {
+            state
+                .repository
+                .create_data_query_comment(query_id, Some(user.user_id), comment_text.trim())
+                .await?;
+        }
+    }
+    Ok(Json(response))
+}
+
 async fn close_data_query(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -808,6 +944,118 @@ async fn close_data_query(
 ) -> Result<Json<crate::models::DataQuery>, ApiError> {
     can_write(&user)?;
     Ok(Json(state.repository.close_data_query(query_id).await?))
+}
+
+async fn create_visit_schedule_template(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(study_id): Path<Uuid>,
+    Json(input): Json<CreateVisitScheduleTemplateRequest>,
+) -> Result<Json<crate::models::VisitScheduleTemplate>, ApiError> {
+    can_write(&user)?;
+    if input.name.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "name is required for visit schedule template".to_string(),
+        ));
+    }
+    if input.window_before_days < 0 || input.window_after_days < 0 {
+        return Err(ApiError::BadRequest(
+            "visit windows cannot be negative".to_string(),
+        ));
+    }
+    state.repository.get_study(study_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .create_visit_schedule_template(
+                study_id,
+                input.name.trim(),
+                input.day_offset,
+                input.window_before_days,
+                input.window_after_days,
+            )
+            .await?,
+    ))
+}
+
+async fn list_visit_schedule_templates(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(study_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::models::VisitScheduleTemplate>>, ApiError> {
+    can_read(&user)?;
+    state.repository.get_study(study_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .list_visit_schedule_templates(study_id)
+            .await?,
+    ))
+}
+
+async fn create_closeout_checklist_item(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(study_id): Path<Uuid>,
+    Json(input): Json<CreateCloseoutChecklistItemRequest>,
+) -> Result<Json<crate::models::CloseoutChecklistItem>, ApiError> {
+    can_admin(&user)?;
+    if input.item_key.trim().is_empty() || input.item_label.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "item_key and item_label are required".to_string(),
+        ));
+    }
+    state.repository.get_study(study_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .create_closeout_checklist_item(
+                study_id,
+                input.item_key.trim(),
+                input.item_label.trim(),
+                input.is_required,
+            )
+            .await?,
+    ))
+}
+
+async fn list_closeout_checklist_items(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(study_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::models::CloseoutChecklistItem>>, ApiError> {
+    can_read(&user)?;
+    state.repository.get_study(study_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .list_closeout_checklist_items(study_id)
+            .await?,
+    ))
+}
+
+async fn complete_closeout_checklist_item(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(item_id): Path<Uuid>,
+    Json(input): Json<CompleteCloseoutChecklistItemRequest>,
+) -> Result<Json<crate::models::CloseoutChecklistItem>, ApiError> {
+    can_write(&user)?;
+    let completed_by_user_id = if input.is_complete {
+        Some(user.user_id)
+    } else {
+        None
+    };
+    Ok(Json(
+        state
+            .repository
+            .set_closeout_checklist_item_completion(
+                item_id,
+                input.is_complete,
+                completed_by_user_id,
+            )
+            .await?,
+    ))
 }
 
 async fn create_dua(
@@ -927,16 +1175,17 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival · Phase 3 Wizard Shell</h1>
+      <h1>Virival · Phase 5 Wizard Shell</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> (<strong>{email}</strong>) with role <strong>{role}</strong>. Source: <strong>{auth_source}</strong>. Organization scope: <strong>{org_scope}</strong>.</p>
       <span class="chip">workflow-first architecture mode</span>
     </section>
     <section class="grid">
       <div class="card"><h3>1. Setup organization</h3><p>Create an organization via <code>POST /api/v1/organizations</code>.</p></div>
       <div class="card"><h3>2. Assign membership</h3><p>Use <code>POST /api/v1/admin/memberships</code> to persist org roles and then pass <code>x-virival-organization-id</code>.</p></div>
-      <div class="card"><h3>3. Launch study</h3><p>Create study, publish CRF template, and attach startup-ready site.</p></div>
-      <div class="card"><h3>4. Enroll & execute</h3><p>Enroll patient, create visit, submit/lock CRFs, track data queries.</p></div>
-      <div class="card"><h3>5. Govern lifecycle</h3><p>Use readiness + gated phase transitions to advance and close safely.</p></div>
+      <div class="card"><h3>3. Launch study</h3><p>Create study, publish CRF template versions, and attach startup-ready site.</p></div>
+      <div class="card"><h3>4. Schedule & execute</h3><p>Define visit schedule templates, enroll patients, and collect CRF submissions.</p></div>
+      <div class="card"><h3>5. Resolve queries</h3><p>Track data queries through open → responded → closed with threaded comments.</p></div>
+      <div class="card"><h3>6. Govern closeout</h3><p>Complete required closeout checklist items, clear open queries, then close with phase gates.</p></div>
     </section>
     <section class="api">
       <strong>Auth options</strong>
