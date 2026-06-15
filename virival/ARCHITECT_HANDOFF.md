@@ -30,10 +30,11 @@ Your mission is to evolve this into production-ready architecture while preservi
 
 ## Execution roadmap
 
-### Phase 4 - Identity and trust hardening
-- Replace tokeninfo-based OIDC verification with cached JWKS signature verification.
-- Add refreshable Google key cache and stricter token validation telemetry.
-- Expand audit log payload with resource identifiers and mutation diffs.
+### Phase 4 completed (identity + trust)
+- OIDC RS256 signature verification with cached Google JWKS is implemented.
+- Persisted memberships drive org-scoped role resolution.
+- Audit payload now carries action/resource metadata.
+- JWKS retrieval currently shells out to `curl`; replace with native async HTTP client when toolchain constraints are relaxed.
 
 ### Phase 5 - Study operations completeness
 - CRF field schema and versioning.

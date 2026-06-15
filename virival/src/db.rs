@@ -50,6 +50,12 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), ApiError> {
         include_str!("../migrations/0002_auth_audit.sql"),
     )
     .await?;
+    apply_migration(
+        &client,
+        "0003_audit_enrichment",
+        include_str!("../migrations/0003_audit_enrichment.sql"),
+    )
+    .await?;
     Ok(())
 }
 

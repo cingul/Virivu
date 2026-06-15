@@ -11,6 +11,7 @@ mod workflow;
 
 use config::Config;
 use db::{create_pool, run_migrations};
+use oidc::OidcVerifier;
 use repository::PgRepository;
 use state::AppState;
 use std::sync::Arc;
@@ -35,11 +36,16 @@ async fn main() {
         panic!("failed running migrations: {err}");
     }
     let repository = Arc::new(PgRepository::new(pool));
+    let oidc_verifier = Arc::new(OidcVerifier::new(
+        config.google_client_id.clone(),
+        config.google_workspace_domain.clone(),
+        config.google_jwks_url.clone(),
+        config.oidc_jwks_cache_seconds,
+    ));
     let state = AppState {
         repository,
+        oidc_verifier,
         allow_dev_auth_bypass: config.allow_dev_auth_bypass,
-        google_workspace_domain: config.google_workspace_domain.clone(),
-        google_client_id: config.google_client_id.clone(),
     };
     let app = routes::router(state, config.app_name.clone()).layer(TraceLayer::new_for_http());
 
@@ -59,6 +65,8 @@ async fn main() {
         database_url = %config.database_url,
         google_workspace_domain = ?config.google_workspace_domain,
         google_client_id_configured = config.google_client_id.is_some(),
+        google_jwks_url = ?config.google_jwks_url,
+        oidc_jwks_cache_seconds = config.oidc_jwks_cache_seconds,
         "starting Virival API server"
     );
     if config.allow_dev_auth_bypass {

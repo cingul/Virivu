@@ -8,6 +8,8 @@ pub struct Config {
     pub allow_dev_auth_bypass: bool,
     pub google_workspace_domain: Option<String>,
     pub google_client_id: Option<String>,
+    pub google_jwks_url: Option<String>,
+    pub oidc_jwks_cache_seconds: u64,
 }
 
 impl Config {
@@ -28,6 +30,14 @@ impl Config {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        let google_jwks_url = env::var("GOOGLE_JWKS_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let oidc_jwks_cache_seconds = env::var("OIDC_JWKS_CACHE_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(3600);
         Self {
             app_name,
             bind_address,
@@ -35,6 +45,8 @@ impl Config {
             allow_dev_auth_bypass,
             google_workspace_domain,
             google_client_id,
+            google_jwks_url,
+            oidc_jwks_cache_seconds,
         }
     }
 }

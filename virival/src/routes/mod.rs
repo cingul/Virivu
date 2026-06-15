@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Form, Path, Query, State},
     middleware::from_fn_with_state,
-    response::Html,
+    response::{Html, Redirect},
     routing::{get, post},
     Extension, Json, Router,
 };
 use chrono::Utc;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
@@ -27,6 +28,9 @@ pub fn router(state: AppState, app_name: String) -> Router {
     let protected_router = Router::new()
         .route("/", get(render_wizard_shell))
         .route("/ui", get(render_wizard_shell))
+        .route("/ui/admin/memberships", get(render_membership_admin))
+        .route("/ui/admin/memberships", post(submit_membership_admin))
+        .route("/ui/admin/audit", get(render_audit_console))
         .route(
             "/api/v1/organizations",
             get(list_organizations).post(create_organization),
@@ -72,6 +76,7 @@ pub fn router(state: AppState, app_name: String) -> Router {
             "/api/v1/admin/organizations/{organization_id}/memberships",
             get(list_organization_memberships),
         )
+        .route("/api/v1/admin/audit-logs", get(list_audit_logs))
         .route_layer(from_fn_with_state(state.clone(), require_auth))
         .with_state(state);
 
@@ -114,6 +119,35 @@ fn can_write(user: &AuthenticatedUser) -> Result<(), ApiError> {
 
 fn can_admin(user: &AuthenticatedUser) -> Result<(), ApiError> {
     require_any_role(user, &[AppRole::PlatformAdmin, AppRole::OrgAdmin])
+}
+
+fn can_platform_admin(user: &AuthenticatedUser) -> Result<(), ApiError> {
+    require_any_role(user, &[AppRole::PlatformAdmin])
+}
+
+#[derive(Debug, Deserialize)]
+struct MembershipAdminQuery {
+    organization_id: Option<Uuid>,
+    notice: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MembershipAdminForm {
+    organization_id: Uuid,
+    subject: String,
+    email: Option<String>,
+    display_name: Option<String>,
+    role: AppRole,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditConsoleQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditApiQuery {
+    limit: Option<i64>,
 }
 
 async fn create_membership(
@@ -159,6 +193,265 @@ async fn list_organization_memberships(
             .list_organization_memberships(organization_id)
             .await?,
     ))
+}
+
+async fn list_audit_logs(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(query): Query<AuditApiQuery>,
+) -> Result<Json<Vec<crate::models::AuditLogRecord>>, ApiError> {
+    can_platform_admin(&user)?;
+    let limit = query.limit.unwrap_or(50);
+    Ok(Json(state.repository.list_recent_audit_logs(limit).await?))
+}
+
+async fn render_membership_admin(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(query): Query<MembershipAdminQuery>,
+) -> Result<Html<String>, ApiError> {
+    can_platform_admin(&user)?;
+    let organizations = state.repository.list_organizations().await?;
+    let selected_org = query
+        .organization_id
+        .or_else(|| organizations.first().map(|org| org.id));
+    let memberships = if let Some(organization_id) = selected_org {
+        state
+            .repository
+            .list_organization_memberships(organization_id)
+            .await?
+    } else {
+        vec![]
+    };
+    let org_options = organizations
+        .iter()
+        .map(|org| {
+            let selected = if Some(org.id) == selected_org {
+                "selected"
+            } else {
+                ""
+            };
+            format!(
+                r#"<option value="{id}" {selected}>{name} ({slug})</option>"#,
+                id = org.id,
+                selected = selected,
+                name = escape_html(&org.name),
+                slug = escape_html(&org.workspace_slug)
+            )
+        })
+        .collect::<String>();
+    let membership_rows = if memberships.is_empty() {
+        r#"<tr><td colspan="4" style="padding:0.8rem;color:#475569;">No memberships yet for selected organization.</td></tr>"#.to_string()
+    } else {
+        memberships
+            .iter()
+            .map(|membership| {
+                format!(
+                    r#"<tr>
+  <td style="padding:0.55rem 0.5rem;">{user_id}</td>
+  <td style="padding:0.55rem 0.5rem;">{role}</td>
+  <td style="padding:0.55rem 0.5rem;">{created_at}</td>
+  <td style="padding:0.55rem 0.5rem;">{org_id}</td>
+</tr>"#,
+                    user_id = membership.user_id,
+                    role = membership.role.as_str(),
+                    created_at = membership.created_at,
+                    org_id = membership.organization_id,
+                )
+            })
+            .collect::<String>()
+    };
+    let selected_org_value = selected_org
+        .map(|org_id| org_id.to_string())
+        .unwrap_or_else(String::new);
+    let notice_html = query
+        .notice
+        .as_ref()
+        .map(|notice| {
+            format!(
+                r#"<div style="margin-bottom:0.65rem;padding:0.55rem 0.65rem;border:1px solid #c5b7ab;border-radius:8px;background:#fffaf0;color:#1e3a56;">{}</div>"#,
+                escape_html(notice)
+            )
+        })
+        .unwrap_or_default();
+
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Virival Membership Admin</title>
+<style>
+body {{ margin:0; font-family: Inter, Arial, sans-serif; background:#f7f4ee; color:#02182b; }}
+.page {{ max-width:1080px; margin:0 auto; padding:1rem; }}
+.card {{ background:white; border:1px solid #dbe3ea; border-radius:14px; padding:1rem; margin-bottom:0.9rem; }}
+label {{ display:block; font-weight:700; margin:0.45rem 0 0.2rem; }}
+input,select {{ width:min(100%,620px); padding:0.55rem; border-radius:10px; border:1px solid #cbd5e1; }}
+button {{ margin-top:0.6rem; background:#02182b; color:white; border:none; border-radius:10px; padding:0.55rem 0.9rem; font-weight:700; cursor:pointer; }}
+table {{ width:100%; border-collapse:collapse; }}
+th {{ text-align:left; border-bottom:1px solid #e2e8f0; padding:0.55rem 0.5rem; font-size:0.82rem; color:#334155; }}
+</style></head><body>
+<div class="page">
+  <div class="card">
+    <h1 style="margin:0;">Virival Membership Admin</h1>
+    <p style="margin:0.35rem 0 0;color:#35516e;">Persist org membership roles used by scoped RBAC resolution.</p>
+  </div>
+  <div class="card">
+    {notice_html}
+    <form method="post" action="/ui/admin/memberships">
+      <label>Organization</label>
+      <select name="organization_id" required>{org_options}</select>
+      <label>User subject</label>
+      <input name="subject" placeholder="user@cingulum.org" value="" required />
+      <label>Email (optional)</label>
+      <input name="email" placeholder="user@cingulum.org" />
+      <label>Display name (optional)</label>
+      <input name="display_name" placeholder="User Name" />
+      <label>Role</label>
+      <select name="role" required>
+        <option value="org_admin">org_admin</option>
+        <option value="site_coordinator">site_coordinator</option>
+        <option value="investigator">investigator</option>
+        <option value="analyst">analyst</option>
+        <option value="monitor">monitor</option>
+      </select>
+      <button type="submit">Upsert Membership</button>
+    </form>
+  </div>
+  <div class="card">
+    <h3 style="margin:0 0 0.5rem;">Selected organization memberships</h3>
+    <p style="margin:0 0 0.6rem;color:#4b5563;font-size:0.85rem;">Organization: <code>{selected_org_value}</code></p>
+    <table>
+      <thead><tr><th>User ID</th><th>Role</th><th>Created</th><th>Organization</th></tr></thead>
+      <tbody>{membership_rows}</tbody>
+    </table>
+  </div>
+  <div class="card"><a href="/ui" style="font-weight:700;color:#02182b;">← Back to workflow shell</a> &nbsp;|&nbsp; <a href="/ui/admin/audit" style="font-weight:700;color:#02182b;">Open audit console →</a></div>
+</div>
+</body></html>"#,
+        notice_html = notice_html,
+        org_options = org_options,
+        membership_rows = membership_rows,
+        selected_org_value = escape_html(&selected_org_value),
+    )))
+}
+
+async fn submit_membership_admin(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<MembershipAdminForm>,
+) -> Result<Redirect, ApiError> {
+    can_platform_admin(&user)?;
+    if form.subject.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "subject is required to create membership".to_string(),
+        ));
+    }
+    state
+        .repository
+        .get_organization(form.organization_id)
+        .await?;
+    let managed_user = state
+        .repository
+        .upsert_user(
+            form.subject.trim(),
+            form.email.as_deref(),
+            form.display_name.as_deref(),
+            AppRole::Investigator,
+        )
+        .await?;
+    state
+        .repository
+        .upsert_organization_membership(managed_user.id, form.organization_id, form.role)
+        .await?;
+    let notice = url_encode("Membership updated successfully");
+    Ok(Redirect::to(&format!(
+        "/ui/admin/memberships?organization_id={}&notice={}",
+        form.organization_id, notice
+    )))
+}
+
+async fn render_audit_console(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(query): Query<AuditConsoleQuery>,
+) -> Result<Html<String>, ApiError> {
+    can_platform_admin(&user)?;
+    let limit = query.limit.unwrap_or(50);
+    let audit_logs = state.repository.list_recent_audit_logs(limit).await?;
+    let rows_html = if audit_logs.is_empty() {
+        r#"<tr><td colspan="8" style="padding:0.8rem;color:#475569;">No audit events captured yet.</td></tr>"#.to_string()
+    } else {
+        audit_logs
+            .iter()
+            .map(|entry| {
+                format!(
+                    r#"<tr>
+  <td style="padding:0.45rem;">{time}</td>
+  <td style="padding:0.45rem;">{subject}</td>
+  <td style="padding:0.45rem;">{role}</td>
+  <td style="padding:0.45rem;">{method}</td>
+  <td style="padding:0.45rem;">{path}</td>
+  <td style="padding:0.45rem;">{action}</td>
+  <td style="padding:0.45rem;">{resource}</td>
+  <td style="padding:0.45rem;">{status}</td>
+</tr>"#,
+                    time = entry.happened_at,
+                    subject = escape_html(&entry.actor_subject),
+                    role = entry
+                        .actor_role
+                        .as_ref()
+                        .map(|role| role.as_str())
+                        .unwrap_or("-"),
+                    method = escape_html(&entry.method),
+                    path = escape_html(&entry.path),
+                    action = escape_html(entry.action.as_deref().unwrap_or("-")),
+                    resource = escape_html(
+                        &entry
+                            .resource_type
+                            .as_ref()
+                            .map(|rt| format!(
+                                "{}:{}",
+                                rt,
+                                entry
+                                    .resource_id
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| "-".to_string())
+                            ))
+                            .unwrap_or_else(|| "-".to_string()),
+                    ),
+                    status = entry.status_code,
+                )
+            })
+            .collect::<String>()
+    };
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Virival Audit Console</title>
+<style>
+body {{ margin:0; font-family: Inter, Arial, sans-serif; background:#f7f4ee; color:#02182b; }}
+.page {{ max-width:1220px; margin:0 auto; padding:1rem; }}
+.card {{ background:white; border:1px solid #dbe3ea; border-radius:14px; padding:1rem; margin-bottom:0.9rem; }}
+table {{ width:100%; border-collapse:collapse; font-size:0.82rem; }}
+th,td {{ border-bottom:1px solid #eef2f7; text-align:left; vertical-align:top; }}
+th {{ padding:0.55rem 0.45rem; color:#334155; }}
+</style></head><body>
+<div class="page">
+  <div class="card">
+    <h1 style="margin:0;">Virival Audit Console</h1>
+    <p style="margin:0.35rem 0 0;color:#35516e;">Showing last <strong>{limit}</strong> protected request events.</p>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Time</th><th>Actor</th><th>Role</th><th>Method</th><th>Path</th><th>Action</th><th>Resource</th><th>Status</th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>
+  <div class="card"><a href="/ui/admin/memberships" style="font-weight:700;color:#02182b;">← Membership admin</a> &nbsp;|&nbsp; <a href="/ui" style="font-weight:700;color:#02182b;">Workflow shell</a></div>
+</div>
+</body></html>"#,
+        limit = limit,
+        rows_html = rows_html
+    )))
 }
 
 async fn create_organization(
@@ -648,6 +941,7 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
     <section class="api">
       <strong>Auth options</strong>
       <p class="muted">Use Google OIDC bearer token in <code>Authorization: Bearer ...</code> or dev headers <code>x-virival-user</code>, <code>x-virival-role</code>, and optional <code>x-virival-organization-id</code>.</p>
+      <p class="muted" style="margin-top:0.4rem;"><a href="/ui/admin/memberships" style="font-weight:700;color:#02182b;">Membership admin →</a> &nbsp;|&nbsp; <a href="/ui/admin/audit" style="font-weight:700;color:#02182b;">Audit console →</a></p>
     </section>
   </div>
 </body>
@@ -666,4 +960,16 @@ fn escape_html(raw: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn url_encode(raw: &str) -> String {
+    raw.bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            b' ' => vec!['+'],
+            _ => format!("%{:02X}", byte).chars().collect::<Vec<_>>(),
+        })
+        .collect()
 }

@@ -11,7 +11,6 @@ use uuid::Uuid;
 use crate::{
     error::ApiError,
     models::{AppRole, AuthenticatedUser, NewAuditLogEntry},
-    oidc::verify_google_id_token,
     state::AppState,
 };
 
@@ -22,11 +21,16 @@ pub async fn require_auth(
 ) -> Response {
     let method = request.method().as_str().to_string();
     let path = request.uri().path().to_string();
+    let (action, resource_type, resource_id) = infer_audit_context(&method, &path);
 
     match authenticate_request(&state, request.headers()).await {
         Ok(user) => {
             request.extensions_mut().insert(user.clone());
             let response = next.run(request).await;
+            let metadata_json = serde_json::json!({
+                "auth_source": user.auth_source,
+                "organization_scope": user.organization_scope.map(|id| id.to_string()),
+            });
             if let Err(err) = state
                 .repository
                 .insert_audit_log(NewAuditLogEntry {
@@ -37,6 +41,10 @@ pub async fn require_auth(
                     auth_source: Some(user.auth_source.clone()),
                     method,
                     path,
+                    action,
+                    resource_type,
+                    resource_id,
+                    metadata_json: Some(metadata_json),
                     status_code: i32::from(response.status().as_u16()),
                 })
                 .await
@@ -56,12 +64,7 @@ async fn authenticate_request(
     let organization_scope = parse_org_scope(headers)?;
 
     if let Some(token) = extract_bearer_token(headers) {
-        let identity = verify_google_id_token(
-            &token,
-            state.google_client_id.as_deref(),
-            state.google_workspace_domain.as_deref(),
-        )
-        .await?;
+        let identity = state.oidc_verifier.verify_google_id_token(&token).await?;
         let user = state
             .repository
             .upsert_user(
@@ -215,4 +218,42 @@ pub fn require_any_role(user: &AuthenticatedUser, allowed: &[AppRole]) -> Result
             user.role.as_str()
         )))
     }
+}
+
+fn infer_audit_context(method: &str, path: &str) -> (Option<String>, Option<String>, Option<Uuid>) {
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let resource_id = segments
+        .iter()
+        .find_map(|segment| Uuid::parse_str(segment).ok());
+    let resource_type = if segments.len() >= 3 && segments[0] == "api" && segments[1] == "v1" {
+        if segments[2] == "admin" {
+            segments.get(3).map(|segment| (*segment).to_string())
+        } else {
+            Some(segments[2].to_string())
+        }
+    } else {
+        None
+    };
+    let action = if method.eq_ignore_ascii_case("GET") {
+        Some("read".to_string())
+    } else if path.ends_with("/phase") {
+        Some("phase_transition".to_string())
+    } else if path.ends_with("/publish") {
+        Some("publish".to_string())
+    } else if path.ends_with("/lock") {
+        Some("lock".to_string())
+    } else if path.ends_with("/close") {
+        Some("close".to_string())
+    } else if path.ends_with("/activate") {
+        Some("activate".to_string())
+    } else if method.eq_ignore_ascii_case("POST") {
+        Some("create_or_mutate".to_string())
+    } else {
+        Some(method.to_ascii_lowercase())
+    };
+
+    (action, resource_type, resource_id)
 }

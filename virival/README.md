@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 3 baseline)
+## Current scope (Phase 4 baseline)
 
 Virival now includes:
 
@@ -33,10 +33,10 @@ Virival now includes:
 - Study readiness summary
 - PostgreSQL-backed persistence with boot-time SQL migrations
 - Repository interface + PostgreSQL implementation (domain logic decoupled from handlers)
-- Auth/RBAC middleware with Google OIDC claims validation path + dev fallback
+- Auth/RBAC middleware with Google OIDC RS256 signature verification via cached JWKS + dev fallback
 - Persisted users + organization memberships (role assignments in DB)
-- Audit log trail for protected requests
-- First wizard UI shell at `/ui`
+- Enriched audit log trail (action, resource type/id, metadata JSON)
+- Wizard shell + membership admin UI + audit console UI
 
 ## Run locally
 
@@ -53,6 +53,8 @@ Defaults:
 - `ALLOW_DEV_AUTH_BYPASS=true`
 - `GOOGLE_WORKSPACE_DOMAIN=cingulum.org`
 - `GOOGLE_CLIENT_ID=` (set for strict audience validation)
+- `GOOGLE_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs`
+- `OIDC_JWKS_CACHE_SECONDS=3600`
 
 Health:
 
@@ -85,11 +87,21 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 - `POST /api/v1/studies/{study_id}/phase`
 - `POST /api/v1/admin/memberships`
 - `GET /api/v1/admin/organizations/{organization_id}/memberships`
+- `GET /api/v1/admin/audit-logs?limit=50`
+
+## Admin UI routes
+
+- `GET /ui`
+- `GET /ui/admin/memberships`
+- `POST /ui/admin/memberships`
+- `GET /ui/admin/audit`
 
 ## Auth / RBAC
 
 - Middleware protects `/ui` and all `/api/v1/*` routes.
-- Preferred path: Google OIDC `Authorization: Bearer <id_token>` with issuer/audience/expiry/domain claim checks.
+- Preferred path: Google OIDC `Authorization: Bearer <id_token>` with RS256 signature verification against Google JWKS.
+- JWKS are cached in-process and refreshed when cache is stale or key id is missing.
+- Current fetch path uses `curl` under the hood to retrieve Google JWKS endpoint data.
 - Dev default (if `ALLOW_DEV_AUTH_BYPASS=true`): automatic `platform_admin` identity when headers are missing.
 - Explicit headers for testing:
   - `x-virival-user: you@org.tld`

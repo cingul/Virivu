@@ -8,9 +8,9 @@ use crate::{
     db::DbPool,
     error::ApiError,
     models::{
-        AgreementStatus, AppRole, CrfSubmission, CrfTemplate, DataQuery, DuaAgreement,
-        NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus, Site, Study,
-        StudyPhase, StudyReadiness, SubmissionStatus, User, Visit, VisitStatus,
+        AgreementStatus, AppRole, AuditLogRecord, CrfSubmission, CrfTemplate, DataQuery,
+        DuaAgreement, NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus,
+        Site, Study, StudyPhase, StudyReadiness, SubmissionStatus, User, Visit, VisitStatus,
     },
 };
 
@@ -135,6 +135,7 @@ pub trait Repository: Send + Sync {
         organization_id: Uuid,
     ) -> Result<Option<AppRole>, ApiError>;
     async fn insert_audit_log(&self, entry: NewAuditLogEntry) -> Result<(), ApiError>;
+    async fn list_recent_audit_logs(&self, limit: i64) -> Result<Vec<AuditLogRecord>, ApiError>;
 }
 
 #[derive(Clone)]
@@ -856,9 +857,13 @@ impl Repository for PgRepository {
                     auth_source,
                     method,
                     path,
+                    action,
+                    resource_type,
+                    resource_id,
+                    metadata_json,
                     status_code,
                     happened_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())",
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())",
                 &[
                     &Uuid::new_v4(),
                     &entry.actor_user_id,
@@ -868,12 +873,46 @@ impl Repository for PgRepository {
                     &entry.auth_source,
                     &entry.method,
                     &entry.path,
+                    &entry.action,
+                    &entry.resource_type,
+                    &entry.resource_id,
+                    &entry.metadata_json,
                     &entry.status_code,
                 ],
             )
             .await
             .map_err(map_write_err)?;
         Ok(())
+    }
+
+    async fn list_recent_audit_logs(&self, limit: i64) -> Result<Vec<AuditLogRecord>, ApiError> {
+        let client = self.client().await?;
+        let safe_limit = if limit <= 0 { 20 } else { limit.min(200) };
+        let rows = client
+            .query(
+                "SELECT
+                    id,
+                    actor_user_id,
+                    actor_subject,
+                    actor_role,
+                    actor_email,
+                    auth_source,
+                    method,
+                    path,
+                    action,
+                    resource_type,
+                    resource_id,
+                    metadata_json,
+                    status_code,
+                    happened_at
+                 FROM audit_logs
+                 ORDER BY happened_at DESC
+                 LIMIT $1",
+                &[&safe_limit],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_audit_log).collect()
     }
 }
 
@@ -1023,5 +1062,29 @@ fn map_membership(row: &Row) -> Result<OrganizationMembership, ApiError> {
         organization_id: row.get("organization_id"),
         role,
         created_at: row.get("created_at"),
+    })
+}
+
+fn map_audit_log(row: &Row) -> Result<AuditLogRecord, ApiError> {
+    let actor_role = row
+        .get::<_, Option<&str>>("actor_role")
+        .map(AppRole::from_str)
+        .transpose()
+        .map_err(|err| ApiError::Internal(format!("invalid actor role in audit log: {err}")))?;
+    Ok(AuditLogRecord {
+        id: row.get("id"),
+        actor_user_id: row.get("actor_user_id"),
+        actor_subject: row.get("actor_subject"),
+        actor_role,
+        actor_email: row.get("actor_email"),
+        auth_source: row.get("auth_source"),
+        method: row.get("method"),
+        path: row.get("path"),
+        action: row.get("action"),
+        resource_type: row.get("resource_type"),
+        resource_id: row.get("resource_id"),
+        metadata_json: row.get("metadata_json"),
+        status_code: row.get("status_code"),
+        happened_at: row.get("happened_at"),
     })
 }

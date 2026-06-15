@@ -343,7 +343,29 @@ pub struct NewAuditLogEntry {
     pub auth_source: Option<String>,
     pub method: String,
     pub path: String,
+    pub action: Option<String>,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<Uuid>,
+    pub metadata_json: Option<serde_json::Value>,
     pub status_code: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogRecord {
+    pub id: Uuid,
+    pub actor_user_id: Option<Uuid>,
+    pub actor_subject: String,
+    pub actor_role: Option<AppRole>,
+    pub actor_email: Option<String>,
+    pub auth_source: Option<String>,
+    pub method: String,
+    pub path: String,
+    pub action: Option<String>,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<Uuid>,
+    pub metadata_json: Option<serde_json::Value>,
+    pub status_code: i32,
+    pub happened_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
