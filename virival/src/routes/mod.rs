@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -18,7 +18,7 @@ use crate::{
         CreateCrfTemplateVersionRequest, CreateDataQueryCommentRequest, CreateDataQueryRequest,
         CreateDuaRequest, CreateMembershipRequest, CreateOrganizationRequest, CreateSiteRequest,
         CreateStudyRequest, CreateVisitRequest, CreateVisitScheduleTemplateRequest, HealthResponse,
-        MarkSiteStartupRequest, RespondDataQueryRequest, StudyReadiness,
+        MarkSiteStartupRequest, RespondDataQueryRequest, StudyPhase, StudyReadiness,
         TransitionStudyPhaseRequest,
     },
     state::AppState,
@@ -31,6 +31,37 @@ pub fn router(state: AppState, app_name: String) -> Router {
     let protected_router = Router::new()
         .route("/", get(render_wizard_shell))
         .route("/ui", get(render_wizard_shell))
+        .route("/ui/workbench", get(render_workbench))
+        .route(
+            "/ui/workbench/organizations",
+            post(submit_workbench_organization),
+        )
+        .route("/ui/workbench/studies", post(submit_workbench_study))
+        .route("/ui/workbench/sites", post(submit_workbench_site))
+        .route("/ui/workbench/duas", post(submit_workbench_dua))
+        .route(
+            "/ui/workbench/crf-design",
+            post(submit_workbench_crf_design),
+        )
+        .route(
+            "/ui/workbench/visit-schedules",
+            post(submit_workbench_visit_schedule),
+        )
+        .route("/ui/workbench/patients", post(submit_workbench_patient))
+        .route("/ui/workbench/visits", post(submit_workbench_visit))
+        .route(
+            "/ui/workbench/submissions",
+            post(submit_workbench_submission),
+        )
+        .route("/ui/workbench/queries", post(submit_workbench_query))
+        .route(
+            "/ui/workbench/closeout-items",
+            post(submit_workbench_closeout_item),
+        )
+        .route(
+            "/ui/workbench/studies/{study_id}/phase",
+            post(submit_workbench_phase_transition),
+        )
         .route("/ui/admin/memberships", get(render_membership_admin))
         .route("/ui/admin/memberships", post(submit_membership_admin))
         .route("/ui/admin/audit", get(render_audit_console))
@@ -179,6 +210,109 @@ struct AuditConsoleQuery {
 #[derive(Debug, Deserialize)]
 struct AuditApiQuery {
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchQuery {
+    organization_id: Option<Uuid>,
+    study_id: Option<Uuid>,
+    tab: Option<String>,
+    notice: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchOrganizationForm {
+    name: String,
+    workspace_slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchStudyForm {
+    organization_id: Uuid,
+    short_code: String,
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchSiteForm {
+    organization_id: Uuid,
+    study_id: Uuid,
+    name: String,
+    principal_investigator: String,
+    startup_complete: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchDuaForm {
+    organization_id: Uuid,
+    counterparty: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchCrfDesignForm {
+    study_id: Uuid,
+    template_name: String,
+    schema_json: String,
+    publish_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchVisitScheduleForm {
+    study_id: Uuid,
+    name: String,
+    day_offset: i32,
+    window_before_days: i32,
+    window_after_days: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchPatientForm {
+    organization_id: Uuid,
+    study_id: Uuid,
+    site_id: Option<Uuid>,
+    external_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchVisitForm {
+    study_id: Uuid,
+    patient_id: Uuid,
+    visit_name: String,
+    scheduled_for: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchSubmissionForm {
+    study_id: Uuid,
+    patient_id: Uuid,
+    visit_id: Uuid,
+    template_id: Uuid,
+    lock_submission: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchQueryForm {
+    study_id: Uuid,
+    action: String,
+    submission_id: Option<Uuid>,
+    summary: Option<String>,
+    query_id: Option<Uuid>,
+    comment_text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchCloseoutItemForm {
+    study_id: Uuid,
+    action: String,
+    item_key: Option<String>,
+    item_label: Option<String>,
+    is_required: Option<String>,
+    item_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchPhaseTransitionForm {
+    phase: StudyPhase,
 }
 
 async fn create_membership(
@@ -1092,6 +1226,1099 @@ async fn activate_dua(
     Ok(Json(state.repository.activate_dua(dua_id).await?))
 }
 
+fn workbench_tab(raw: Option<&str>) -> String {
+    match raw.unwrap_or("setup") {
+        "setup" | "design" | "execute" | "monitor" | "close" | "analytics" => {
+            raw.unwrap_or("setup").to_string()
+        }
+        _ => "setup".to_string(),
+    }
+}
+
+fn workbench_href(
+    organization_id: Option<Uuid>,
+    study_id: Option<Uuid>,
+    tab: &str,
+    notice: Option<&str>,
+) -> String {
+    let mut query = Vec::new();
+    if let Some(org_id) = organization_id {
+        query.push(format!("organization_id={org_id}"));
+    }
+    if let Some(study_id) = study_id {
+        query.push(format!("study_id={study_id}"));
+    }
+    query.push(format!("tab={}", url_encode(tab)));
+    if let Some(notice) = notice {
+        query.push(format!("notice={}", url_encode(notice)));
+    }
+    format!("/ui/workbench?{}", query.join("&"))
+}
+
+fn phase_to_tab(phase: &StudyPhase) -> &'static str {
+    match phase {
+        StudyPhase::PreStudy | StudyPhase::Initiation => "setup",
+        StudyPhase::Active => "execute",
+        StudyPhase::Monitoring => "monitor",
+        StudyPhase::Closed => "close",
+    }
+}
+
+async fn submit_workbench_organization(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchOrganizationForm>,
+) -> Result<Redirect, ApiError> {
+    can_admin(&user)?;
+    if form.name.trim().is_empty() || form.workspace_slug.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "name and workspace_slug are required".to_string(),
+        ));
+    }
+    let organization = state
+        .repository
+        .create_organization(form.name.trim(), form.workspace_slug.trim())
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(organization.id),
+        None,
+        "setup",
+        Some("Organization created"),
+    )))
+}
+
+async fn submit_workbench_study(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchStudyForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.short_code.trim().is_empty() || form.title.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "short_code and title are required".to_string(),
+        ));
+    }
+    let study = state
+        .repository
+        .create_study(
+            form.organization_id,
+            form.short_code.trim(),
+            form.title.trim(),
+        )
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(form.organization_id),
+        Some(study.id),
+        "setup",
+        Some("Study created"),
+    )))
+}
+
+async fn submit_workbench_site(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchSiteForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.name.trim().is_empty() || form.principal_investigator.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "site name and principal investigator are required".to_string(),
+        ));
+    }
+    let site = state
+        .repository
+        .create_site(
+            form.organization_id,
+            Some(form.study_id),
+            form.name.trim(),
+            form.principal_investigator.trim(),
+        )
+        .await?;
+    if form.startup_complete.is_some() {
+        state.repository.set_site_startup(site.id, true).await?;
+    }
+    Ok(Redirect::to(&workbench_href(
+        Some(form.organization_id),
+        Some(form.study_id),
+        "setup",
+        Some("Site saved"),
+    )))
+}
+
+async fn submit_workbench_dua(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchDuaForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.counterparty.trim().is_empty() {
+        return Err(ApiError::BadRequest("counterparty is required".to_string()));
+    }
+    let dua = state
+        .repository
+        .create_dua(form.organization_id, form.counterparty.trim())
+        .await?;
+    state.repository.activate_dua(dua.id).await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(form.organization_id),
+        None,
+        "setup",
+        Some("DUA activated"),
+    )))
+}
+
+async fn submit_workbench_crf_design(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchCrfDesignForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.template_name.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "template_name is required".to_string(),
+        ));
+    }
+    let schema_json: serde_json::Value = serde_json::from_str(form.schema_json.trim())
+        .map_err(|err| ApiError::BadRequest(format!("invalid schema_json: {err}")))?;
+    let template = state
+        .repository
+        .create_crf_template(form.study_id, form.template_name.trim())
+        .await?;
+    let version = state
+        .repository
+        .create_crf_template_version(template.id, &schema_json)
+        .await?;
+    if form.publish_version.is_some() {
+        state
+            .repository
+            .publish_crf_template_version(version.id)
+            .await?;
+    }
+    Ok(Redirect::to(&workbench_href(
+        None,
+        Some(form.study_id),
+        "design",
+        Some("CRF template version saved"),
+    )))
+}
+
+async fn submit_workbench_visit_schedule(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchVisitScheduleForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.name.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "schedule name is required".to_string(),
+        ));
+    }
+    if form.window_before_days < 0 || form.window_after_days < 0 {
+        return Err(ApiError::BadRequest(
+            "visit windows cannot be negative".to_string(),
+        ));
+    }
+    state
+        .repository
+        .create_visit_schedule_template(
+            form.study_id,
+            form.name.trim(),
+            form.day_offset,
+            form.window_before_days,
+            form.window_after_days,
+        )
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        None,
+        Some(form.study_id),
+        "design",
+        Some("Visit schedule template saved"),
+    )))
+}
+
+async fn submit_workbench_patient(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchPatientForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.external_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("external_id is required".to_string()));
+    }
+    state
+        .repository
+        .create_patient(
+            form.organization_id,
+            form.study_id,
+            form.site_id,
+            form.external_id.trim(),
+        )
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(form.organization_id),
+        Some(form.study_id),
+        "execute",
+        Some("Patient enrolled"),
+    )))
+}
+
+async fn submit_workbench_visit(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchVisitForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.visit_name.trim().is_empty() {
+        return Err(ApiError::BadRequest("visit_name is required".to_string()));
+    }
+    let scheduled_for = DateTime::parse_from_rfc3339(form.scheduled_for.trim())
+        .map_err(|err| ApiError::BadRequest(format!("scheduled_for must be RFC3339: {err}")))?
+        .with_timezone(&Utc);
+    state
+        .repository
+        .create_visit(
+            form.study_id,
+            form.patient_id,
+            form.visit_name.trim(),
+            scheduled_for,
+        )
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        None,
+        Some(form.study_id),
+        "execute",
+        Some("Visit created"),
+    )))
+}
+
+async fn submit_workbench_submission(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchSubmissionForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    let submission = state
+        .repository
+        .create_crf_submission(
+            form.study_id,
+            form.patient_id,
+            form.visit_id,
+            form.template_id,
+        )
+        .await?;
+    if form.lock_submission.is_some() {
+        state.repository.lock_crf_submission(submission.id).await?;
+    }
+    Ok(Redirect::to(&workbench_href(
+        None,
+        Some(form.study_id),
+        "execute",
+        Some("CRF submission recorded"),
+    )))
+}
+
+async fn submit_workbench_query(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchQueryForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    match form.action.as_str() {
+        "create" => {
+            let submission_id = form
+                .submission_id
+                .ok_or_else(|| ApiError::BadRequest("submission_id is required".to_string()))?;
+            let summary = form
+                .summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ApiError::BadRequest("summary is required".to_string()))?;
+            state
+                .repository
+                .create_data_query(form.study_id, submission_id, summary)
+                .await?;
+        }
+        "respond" => {
+            let query_id = form
+                .query_id
+                .ok_or_else(|| ApiError::BadRequest("query_id is required".to_string()))?;
+            state.repository.respond_data_query(query_id).await?;
+            if let Some(comment_text) = form.comment_text.as_deref() {
+                let trimmed = comment_text.trim();
+                if !trimmed.is_empty() {
+                    state
+                        .repository
+                        .create_data_query_comment(query_id, Some(user.user_id), trimmed)
+                        .await?;
+                }
+            }
+        }
+        "close" => {
+            let query_id = form
+                .query_id
+                .ok_or_else(|| ApiError::BadRequest("query_id is required".to_string()))?;
+            state.repository.close_data_query(query_id).await?;
+        }
+        _ => {
+            return Err(ApiError::BadRequest("unknown query action".to_string()));
+        }
+    }
+    Ok(Redirect::to(&workbench_href(
+        None,
+        Some(form.study_id),
+        "monitor",
+        Some("Query workflow updated"),
+    )))
+}
+
+async fn submit_workbench_closeout_item(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchCloseoutItemForm>,
+) -> Result<Redirect, ApiError> {
+    match form.action.as_str() {
+        "create" => {
+            can_admin(&user)?;
+            let item_key = form
+                .item_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ApiError::BadRequest("item_key is required".to_string()))?;
+            let item_label = form
+                .item_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ApiError::BadRequest("item_label is required".to_string()))?;
+            state
+                .repository
+                .create_closeout_checklist_item(
+                    form.study_id,
+                    item_key,
+                    item_label,
+                    form.is_required.is_some(),
+                )
+                .await?;
+        }
+        "complete" => {
+            can_write(&user)?;
+            let item_id = form
+                .item_id
+                .ok_or_else(|| ApiError::BadRequest("item_id is required".to_string()))?;
+            state
+                .repository
+                .set_closeout_checklist_item_completion(item_id, true, Some(user.user_id))
+                .await?;
+        }
+        _ => {
+            return Err(ApiError::BadRequest("unknown closeout action".to_string()));
+        }
+    }
+    Ok(Redirect::to(&workbench_href(
+        None,
+        Some(form.study_id),
+        "close",
+        Some("Closeout checklist updated"),
+    )))
+}
+
+async fn submit_workbench_phase_transition(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(study_id): Path<Uuid>,
+    Form(form): Form<WorkbenchPhaseTransitionForm>,
+) -> Result<Redirect, ApiError> {
+    can_admin(&user)?;
+    let current = state.repository.get_study(study_id).await?;
+    let readiness = state.repository.compute_readiness(study_id).await?;
+    validate_phase_transition(&current.phase, &form.phase, &readiness)?;
+    state
+        .repository
+        .update_study_phase(study_id, form.phase.clone())
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(current.organization_id),
+        Some(study_id),
+        phase_to_tab(&form.phase),
+        Some("Study phase updated"),
+    )))
+}
+
+async fn render_workbench(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(query): Query<WorkbenchQuery>,
+) -> Result<Html<String>, ApiError> {
+    can_read(&user)?;
+    let active_tab = workbench_tab(query.tab.as_deref());
+    let organizations = state.repository.list_organizations().await?;
+    let all_studies = state.repository.list_studies().await?;
+    let all_sites = state.repository.list_sites().await?;
+    let all_patients = state.repository.list_patients().await?;
+    let all_visits = state.repository.list_visits().await?;
+    let all_templates = state.repository.list_crf_templates().await?;
+    let all_submissions = state.repository.list_crf_submissions().await?;
+    let all_queries = state.repository.list_data_queries().await?;
+
+    let selected_org = query
+        .organization_id
+        .filter(|org_id| organizations.iter().any(|org| org.id == *org_id))
+        .or_else(|| organizations.first().map(|org| org.id));
+    let studies_for_org = all_studies
+        .iter()
+        .filter(|study| Some(study.organization_id) == selected_org)
+        .cloned()
+        .collect::<Vec<_>>();
+    let selected_study = query
+        .study_id
+        .filter(|study_id| studies_for_org.iter().any(|study| study.id == *study_id))
+        .or_else(|| studies_for_org.first().map(|study| study.id));
+
+    let study_sites = all_sites
+        .iter()
+        .filter(|site| site.study_id == selected_study)
+        .cloned()
+        .collect::<Vec<_>>();
+    let study_patients = all_patients
+        .iter()
+        .filter(|patient| Some(patient.study_id) == selected_study)
+        .cloned()
+        .collect::<Vec<_>>();
+    let study_visits = all_visits
+        .iter()
+        .filter(|visit| Some(visit.study_id) == selected_study)
+        .cloned()
+        .collect::<Vec<_>>();
+    let study_templates = all_templates
+        .iter()
+        .filter(|template| Some(template.study_id) == selected_study)
+        .cloned()
+        .collect::<Vec<_>>();
+    let study_submissions = all_submissions
+        .iter()
+        .filter(|submission| Some(submission.study_id) == selected_study)
+        .cloned()
+        .collect::<Vec<_>>();
+    let study_queries = all_queries
+        .iter()
+        .filter(|query_entry| Some(query_entry.study_id) == selected_study)
+        .cloned()
+        .collect::<Vec<_>>();
+    let visit_schedule_templates = if let Some(study_id) = selected_study {
+        state
+            .repository
+            .list_visit_schedule_templates(study_id)
+            .await?
+    } else {
+        vec![]
+    };
+    let closeout_items = if let Some(study_id) = selected_study {
+        state
+            .repository
+            .list_closeout_checklist_items(study_id)
+            .await?
+    } else {
+        vec![]
+    };
+    let mut template_versions = Vec::new();
+    for template in &study_templates {
+        let mut versions = state
+            .repository
+            .list_crf_template_versions(template.id)
+            .await?;
+        template_versions.append(&mut versions);
+    }
+    let readiness = if let Some(study_id) = selected_study {
+        Some(state.repository.compute_readiness(study_id).await?)
+    } else {
+        None
+    };
+
+    let setup_complete = readiness
+        .as_ref()
+        .map(|value| value.has_site && value.has_active_dua)
+        .unwrap_or(false);
+    let design_complete = readiness
+        .as_ref()
+        .map(|value| value.has_published_crf && !visit_schedule_templates.is_empty())
+        .unwrap_or(false);
+    let execute_complete = readiness
+        .as_ref()
+        .map(|value| value.has_enrolled_patient && value.has_locked_submission)
+        .unwrap_or(false);
+    let monitor_complete = readiness
+        .as_ref()
+        .map(|value| value.open_query_count == 0)
+        .unwrap_or(false);
+    let close_ready = readiness
+        .as_ref()
+        .map(|value| value.pending_closeout_items == 0 && value.open_query_count == 0)
+        .unwrap_or(false);
+
+    let org_options = organizations
+        .iter()
+        .map(|org| {
+            let selected_attr = if Some(org.id) == selected_org {
+                "selected"
+            } else {
+                ""
+            };
+            format!(
+                r#"<option value="{id}" {selected}>{name} ({slug})</option>"#,
+                id = org.id,
+                selected = selected_attr,
+                name = escape_html(&org.name),
+                slug = escape_html(&org.workspace_slug)
+            )
+        })
+        .collect::<String>();
+    let study_options = studies_for_org
+        .iter()
+        .map(|study| {
+            let selected_attr = if Some(study.id) == selected_study {
+                "selected"
+            } else {
+                ""
+            };
+            format!(
+                r#"<option value="{id}" {selected}>{code} · {title}</option>"#,
+                id = study.id,
+                selected = selected_attr,
+                code = escape_html(&study.short_code),
+                title = escape_html(&study.title),
+            )
+        })
+        .collect::<String>();
+    let study_select_options = studies_for_org
+        .iter()
+        .map(|study| {
+            format!(
+                r#"<option value="{id}">{code} · {title}</option>"#,
+                id = study.id,
+                code = escape_html(&study.short_code),
+                title = escape_html(&study.title),
+            )
+        })
+        .collect::<String>();
+    let site_options = study_sites
+        .iter()
+        .map(|site| {
+            format!(
+                r#"<option value="{id}">{name}</option>"#,
+                id = site.id,
+                name = escape_html(&site.name)
+            )
+        })
+        .collect::<String>();
+    let patient_options = study_patients
+        .iter()
+        .map(|patient| {
+            format!(
+                r#"<option value="{id}">{external_id}</option>"#,
+                id = patient.id,
+                external_id = escape_html(&patient.external_id)
+            )
+        })
+        .collect::<String>();
+    let visit_options = study_visits
+        .iter()
+        .map(|visit| {
+            format!(
+                r#"<option value="{id}">{name} ({status})</option>"#,
+                id = visit.id,
+                name = escape_html(&visit.visit_name),
+                status = visit.status.as_db()
+            )
+        })
+        .collect::<String>();
+    let template_options = study_templates
+        .iter()
+        .map(|template| {
+            format!(
+                r#"<option value="{id}">{name}</option>"#,
+                id = template.id,
+                name = escape_html(&template.name)
+            )
+        })
+        .collect::<String>();
+    let submission_options = study_submissions
+        .iter()
+        .map(|submission| {
+            format!(
+                r#"<option value="{id}">{id} ({status})</option>"#,
+                id = submission.id,
+                status = submission.status.as_db()
+            )
+        })
+        .collect::<String>();
+    let query_options = study_queries
+        .iter()
+        .filter(|query_entry| query_entry.status.as_db() != "closed")
+        .map(|query_entry| {
+            format!(
+                r#"<option value="{id}">{summary} ({status})</option>"#,
+                id = query_entry.id,
+                summary = escape_html(&query_entry.summary),
+                status = query_entry.status.as_db()
+            )
+        })
+        .collect::<String>();
+    let incomplete_closeout_options = closeout_items
+        .iter()
+        .filter(|item| !item.is_complete)
+        .map(|item| {
+            format!(
+                r#"<option value="{id}">{label}</option>"#,
+                id = item.id,
+                label = escape_html(&item.item_label)
+            )
+        })
+        .collect::<String>();
+
+    let required_closeout_total = closeout_items
+        .iter()
+        .filter(|item| item.is_required)
+        .count();
+    let required_closeout_complete = closeout_items
+        .iter()
+        .filter(|item| item.is_required && item.is_complete)
+        .count();
+    let closeout_percent = if required_closeout_total == 0 {
+        100
+    } else {
+        (required_closeout_complete * 100) / required_closeout_total
+    };
+    let open_queries = study_queries
+        .iter()
+        .filter(|query_entry| query_entry.status.as_db() == "open")
+        .count();
+    let responded_queries = study_queries
+        .iter()
+        .filter(|query_entry| query_entry.status.as_db() == "responded")
+        .count();
+    let closed_queries = study_queries
+        .iter()
+        .filter(|query_entry| query_entry.status.as_db() == "closed")
+        .count();
+    let locked_submissions = study_submissions
+        .iter()
+        .filter(|submission| submission.status.as_db() == "locked")
+        .count();
+
+    let notice_html = query
+        .notice
+        .as_ref()
+        .map(|notice| format!(r#"<div class="notice">{}</div>"#, escape_html(notice)))
+        .unwrap_or_default();
+    let guidance = readiness
+        .as_ref()
+        .map(|value| escape_html(&value.next_recommended_action))
+        .unwrap_or_else(|| "Create an organization to start the wizard.".to_string());
+    let selected_org_value = selected_org
+        .map(|org_id| org_id.to_string())
+        .unwrap_or_else(String::new);
+    let selected_study_value = selected_study
+        .map(|study_id| study_id.to_string())
+        .unwrap_or_else(String::new);
+    let tab_links = [
+        "setup",
+        "design",
+        "execute",
+        "monitor",
+        "close",
+        "analytics",
+    ]
+    .iter()
+    .map(|tab| {
+        let active_class = if active_tab == *tab { "active" } else { "" };
+        let label = match *tab {
+            "setup" => "Setup",
+            "design" => "Design",
+            "execute" => "Execute",
+            "monitor" => "Monitor",
+            "close" => "Closeout",
+            "analytics" => "Analytics",
+            _ => *tab,
+        };
+        format!(
+            r#"<a class="tab {active_class}" href="{href}">{label}</a>"#,
+            active_class = active_class,
+            href = workbench_href(selected_org, selected_study, tab, None),
+            label = label,
+        )
+    })
+    .collect::<String>();
+
+    let stage_cards = format!(
+        r#"<section class="stage-grid">
+  <div class="stage-card {setup_class}"><strong>1. Setup</strong><p>Org, study, site startup, and active DUA.</p></div>
+  <div class="stage-card {design_class}"><strong>2. Design</strong><p>Versioned CRF schema + visit schedule templates.</p></div>
+  <div class="stage-card {execute_class}"><strong>3. Execute</strong><p>Enroll patients, schedule visits, capture CRFs.</p></div>
+  <div class="stage-card {monitor_class}"><strong>4. Monitor</strong><p>Run open → responded → closed query workflow.</p></div>
+  <div class="stage-card {close_class}"><strong>5. Closeout</strong><p>Complete required checklist and close safely.</p></div>
+</section>"#,
+        setup_class = if setup_complete { "complete" } else { "" },
+        design_class = if design_complete { "complete" } else { "" },
+        execute_class = if execute_complete { "complete" } else { "" },
+        monitor_class = if monitor_complete { "complete" } else { "" },
+        close_class = if close_ready { "complete" } else { "" },
+    );
+
+    let selected_study_phase = studies_for_org
+        .iter()
+        .find(|study| Some(study.id) == selected_study)
+        .map(|study| study.phase.as_db().to_string())
+        .unwrap_or_else(|| "not selected".to_string());
+
+    let tab_content = match active_tab.as_str() {
+        "setup" => format!(
+            r#"<section class="panel-grid">
+  <article class="panel">
+    <h3>Create organization</h3>
+    <form method="post" action="/ui/workbench/organizations">
+      <label>Name</label><input name="name" placeholder="Cingulum Foundation Inc" required />
+      <label>Workspace slug</label><input name="workspace_slug" placeholder="cingulum-foundation" required />
+      <button type="submit">Create organization</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Create study</h3>
+    <form method="post" action="/ui/workbench/studies">
+      <label>Organization</label><select name="organization_id" required>{org_options}</select>
+      <label>Short code</label><input name="short_code" placeholder="ALS-001" required />
+      <label>Title</label><input name="title" placeholder="ALS Longitudinal Study" required />
+      <button type="submit">Create study</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Attach site and mark startup</h3>
+    <form method="post" action="/ui/workbench/sites">
+      <label>Organization</label><select name="organization_id" required>{org_options}</select>
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Site name</label><input name="name" placeholder="Wyckoff Heights Medical Center" required />
+      <label>Principal investigator</label><input name="principal_investigator" placeholder="Dr. Example" required />
+      <label class="checkbox"><input type="checkbox" name="startup_complete" /> Mark startup complete now</label>
+      <button type="submit">Save site</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Create + activate DUA</h3>
+    <form method="post" action="/ui/workbench/duas">
+      <label>Organization</label><select name="organization_id" required>{org_options}</select>
+      <label>Counterparty</label><input name="counterparty" placeholder="Hospital Partner" required />
+      <button type="submit">Create and activate DUA</button>
+    </form>
+    <p class="muted">Current study phase: <strong>{selected_study_phase}</strong></p>
+  </article>
+</section>"#,
+            org_options = org_options.as_str(),
+            study_select_options = study_select_options.as_str(),
+            selected_study_phase = escape_html(&selected_study_phase)
+        ),
+        "design" => format!(
+            r#"<section class="panel-grid">
+  <article class="panel">
+    <h3>CRF template + schema version</h3>
+    <form method="post" action="/ui/workbench/crf-design">
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Template name</label><input name="template_name" placeholder="Baseline Vitals" required />
+      <label>Schema JSON</label>
+      <textarea name="schema_json" rows="6" required>{{"fields":[{{"key":"bp_systolic","type":"number","required":true}}]}}</textarea>
+      <label class="checkbox"><input type="checkbox" name="publish_version" /> Publish this version now</label>
+      <button type="submit">Save template version</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Visit schedule template</h3>
+    <form method="post" action="/ui/workbench/visit-schedules">
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Name</label><input name="name" placeholder="Baseline" required />
+      <label>Day offset</label><input name="day_offset" type="number" value="0" required />
+      <label>Window before (days)</label><input name="window_before_days" type="number" value="2" required />
+      <label>Window after (days)</label><input name="window_after_days" type="number" value="3" required />
+      <button type="submit">Add visit schedule</button>
+    </form>
+  </article>
+  <article class="panel full">
+    <h3>Design inventory</h3>
+    <p class="muted">Templates: <strong>{template_count}</strong> · Versions: <strong>{version_count}</strong> · Visit schedules: <strong>{schedule_count}</strong></p>
+    <div class="table-wrap">
+      <table><thead><tr><th>Template</th><th>Version</th><th>Published</th></tr></thead><tbody>{version_rows}</tbody></table>
+    </div>
+  </article>
+</section>"#,
+            study_select_options = study_select_options.as_str(),
+            template_count = study_templates.len(),
+            version_count = template_versions.len(),
+            schedule_count = visit_schedule_templates.len(),
+            version_rows = if template_versions.is_empty() {
+                r#"<tr><td colspan="3">No template versions yet.</td></tr>"#.to_string()
+            } else {
+                template_versions
+                    .iter()
+                    .map(|version| {
+                        let template_name = study_templates
+                            .iter()
+                            .find(|template| template.id == version.template_id)
+                            .map(|template| escape_html(&template.name))
+                            .unwrap_or_else(|| version.template_id.to_string());
+                        format!(
+                            r#"<tr><td>{template_name}</td><td>v{version_number}</td><td>{published}</td></tr>"#,
+                            template_name = template_name,
+                            version_number = version.version_number,
+                            published = if version.is_published { "yes" } else { "no" }
+                        )
+                    })
+                    .collect::<String>()
+            }
+        ),
+        "execute" => format!(
+            r#"<section class="panel-grid">
+  <article class="panel">
+    <h3>Enroll patient</h3>
+    <form method="post" action="/ui/workbench/patients">
+      <label>Organization</label><select name="organization_id" required>{org_options}</select>
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Site (optional)</label><select name="site_id"><option value="">No site</option>{site_options}</select>
+      <label>Patient external ID</label><input name="external_id" placeholder="PT-0001" required />
+      <button type="submit">Enroll patient</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Create visit</h3>
+    <form method="post" action="/ui/workbench/visits">
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Patient</label><select name="patient_id" required>{patient_options}</select>
+      <label>Visit name</label><input name="visit_name" placeholder="Baseline" required />
+      <label>Scheduled for (RFC3339)</label><input name="scheduled_for" placeholder="2026-06-16T00:00:00Z" required />
+      <button type="submit">Create visit</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Capture CRF submission</h3>
+    <form method="post" action="/ui/workbench/submissions">
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Patient</label><select name="patient_id" required>{patient_options}</select>
+      <label>Visit</label><select name="visit_id" required>{visit_options}</select>
+      <label>Template</label><select name="template_id" required>{template_options}</select>
+      <label class="checkbox"><input type="checkbox" name="lock_submission" /> Lock immediately after capture</label>
+      <button type="submit">Save submission</button>
+    </form>
+  </article>
+</section>"#,
+            org_options = org_options.as_str(),
+            study_select_options = study_select_options.as_str(),
+            site_options = site_options.as_str(),
+            patient_options = patient_options.as_str(),
+            visit_options = visit_options.as_str(),
+            template_options = template_options.as_str(),
+        ),
+        "monitor" => format!(
+            r#"<section class="panel-grid">
+  <article class="panel">
+    <h3>Raise data query</h3>
+    <form method="post" action="/ui/workbench/queries">
+      <input type="hidden" name="action" value="create" />
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Submission</label><select name="submission_id" required>{submission_options}</select>
+      <label>Summary</label><input name="summary" placeholder="Please confirm units" required />
+      <button type="submit">Raise query</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Respond to query</h3>
+    <form method="post" action="/ui/workbench/queries">
+      <input type="hidden" name="action" value="respond" />
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Query</label><select name="query_id" required>{query_options}</select>
+      <label>Response comment (optional)</label><input name="comment_text" placeholder="Updated source doc attached" />
+      <button type="submit">Mark responded</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Close query</h3>
+    <form method="post" action="/ui/workbench/queries">
+      <input type="hidden" name="action" value="close" />
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Query</label><select name="query_id" required>{query_options}</select>
+      <button type="submit">Close query</button>
+    </form>
+    <p class="muted">Open: <strong>{open_queries}</strong> · Responded: <strong>{responded_queries}</strong> · Closed: <strong>{closed_queries}</strong></p>
+  </article>
+</section>"#,
+            study_select_options = study_select_options.as_str(),
+            submission_options = submission_options.as_str(),
+            query_options = query_options.as_str(),
+            open_queries = open_queries,
+            responded_queries = responded_queries,
+            closed_queries = closed_queries,
+        ),
+        "close" => format!(
+            r#"<section class="panel-grid">
+  <article class="panel">
+    <h3>Add closeout checklist item</h3>
+    <form method="post" action="/ui/workbench/closeout-items">
+      <input type="hidden" name="action" value="create" />
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Item key</label><input name="item_key" placeholder="db_reconciliation" required />
+      <label>Item label</label><input name="item_label" placeholder="Database reconciliation complete" required />
+      <label class="checkbox"><input type="checkbox" name="is_required" checked /> Required for closure</label>
+      <button type="submit">Add checklist item</button>
+    </form>
+  </article>
+  <article class="panel">
+    <h3>Complete closeout checklist item</h3>
+    <form method="post" action="/ui/workbench/closeout-items">
+      <input type="hidden" name="action" value="complete" />
+      <label>Study</label><select name="study_id" required>{study_select_options}</select>
+      <label>Incomplete item</label><select name="item_id" required>{incomplete_closeout_options}</select>
+      <button type="submit">Mark complete</button>
+    </form>
+    <p class="muted">Required completion: <strong>{required_closeout_complete}/{required_closeout_total}</strong> ({closeout_percent}%)</p>
+  </article>
+  <article class="panel">
+    <h3>Phase transition</h3>
+    <p class="muted">Current phase: <strong>{selected_study_phase}</strong></p>
+    {phase_controls}
+  </article>
+</section>"#,
+            study_select_options = study_select_options.as_str(),
+            incomplete_closeout_options = incomplete_closeout_options.as_str(),
+            required_closeout_complete = required_closeout_complete,
+            required_closeout_total = required_closeout_total,
+            closeout_percent = closeout_percent,
+            selected_study_phase = escape_html(&selected_study_phase),
+            phase_controls = if let Some(study_id) = selected_study {
+                format!(
+                    r#"<div class="phase-actions">
+  <form method="post" action="/ui/workbench/studies/{study_id}/phase"><input type="hidden" name="phase" value="initiation" /><button type="submit">Move to initiation</button></form>
+  <form method="post" action="/ui/workbench/studies/{study_id}/phase"><input type="hidden" name="phase" value="active" /><button type="submit">Move to active</button></form>
+  <form method="post" action="/ui/workbench/studies/{study_id}/phase"><input type="hidden" name="phase" value="monitoring" /><button type="submit">Move to monitoring</button></form>
+  <form method="post" action="/ui/workbench/studies/{study_id}/phase"><input type="hidden" name="phase" value="closed" /><button type="submit">Move to closed</button></form>
+</div>"#,
+                    study_id = study_id
+                )
+            } else {
+                "<p class=\"muted\">Select a study first.</p>".to_string()
+            }
+        ),
+        _ => format!(
+            r#"<section class="analytics-grid">
+  <article class="kpi"><h4>Sites</h4><strong>{sites}</strong></article>
+  <article class="kpi"><h4>Patients</h4><strong>{patients}</strong></article>
+  <article class="kpi"><h4>Visits</h4><strong>{visits}</strong></article>
+  <article class="kpi"><h4>Submissions (locked)</h4><strong>{locked}/{total_submissions}</strong></article>
+  <article class="kpi"><h4>Queries (open/responded/closed)</h4><strong>{open}/{responded}/{closed}</strong></article>
+  <article class="kpi"><h4>Required closeout completion</h4><strong>{closeout_percent}%</strong></article>
+</section>
+<section class="panel" style="margin-top:0.75rem;">
+  <h3>Readiness signal</h3>
+  <p class="muted">Next recommended action: <strong>{guidance}</strong></p>
+</section>"#,
+            sites = study_sites.len(),
+            patients = study_patients.len(),
+            visits = study_visits.len(),
+            locked = locked_submissions,
+            total_submissions = study_submissions.len(),
+            open = open_queries,
+            responded = responded_queries,
+            closed = closed_queries,
+            closeout_percent = closeout_percent,
+            guidance = guidance.as_str()
+        ),
+    };
+
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Virival Workbench</title>
+  <style>
+    :root {{ --cream:#E7E5DA; --sand:#C5B7AB; --forest:#283E28; --navy:#02182B; --orange:#F05708; }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; background:linear-gradient(180deg,#f6f4ee 0%,var(--cream) 100%); color:var(--navy); font-family:Inter,Arial,sans-serif; }}
+    .page {{ max-width:1200px; margin:0 auto; padding:1rem; }}
+    .hero {{ background:#fffdf8; border:1px solid rgba(2,24,43,.12); border-radius:16px; padding:1rem; box-shadow:0 12px 28px rgba(2,24,43,.08); animation:fade .25s ease-out; }}
+    .hero h1 {{ margin:0; font-size:1.35rem; }}
+    .muted {{ color:#365067; }}
+    .notice {{ margin:0.8rem 0; border:1px solid #d9c8ba; background:#fff7ef; color:#4a3827; padding:0.55rem 0.65rem; border-radius:10px; }}
+    .stage-grid {{ margin-top:0.8rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:0.6rem; }}
+    .stage-card {{ border:1px solid rgba(2,24,43,.12); border-left:4px solid var(--orange); border-radius:12px; background:#fffefb; padding:0.65rem; }}
+    .stage-card.complete {{ border-left-color:#2f7d32; background:#f5fbf5; }}
+    .tab-row {{ margin-top:0.8rem; display:flex; flex-wrap:wrap; gap:0.45rem; }}
+    .tab {{ text-decoration:none; color:var(--navy); background:#fffefb; border:1px solid #cfd9e4; border-radius:999px; padding:0.35rem 0.75rem; font-size:.85rem; font-weight:700; }}
+    .tab.active {{ background:var(--navy); color:#fff; border-color:var(--navy); }}
+    .context {{ margin-top:0.8rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:0.6rem; }}
+    .context .card {{ background:#fff; border:1px solid #d9e1ea; border-radius:12px; padding:0.7rem; }}
+    label {{ display:block; font-weight:700; font-size:.83rem; margin:.45rem 0 .2rem; }}
+    input,select,textarea {{ width:100%; border:1px solid #cbd5e1; border-radius:10px; padding:.52rem; font:inherit; }}
+    textarea {{ resize:vertical; }}
+    button {{ margin-top:.55rem; background:var(--navy); color:#fff; border:0; border-radius:10px; padding:.5rem .78rem; font-weight:700; cursor:pointer; }}
+    .checkbox {{ display:flex; align-items:center; gap:0.45rem; font-weight:600; }}
+    .checkbox input {{ width:auto; }}
+    .panel-grid {{ margin-top:0.8rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:0.7rem; }}
+    .panel {{ background:#fff; border:1px solid #dce3eb; border-radius:14px; padding:.8rem .85rem; }}
+    .panel.full {{ grid-column:1/-1; }}
+    .panel h3 {{ margin:0 0 .45rem; }}
+    .table-wrap {{ overflow:auto; }}
+    table {{ width:100%; border-collapse:collapse; }}
+    th,td {{ text-align:left; padding:.45rem; border-bottom:1px solid #e2e8f0; font-size:.84rem; }}
+    .phase-actions form {{ margin-bottom:.35rem; }}
+    .analytics-grid {{ margin-top:.8rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:.6rem; }}
+    .kpi {{ background:#fff; border:1px solid #dbe5ee; border-radius:12px; padding:.7rem; }}
+    .kpi h4 {{ margin:0; font-size:.8rem; color:#415a71; }}
+    .kpi strong {{ display:block; margin-top:.25rem; font-size:1.2rem; }}
+    @keyframes fade {{ from {{ opacity:0; transform:translateY(4px); }} to {{ opacity:1; transform:translateY(0); }} }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <h1>Virival Phase 6 · Research Workbench</h1>
+      <p class="muted">Authenticated as <strong>{subject}</strong> ({role}). Focus organization: <strong>{selected_org}</strong>. Focus study: <strong>{selected_study}</strong>.</p>
+      <p class="muted"><strong>Workflow coach:</strong> {guidance}</p>
+      {stage_cards}
+    </section>
+    {notice_html}
+    <section class="tab-row">{tab_links}</section>
+    <section class="context">
+      <form class="card" method="get" action="/ui/workbench">
+        <h3 style="margin:0 0 0.35rem;">Context selector</h3>
+        <label>Organization</label><select name="organization_id">{org_options}</select>
+        <label>Study</label><select name="study_id"><option value="">None selected</option>{study_options}</select>
+        <input type="hidden" name="tab" value="{active_tab}" />
+        <button type="submit">Apply context</button>
+      </form>
+      <div class="card">
+        <h3 style="margin:0 0 0.35rem;">Quick admin links</h3>
+        <p class="muted" style="margin:0 0 .4rem;"><a href="/ui/admin/memberships">Membership admin</a> · <a href="/ui/admin/audit">Audit console</a></p>
+        <p class="muted" style="margin:0;">Role source: <strong>{auth_source}</strong></p>
+      </div>
+    </section>
+    {tab_content}
+  </div>
+</body>
+</html>"#,
+        subject = escape_html(&user.subject),
+        role = user.role.as_str(),
+        selected_org = escape_html(&selected_org_value),
+        selected_study = escape_html(&selected_study_value),
+        guidance = guidance.as_str(),
+        stage_cards = stage_cards.as_str(),
+        notice_html = notice_html.as_str(),
+        tab_links = tab_links.as_str(),
+        org_options = org_options.as_str(),
+        study_options = study_options.as_str(),
+        active_tab = active_tab.as_str(),
+        auth_source = escape_html(&user.auth_source),
+        tab_content = tab_content.as_str(),
+    )))
+}
+
 async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> Html<String> {
     let email = user
         .email
@@ -1175,17 +2402,15 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival · Phase 5 Wizard Shell</h1>
+      <h1>Virival · Phase 6 Product Shell</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> (<strong>{email}</strong>) with role <strong>{role}</strong>. Source: <strong>{auth_source}</strong>. Organization scope: <strong>{org_scope}</strong>.</p>
       <span class="chip">workflow-first architecture mode</span>
+      <p style="margin:0.55rem 0 0;"><a href="/ui/workbench" style="display:inline-block;background:#02182b;color:#fff;text-decoration:none;border-radius:10px;padding:0.5rem 0.75rem;font-weight:700;">Open Research Workbench →</a></p>
     </section>
     <section class="grid">
-      <div class="card"><h3>1. Setup organization</h3><p>Create an organization via <code>POST /api/v1/organizations</code>.</p></div>
-      <div class="card"><h3>2. Assign membership</h3><p>Use <code>POST /api/v1/admin/memberships</code> to persist org roles and then pass <code>x-virival-organization-id</code>.</p></div>
-      <div class="card"><h3>3. Launch study</h3><p>Create study, publish CRF template versions, and attach startup-ready site.</p></div>
-      <div class="card"><h3>4. Schedule & execute</h3><p>Define visit schedule templates, enroll patients, and collect CRF submissions.</p></div>
-      <div class="card"><h3>5. Resolve queries</h3><p>Track data queries through open → responded → closed with threaded comments.</p></div>
-      <div class="card"><h3>6. Govern closeout</h3><p>Complete required closeout checklist items, clear open queries, then close with phase gates.</p></div>
+      <div class="card"><h3>1. Open the Workbench</h3><p>Use <code>/ui/workbench</code> for tabbed setup, design, execute, monitor, closeout, and analytics workflows.</p></div>
+      <div class="card"><h3>2. Assign membership</h3><p>Use <code>POST /api/v1/admin/memberships</code> or the membership admin UI to persist org roles.</p></div>
+      <div class="card"><h3>3. Audit governance</h3><p>Track identity, resource actions, and outcomes in <code>/ui/admin/audit</code>.</p></div>
     </section>
     <section class="api">
       <strong>Auth options</strong>

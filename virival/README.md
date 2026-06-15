@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 5 baseline)
+## Current scope (Phase 6 baseline)
 
 Virival now includes:
 
@@ -34,6 +34,9 @@ Virival now includes:
 - Study closeout checklist tracking
 - DUAs
 - Study readiness summary
+- Dedicated tabbed web workbench (`/ui/workbench`) for setup, design, execute, monitor, closeout, and analytics
+- Wizard-guided stage cards with context-aware workflow coaching
+- Direct UI form actions that orchestrate core operations (org/study/site/DUA/CRF/versioning/patient/visit/submission/query/closeout/phase)
 - PostgreSQL-backed persistence with boot-time SQL migrations
 - Repository interface + PostgreSQL implementation (domain logic decoupled from handlers)
 - Auth/RBAC middleware with Google OIDC RS256 signature verification via cached JWKS + dev fallback
@@ -106,6 +109,19 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 ## Admin UI routes
 
 - `GET /ui`
+- `GET /ui/workbench`
+- `POST /ui/workbench/organizations`
+- `POST /ui/workbench/studies`
+- `POST /ui/workbench/sites`
+- `POST /ui/workbench/duas`
+- `POST /ui/workbench/crf-design`
+- `POST /ui/workbench/visit-schedules`
+- `POST /ui/workbench/patients`
+- `POST /ui/workbench/visits`
+- `POST /ui/workbench/submissions`
+- `POST /ui/workbench/queries`
+- `POST /ui/workbench/closeout-items`
+- `POST /ui/workbench/studies/{study_id}/phase`
 - `GET /ui/admin/memberships`
 - `POST /ui/admin/memberships`
 - `GET /ui/admin/audit`

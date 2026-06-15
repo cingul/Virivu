@@ -42,10 +42,11 @@ Your mission is to evolve this into production-ready architecture while preservi
 - Query response workflow supports `open -> responded -> closed` with comments.
 - Required closeout checklist items are enforced in `monitoring -> closed` gate.
 
-### Phase 6 - Product surface
-- Build a dedicated web app shell for Virival.
-- Add wizard-guided navigation across study setup and execution.
-- Add analytics and operational KPIs.
+### Phase 6 completed (product surface)
+- Added a dedicated tabbed workbench at `GET /ui/workbench`.
+- Added wizard-guided stage cards with readiness-driven workflow coaching.
+- Added server-rendered operational forms for setup/design/execute/monitor/close actions.
+- Added in-workbench analytics KPIs for site/patient/visit/submission/query/closeout posture.
 
 ### Phase 7 - Compliance and delivery
 - Introduce e-sign + PDF generation for DUA/consent.
