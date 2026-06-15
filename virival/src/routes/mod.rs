@@ -1,28 +1,32 @@
 use axum::{
     extract::{Path, State},
+    middleware::from_fn_with_state,
+    response::Html,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::{
+    auth::{require_any_role, require_auth},
     error::ApiError,
     models::{
-        AgreementStatus, CreateCrfSubmissionRequest, CreateCrfTemplateRequest,
+        AppRole, AuthenticatedUser, CreateCrfSubmissionRequest, CreateCrfTemplateRequest,
         CreateDataQueryRequest, CreateDuaRequest, CreateOrganizationRequest, CreateSiteRequest,
-        CreateStudyRequest, CreateVisitRequest, CrfSubmission, CrfTemplate, DataQuery,
-        DuaAgreement, EnrollPatientRequest, HealthResponse, MarkSiteStartupRequest, Organization,
-        Patient, QueryStatus, Site, Study, StudyPhase, SubmissionStatus,
-        TransitionStudyPhaseRequest, Visit, VisitStatus,
+        CreateStudyRequest, CreateVisitRequest, HealthResponse, MarkSiteStartupRequest,
+        StudyReadiness, TransitionStudyPhaseRequest,
     },
     state::AppState,
-    workflow::{compute_readiness, validate_phase_transition},
+    workflow::validate_phase_transition,
 };
 
 pub fn router(state: AppState, app_name: String) -> Router {
-    Router::new()
-        .route("/health", get(move || health(app_name.clone())))
+    let public_router = Router::new().route("/health", get(move || health(app_name.clone())));
+
+    let protected_router = Router::new()
+        .route("/", get(render_wizard_shell))
+        .route("/ui", get(render_wizard_shell))
         .route(
             "/api/v1/organizations",
             get(list_organizations).post(create_organization),
@@ -63,7 +67,10 @@ pub fn router(state: AppState, app_name: String) -> Router {
         )
         .route("/api/v1/duas", get(list_duas).post(create_dua))
         .route("/api/v1/duas/{dua_id}/activate", post(activate_dua))
-        .with_state(state)
+        .route_layer(from_fn_with_state(state.clone(), require_auth))
+        .with_state(state);
+
+    public_router.merge(protected_router)
 }
 
 async fn health(app_name: String) -> Json<HealthResponse> {
@@ -74,469 +81,526 @@ async fn health(app_name: String) -> Json<HealthResponse> {
     })
 }
 
+fn can_read(user: &AuthenticatedUser) -> Result<(), ApiError> {
+    require_any_role(
+        user,
+        &[
+            AppRole::PlatformAdmin,
+            AppRole::OrgAdmin,
+            AppRole::Investigator,
+            AppRole::SiteCoordinator,
+            AppRole::Analyst,
+            AppRole::Monitor,
+        ],
+    )
+}
+
+fn can_write(user: &AuthenticatedUser) -> Result<(), ApiError> {
+    require_any_role(
+        user,
+        &[
+            AppRole::PlatformAdmin,
+            AppRole::OrgAdmin,
+            AppRole::Investigator,
+            AppRole::SiteCoordinator,
+        ],
+    )
+}
+
+fn can_admin(user: &AuthenticatedUser) -> Result<(), ApiError> {
+    require_any_role(user, &[AppRole::PlatformAdmin, AppRole::OrgAdmin])
+}
+
 async fn create_organization(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateOrganizationRequest>,
-) -> Result<Json<Organization>, ApiError> {
+) -> Result<Json<crate::models::Organization>, ApiError> {
+    can_admin(&user)?;
     if input.name.trim().is_empty() || input.workspace_slug.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "name and workspace_slug are required".to_string(),
         ));
     }
-    let mut store = state.store.write().await;
-    if store.organizations.values().any(|org| {
-        org.workspace_slug
-            .eq_ignore_ascii_case(input.workspace_slug.trim())
-    }) {
-        return Err(ApiError::Conflict(
-            "workspace_slug already exists".to_string(),
-        ));
-    }
-
-    let organization = Organization {
-        id: Uuid::new_v4(),
-        name: input.name.trim().to_string(),
-        workspace_slug: input.workspace_slug.trim().to_lowercase(),
-        created_at: Utc::now(),
-    };
-    store
-        .organizations
-        .insert(organization.id, organization.clone());
+    let organization = state
+        .repository
+        .create_organization(
+            input.name.trim(),
+            &input.workspace_slug.trim().to_lowercase(),
+        )
+        .await?;
     Ok(Json(organization))
 }
 
-async fn list_organizations(State(state): State<AppState>) -> Json<Vec<Organization>> {
-    let store = state.store.read().await;
-    let mut organizations = store.organizations.values().cloned().collect::<Vec<_>>();
-    organizations.sort_by(|a, b| a.name.cmp(&b.name));
-    Json(organizations)
+async fn list_organizations(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::Organization>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_organizations().await?))
 }
 
 async fn create_study(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateStudyRequest>,
-) -> Result<Json<Study>, ApiError> {
+) -> Result<Json<crate::models::Study>, ApiError> {
+    can_write(&user)?;
     if input.short_code.trim().is_empty() || input.title.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "short_code and title are required".to_string(),
         ));
     }
-    let mut store = state.store.write().await;
-    if !store.organizations.contains_key(&input.organization_id) {
-        return Err(ApiError::NotFound(format!(
-            "organization {}",
-            input.organization_id
-        )));
-    }
-    if store.studies.values().any(|study| {
-        study.organization_id == input.organization_id
-            && study
-                .short_code
-                .eq_ignore_ascii_case(input.short_code.trim())
-    }) {
-        return Err(ApiError::Conflict(
-            "short_code already exists for this organization".to_string(),
-        ));
-    }
-
-    let study = Study {
-        id: Uuid::new_v4(),
-        organization_id: input.organization_id,
-        short_code: input.short_code.trim().to_uppercase(),
-        title: input.title.trim().to_string(),
-        phase: StudyPhase::PreStudy,
-        created_at: Utc::now(),
-    };
-    store.studies.insert(study.id, study.clone());
+    let study = state
+        .repository
+        .create_study(
+            input.organization_id,
+            &input.short_code.trim().to_uppercase(),
+            input.title.trim(),
+        )
+        .await?;
     Ok(Json(study))
 }
 
-async fn list_studies(State(state): State<AppState>) -> Json<Vec<Study>> {
-    let store = state.store.read().await;
-    let mut studies = store.studies.values().cloned().collect::<Vec<_>>();
-    studies.sort_by(|a, b| a.short_code.cmp(&b.short_code));
-    Json(studies)
+async fn list_studies(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::Study>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_studies().await?))
 }
 
 async fn transition_study_phase(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(study_id): Path<Uuid>,
     Json(input): Json<TransitionStudyPhaseRequest>,
-) -> Result<Json<Study>, ApiError> {
-    let mut store = state.store.write().await;
-    let current_phase = store
-        .studies
-        .get(&study_id)
-        .ok_or_else(|| ApiError::NotFound(format!("study {study_id}")))?
-        .phase
-        .clone();
-    let readiness = compute_readiness(&store, study_id)?;
-    validate_phase_transition(&current_phase, &input.phase, &readiness)?;
-
-    let study = store
-        .studies
-        .get_mut(&study_id)
-        .ok_or_else(|| ApiError::NotFound(format!("study {study_id}")))?;
-    study.phase = input.phase;
-    Ok(Json(study.clone()))
+) -> Result<Json<crate::models::Study>, ApiError> {
+    can_admin(&user)?;
+    let study = state.repository.get_study(study_id).await?;
+    let readiness = state.repository.compute_readiness(study_id).await?;
+    validate_phase_transition(&study.phase, &input.phase, &readiness)?;
+    Ok(Json(
+        state
+            .repository
+            .update_study_phase(study_id, input.phase)
+            .await?,
+    ))
 }
 
 async fn study_readiness(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(study_id): Path<Uuid>,
-) -> Result<Json<crate::models::StudyReadiness>, ApiError> {
-    let store = state.store.read().await;
-    let readiness = compute_readiness(&store, study_id)?;
-    Ok(Json(readiness))
+) -> Result<Json<StudyReadiness>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.compute_readiness(study_id).await?))
 }
 
 async fn create_site(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateSiteRequest>,
-) -> Result<Json<Site>, ApiError> {
+) -> Result<Json<crate::models::Site>, ApiError> {
+    can_write(&user)?;
     if input.name.trim().is_empty() || input.principal_investigator.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "name and principal_investigator are required".to_string(),
         ));
     }
-    let mut store = state.store.write().await;
-    if !store.organizations.contains_key(&input.organization_id) {
-        return Err(ApiError::NotFound(format!(
-            "organization {}",
-            input.organization_id
-        )));
-    }
     if let Some(study_id) = input.study_id {
-        let study = store
-            .studies
-            .get(&study_id)
-            .ok_or_else(|| ApiError::NotFound(format!("study {study_id}")))?;
+        let study = state.repository.get_study(study_id).await?;
         if study.organization_id != input.organization_id {
             return Err(ApiError::BadRequest(
                 "site organization_id must match study organization".to_string(),
             ));
         }
     }
-    let site = Site {
-        id: Uuid::new_v4(),
-        organization_id: input.organization_id,
-        study_id: input.study_id,
-        name: input.name.trim().to_string(),
-        principal_investigator: input.principal_investigator.trim().to_string(),
-        startup_complete: false,
-        created_at: Utc::now(),
-    };
-    store.sites.insert(site.id, site.clone());
+    let site = state
+        .repository
+        .create_site(
+            input.organization_id,
+            input.study_id,
+            input.name.trim(),
+            input.principal_investigator.trim(),
+        )
+        .await?;
     Ok(Json(site))
 }
 
-async fn list_sites(State(state): State<AppState>) -> Json<Vec<Site>> {
-    let store = state.store.read().await;
-    let mut sites = store.sites.values().cloned().collect::<Vec<_>>();
-    sites.sort_by(|a, b| a.name.cmp(&b.name));
-    Json(sites)
+async fn list_sites(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::Site>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_sites().await?))
 }
 
 async fn mark_site_startup(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(site_id): Path<Uuid>,
     Json(input): Json<MarkSiteStartupRequest>,
-) -> Result<Json<Site>, ApiError> {
-    let mut store = state.store.write().await;
-    let site = store
-        .sites
-        .get_mut(&site_id)
-        .ok_or_else(|| ApiError::NotFound(format!("site {site_id}")))?;
-    site.startup_complete = input.startup_complete;
-    Ok(Json(site.clone()))
+) -> Result<Json<crate::models::Site>, ApiError> {
+    can_write(&user)?;
+    Ok(Json(
+        state
+            .repository
+            .set_site_startup(site_id, input.startup_complete)
+            .await?,
+    ))
 }
 
 async fn enroll_patient(
     State(state): State<AppState>,
-    Json(input): Json<EnrollPatientRequest>,
-) -> Result<Json<Patient>, ApiError> {
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(input): Json<crate::models::EnrollPatientRequest>,
+) -> Result<Json<crate::models::Patient>, ApiError> {
+    can_write(&user)?;
     if input.external_id.trim().is_empty() {
         return Err(ApiError::BadRequest("external_id is required".to_string()));
     }
-    let mut store = state.store.write().await;
-    let study = store
-        .studies
-        .get(&input.study_id)
-        .ok_or_else(|| ApiError::NotFound(format!("study {}", input.study_id)))?;
+    let study = state.repository.get_study(input.study_id).await?;
     if study.organization_id != input.organization_id {
         return Err(ApiError::BadRequest(
             "organization_id must match study organization".to_string(),
         ));
     }
     if let Some(site_id) = input.site_id {
-        let site = store
-            .sites
-            .get(&site_id)
-            .ok_or_else(|| ApiError::NotFound(format!("site {site_id}")))?;
+        let site = state.repository.get_site(site_id).await?;
         if site.organization_id != input.organization_id {
             return Err(ApiError::BadRequest(
                 "site organization_id mismatch".to_string(),
             ));
         }
     }
-    let patient = Patient {
-        id: Uuid::new_v4(),
-        organization_id: input.organization_id,
-        study_id: input.study_id,
-        site_id: input.site_id,
-        external_id: input.external_id.trim().to_string(),
-        enrolled_at: Utc::now(),
-    };
-    store.patients.insert(patient.id, patient.clone());
-    Ok(Json(patient))
+    Ok(Json(
+        state
+            .repository
+            .create_patient(
+                input.organization_id,
+                input.study_id,
+                input.site_id,
+                input.external_id.trim(),
+            )
+            .await?,
+    ))
 }
 
-async fn list_patients(State(state): State<AppState>) -> Json<Vec<Patient>> {
-    let store = state.store.read().await;
-    let mut patients = store.patients.values().cloned().collect::<Vec<_>>();
-    patients.sort_by(|a, b| a.external_id.cmp(&b.external_id));
-    Json(patients)
+async fn list_patients(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::Patient>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_patients().await?))
 }
 
 async fn create_visit(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateVisitRequest>,
-) -> Result<Json<Visit>, ApiError> {
+) -> Result<Json<crate::models::Visit>, ApiError> {
+    can_write(&user)?;
     if input.visit_name.trim().is_empty() {
         return Err(ApiError::BadRequest("visit_name is required".to_string()));
     }
-    let mut store = state.store.write().await;
-    if !store.studies.contains_key(&input.study_id) {
-        return Err(ApiError::NotFound(format!("study {}", input.study_id)));
-    }
-    let patient = store
-        .patients
-        .get(&input.patient_id)
-        .ok_or_else(|| ApiError::NotFound(format!("patient {}", input.patient_id)))?;
+    let patient = state.repository.get_patient(input.patient_id).await?;
     if patient.study_id != input.study_id {
         return Err(ApiError::BadRequest(
             "visit study_id must match patient study".to_string(),
         ));
     }
-
-    let visit = Visit {
-        id: Uuid::new_v4(),
-        study_id: input.study_id,
-        patient_id: input.patient_id,
-        visit_name: input.visit_name.trim().to_string(),
-        scheduled_for: input.scheduled_for,
-        status: VisitStatus::Planned,
-    };
-    store.visits.insert(visit.id, visit.clone());
-    Ok(Json(visit))
+    Ok(Json(
+        state
+            .repository
+            .create_visit(
+                input.study_id,
+                input.patient_id,
+                input.visit_name.trim(),
+                input.scheduled_for,
+            )
+            .await?,
+    ))
 }
 
-async fn list_visits(State(state): State<AppState>) -> Json<Vec<Visit>> {
-    let store = state.store.read().await;
-    let mut visits = store.visits.values().cloned().collect::<Vec<_>>();
-    visits.sort_by(|a, b| a.scheduled_for.cmp(&b.scheduled_for));
-    Json(visits)
+async fn list_visits(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::Visit>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_visits().await?))
 }
 
 async fn create_crf_template(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateCrfTemplateRequest>,
-) -> Result<Json<CrfTemplate>, ApiError> {
+) -> Result<Json<crate::models::CrfTemplate>, ApiError> {
+    can_write(&user)?;
     if input.name.trim().is_empty() {
         return Err(ApiError::BadRequest("name is required".to_string()));
     }
-    let mut store = state.store.write().await;
-    if !store.studies.contains_key(&input.study_id) {
-        return Err(ApiError::NotFound(format!("study {}", input.study_id)));
-    }
-    let template = CrfTemplate {
-        id: Uuid::new_v4(),
-        study_id: input.study_id,
-        name: input.name.trim().to_string(),
-        published: false,
-        created_at: Utc::now(),
-    };
-    store.crf_templates.insert(template.id, template.clone());
-    Ok(Json(template))
+    state.repository.get_study(input.study_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .create_crf_template(input.study_id, input.name.trim())
+            .await?,
+    ))
 }
 
-async fn list_crf_templates(State(state): State<AppState>) -> Json<Vec<CrfTemplate>> {
-    let store = state.store.read().await;
-    let mut templates = store.crf_templates.values().cloned().collect::<Vec<_>>();
-    templates.sort_by(|a, b| a.name.cmp(&b.name));
-    Json(templates)
+async fn list_crf_templates(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::CrfTemplate>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_crf_templates().await?))
 }
 
 async fn publish_crf_template(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(template_id): Path<Uuid>,
-) -> Result<Json<CrfTemplate>, ApiError> {
-    let mut store = state.store.write().await;
-    let template = store
-        .crf_templates
-        .get_mut(&template_id)
-        .ok_or_else(|| ApiError::NotFound(format!("template {template_id}")))?;
-    template.published = true;
-    Ok(Json(template.clone()))
+) -> Result<Json<crate::models::CrfTemplate>, ApiError> {
+    can_write(&user)?;
+    Ok(Json(
+        state.repository.publish_crf_template(template_id).await?,
+    ))
 }
 
 async fn create_crf_submission(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateCrfSubmissionRequest>,
-) -> Result<Json<CrfSubmission>, ApiError> {
-    let mut store = state.store.write().await;
-    let patient = store
-        .patients
-        .get(&input.patient_id)
-        .ok_or_else(|| ApiError::NotFound(format!("patient {}", input.patient_id)))?;
+) -> Result<Json<crate::models::CrfSubmission>, ApiError> {
+    can_write(&user)?;
+    let patient = state.repository.get_patient(input.patient_id).await?;
     if patient.study_id != input.study_id {
         return Err(ApiError::BadRequest(
             "submission study_id must match patient study".to_string(),
         ));
     }
-    let visit = store
-        .visits
-        .get(&input.visit_id)
-        .ok_or_else(|| ApiError::NotFound(format!("visit {}", input.visit_id)))?;
+    let visit = state.repository.get_visit(input.visit_id).await?;
     if visit.study_id != input.study_id || visit.patient_id != input.patient_id {
         return Err(ApiError::BadRequest(
             "visit must belong to same study/patient".to_string(),
         ));
     }
-    let template = store
-        .crf_templates
-        .get(&input.template_id)
-        .ok_or_else(|| ApiError::NotFound(format!("template {}", input.template_id)))?;
+    let template = state.repository.get_crf_template(input.template_id).await?;
     if template.study_id != input.study_id || !template.published {
         return Err(ApiError::Conflict(
             "template must be published and belong to study".to_string(),
         ));
     }
-    let submission = CrfSubmission {
-        id: Uuid::new_v4(),
-        study_id: input.study_id,
-        patient_id: input.patient_id,
-        visit_id: input.visit_id,
-        template_id: input.template_id,
-        status: SubmissionStatus::Submitted,
-        captured_at: Utc::now(),
-    };
-    store
-        .crf_submissions
-        .insert(submission.id, submission.clone());
-    Ok(Json(submission))
+    Ok(Json(
+        state
+            .repository
+            .create_crf_submission(
+                input.study_id,
+                input.patient_id,
+                input.visit_id,
+                input.template_id,
+            )
+            .await?,
+    ))
 }
 
-async fn list_crf_submissions(State(state): State<AppState>) -> Json<Vec<CrfSubmission>> {
-    let store = state.store.read().await;
-    let mut submissions = store.crf_submissions.values().cloned().collect::<Vec<_>>();
-    submissions.sort_by(|a, b| a.captured_at.cmp(&b.captured_at));
-    Json(submissions)
+async fn list_crf_submissions(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::CrfSubmission>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_crf_submissions().await?))
 }
 
 async fn lock_crf_submission(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(submission_id): Path<Uuid>,
-) -> Result<Json<CrfSubmission>, ApiError> {
-    let mut store = state.store.write().await;
-    let submission = store
-        .crf_submissions
-        .get_mut(&submission_id)
-        .ok_or_else(|| ApiError::NotFound(format!("submission {submission_id}")))?;
-    submission.status = SubmissionStatus::Locked;
-    Ok(Json(submission.clone()))
+) -> Result<Json<crate::models::CrfSubmission>, ApiError> {
+    can_write(&user)?;
+    Ok(Json(
+        state.repository.lock_crf_submission(submission_id).await?,
+    ))
 }
 
 async fn create_data_query(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateDataQueryRequest>,
-) -> Result<Json<DataQuery>, ApiError> {
+) -> Result<Json<crate::models::DataQuery>, ApiError> {
+    can_write(&user)?;
     if input.summary.trim().is_empty() {
         return Err(ApiError::BadRequest("summary is required".to_string()));
     }
-    let mut store = state.store.write().await;
-    let submission = store
-        .crf_submissions
-        .get(&input.submission_id)
-        .ok_or_else(|| ApiError::NotFound(format!("submission {}", input.submission_id)))?;
+    let submission = state
+        .repository
+        .get_crf_submission(input.submission_id)
+        .await?;
     if submission.study_id != input.study_id {
         return Err(ApiError::BadRequest(
             "query study_id must match submission study".to_string(),
         ));
     }
-    let query = DataQuery {
-        id: Uuid::new_v4(),
-        study_id: input.study_id,
-        submission_id: input.submission_id,
-        summary: input.summary.trim().to_string(),
-        status: QueryStatus::Open,
-        raised_at: Utc::now(),
-    };
-    store.data_queries.insert(query.id, query.clone());
-    Ok(Json(query))
+    Ok(Json(
+        state
+            .repository
+            .create_data_query(input.study_id, input.submission_id, input.summary.trim())
+            .await?,
+    ))
 }
 
-async fn list_data_queries(State(state): State<AppState>) -> Json<Vec<DataQuery>> {
-    let store = state.store.read().await;
-    let mut queries = store.data_queries.values().cloned().collect::<Vec<_>>();
-    queries.sort_by(|a, b| a.raised_at.cmp(&b.raised_at));
-    Json(queries)
+async fn list_data_queries(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::DataQuery>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_data_queries().await?))
 }
 
 async fn close_data_query(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(query_id): Path<Uuid>,
-) -> Result<Json<DataQuery>, ApiError> {
-    let mut store = state.store.write().await;
-    let query = store
-        .data_queries
-        .get_mut(&query_id)
-        .ok_or_else(|| ApiError::NotFound(format!("query {query_id}")))?;
-    query.status = QueryStatus::Closed;
-    Ok(Json(query.clone()))
+) -> Result<Json<crate::models::DataQuery>, ApiError> {
+    can_write(&user)?;
+    Ok(Json(state.repository.close_data_query(query_id).await?))
 }
 
 async fn create_dua(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Json(input): Json<CreateDuaRequest>,
-) -> Result<Json<DuaAgreement>, ApiError> {
+) -> Result<Json<crate::models::DuaAgreement>, ApiError> {
+    can_write(&user)?;
     if input.counterparty.trim().is_empty() {
         return Err(ApiError::BadRequest("counterparty is required".to_string()));
     }
-    let mut store = state.store.write().await;
-    if !store.organizations.contains_key(&input.organization_id) {
-        return Err(ApiError::NotFound(format!(
-            "organization {}",
-            input.organization_id
-        )));
-    }
-    let agreement = DuaAgreement {
-        id: Uuid::new_v4(),
-        organization_id: input.organization_id,
-        counterparty: input.counterparty.trim().to_string(),
-        status: AgreementStatus::PendingSignatures,
-        created_at: Utc::now(),
-    };
-    store.duas.insert(agreement.id, agreement.clone());
-    Ok(Json(agreement))
+    Ok(Json(
+        state
+            .repository
+            .create_dua(input.organization_id, input.counterparty.trim())
+            .await?,
+    ))
 }
 
-async fn list_duas(State(state): State<AppState>) -> Json<Vec<DuaAgreement>> {
-    let store = state.store.read().await;
-    let mut agreements = store.duas.values().cloned().collect::<Vec<_>>();
-    agreements.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-    Json(agreements)
+async fn list_duas(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<Vec<crate::models::DuaAgreement>>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.list_duas().await?))
 }
 
 async fn activate_dua(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(dua_id): Path<Uuid>,
-) -> Result<Json<DuaAgreement>, ApiError> {
-    let mut store = state.store.write().await;
-    let agreement = store
-        .duas
-        .get_mut(&dua_id)
-        .ok_or_else(|| ApiError::NotFound(format!("dua {dua_id}")))?;
-    agreement.status = AgreementStatus::Active;
-    Ok(Json(agreement.clone()))
+) -> Result<Json<crate::models::DuaAgreement>, ApiError> {
+    can_write(&user)?;
+    Ok(Json(state.repository.activate_dua(dua_id).await?))
+}
+
+async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> Html<String> {
+    let body = format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Virival Workflow Shell</title>
+  <style>
+    :root {{
+      --cream: #E7E5DA;
+      --sand: #C5B7AB;
+      --forest: #283E28;
+      --navy: #02182B;
+      --orange: #F05708;
+    }}
+    body {{
+      margin: 0;
+      background: linear-gradient(180deg, #f6f4ee 0%, var(--cream) 100%);
+      color: var(--navy);
+      font-family: Inter, Arial, sans-serif;
+    }}
+    .page {{ max-width: 1160px; margin: 0 auto; padding: 1.2rem; }}
+    .hero {{
+      border: 1px solid rgba(2,24,43,0.15);
+      border-radius: 16px;
+      background: #fffdf8;
+      padding: 1rem 1.2rem;
+      box-shadow: 0 10px 22px rgba(2,24,43,0.08);
+    }}
+    .hero h1 {{ margin: 0; font-size: 1.4rem; }}
+    .muted {{ color: #35516e; }}
+    .chip {{
+      display: inline-block;
+      margin-top: 0.5rem;
+      background: var(--navy);
+      color: white;
+      border-radius: 999px;
+      padding: 0.2rem 0.6rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }}
+    .grid {{
+      margin-top: 1rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 0.85rem;
+    }}
+    .card {{
+      border: 1px solid rgba(2,24,43,0.12);
+      border-left: 5px solid var(--orange);
+      border-radius: 14px;
+      background: #fffefb;
+      padding: 0.85rem 0.9rem;
+    }}
+    .card h3 {{ margin: 0 0 0.35rem; font-size: 1rem; }}
+    .card p {{ margin: 0; font-size: 0.85rem; color: #314c66; line-height: 1.4; }}
+    .api {{
+      margin-top: 1rem;
+      border: 1px solid rgba(2,24,43,0.14);
+      border-radius: 14px;
+      padding: 0.85rem 0.95rem;
+      background: white;
+    }}
+    code {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8rem;
+      color: #0f3554;
+    }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <h1>Virival · Phase 2 Wizard Shell</h1>
+      <p class="muted">Authenticated as <strong>{subject}</strong> with role <strong>{role}</strong>. This shell is now backed by PostgreSQL + repository layer + RBAC middleware skeleton.</p>
+      <span class="chip">workflow-first architecture mode</span>
+    </section>
+    <section class="grid">
+      <div class="card"><h3>1. Setup organization</h3><p>Create an organization via <code>POST /api/v1/organizations</code>.</p></div>
+      <div class="card"><h3>2. Launch study</h3><p>Create study, publish CRF template, and attach startup-ready site.</p></div>
+      <div class="card"><h3>3. Enroll & execute</h3><p>Enroll patient, create visit, submit/lock CRFs, track data queries.</p></div>
+      <div class="card"><h3>4. Govern lifecycle</h3><p>Use readiness + gated phase transitions to advance and close safely.</p></div>
+    </section>
+    <section class="api">
+      <strong>Auth headers (dev mode)</strong>
+      <p class="muted">Send <code>x-virival-user</code> and optional <code>x-virival-role</code> (platform_admin, org_admin, investigator, site_coordinator, analyst, monitor).</p>
+    </section>
+  </div>
+</body>
+</html>"#,
+        subject = escape_html(&user.subject),
+        role = user.role.as_str()
+    );
+    Html(body)
+}
+
+fn escape_html(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

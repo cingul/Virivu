@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -12,12 +13,62 @@ pub enum StudyPhase {
     Closed,
 }
 
+impl StudyPhase {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            StudyPhase::PreStudy => "pre_study",
+            StudyPhase::Initiation => "initiation",
+            StudyPhase::Active => "active",
+            StudyPhase::Monitoring => "monitoring",
+            StudyPhase::Closed => "closed",
+        }
+    }
+}
+
+impl FromStr for StudyPhase {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pre_study" => Ok(StudyPhase::PreStudy),
+            "initiation" => Ok(StudyPhase::Initiation),
+            "active" => Ok(StudyPhase::Active),
+            "monitoring" => Ok(StudyPhase::Monitoring),
+            "closed" => Ok(StudyPhase::Closed),
+            other => Err(format!("invalid study phase value: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VisitStatus {
     Planned,
     Completed,
     Missed,
+}
+
+impl VisitStatus {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            VisitStatus::Planned => "planned",
+            VisitStatus::Completed => "completed",
+            VisitStatus::Missed => "missed",
+        }
+    }
+}
+
+impl FromStr for VisitStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "planned" => Ok(VisitStatus::Planned),
+            "completed" => Ok(VisitStatus::Completed),
+            "missed" => Ok(VisitStatus::Missed),
+            other => Err(format!("invalid visit status value: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,6 +79,29 @@ pub enum SubmissionStatus {
     Locked,
 }
 
+impl SubmissionStatus {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            SubmissionStatus::Draft => "draft",
+            SubmissionStatus::Submitted => "submitted",
+            SubmissionStatus::Locked => "locked",
+        }
+    }
+}
+
+impl FromStr for SubmissionStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "draft" => Ok(SubmissionStatus::Draft),
+            "submitted" => Ok(SubmissionStatus::Submitted),
+            "locked" => Ok(SubmissionStatus::Locked),
+            other => Err(format!("invalid submission status value: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryStatus {
@@ -36,12 +110,104 @@ pub enum QueryStatus {
     Closed,
 }
 
+impl QueryStatus {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            QueryStatus::Open => "open",
+            QueryStatus::Responded => "responded",
+            QueryStatus::Closed => "closed",
+        }
+    }
+}
+
+impl FromStr for QueryStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "open" => Ok(QueryStatus::Open),
+            "responded" => Ok(QueryStatus::Responded),
+            "closed" => Ok(QueryStatus::Closed),
+            other => Err(format!("invalid data query status value: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgreementStatus {
     Draft,
     PendingSignatures,
     Active,
+}
+
+impl AgreementStatus {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            AgreementStatus::Draft => "draft",
+            AgreementStatus::PendingSignatures => "pending_signatures",
+            AgreementStatus::Active => "active",
+        }
+    }
+}
+
+impl FromStr for AgreementStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "draft" => Ok(AgreementStatus::Draft),
+            "pending_signatures" => Ok(AgreementStatus::PendingSignatures),
+            "active" => Ok(AgreementStatus::Active),
+            other => Err(format!("invalid agreement status value: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppRole {
+    PlatformAdmin,
+    OrgAdmin,
+    Investigator,
+    SiteCoordinator,
+    Analyst,
+    Monitor,
+}
+
+impl AppRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AppRole::PlatformAdmin => "platform_admin",
+            AppRole::OrgAdmin => "org_admin",
+            AppRole::Investigator => "investigator",
+            AppRole::SiteCoordinator => "site_coordinator",
+            AppRole::Analyst => "analyst",
+            AppRole::Monitor => "monitor",
+        }
+    }
+}
+
+impl FromStr for AppRole {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "platform_admin" => Ok(AppRole::PlatformAdmin),
+            "org_admin" => Ok(AppRole::OrgAdmin),
+            "investigator" => Ok(AppRole::Investigator),
+            "site_coordinator" => Ok(AppRole::SiteCoordinator),
+            "analyst" => Ok(AppRole::Analyst),
+            "monitor" => Ok(AppRole::Monitor),
+            other => Err(format!("invalid role: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthenticatedUser {
+    pub subject: String,
+    pub role: AppRole,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

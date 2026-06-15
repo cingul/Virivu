@@ -18,9 +18,9 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (v0 foundation)
+## Current scope (Phase 2 baseline)
 
-The initial version includes a runnable API with domain slices for:
+Virival now includes:
 
 - Organizations
 - Studies + phase transitions
@@ -31,25 +31,35 @@ The initial version includes a runnable API with domain slices for:
 - Data queries
 - DUAs
 - Study readiness summary
-
-Data is in-memory for now (fast iteration baseline).  
-Next step is persistence (Postgres + migrations), auth, audit logs, and UI.
+- PostgreSQL-backed persistence with boot-time SQL migrations
+- Repository interface + PostgreSQL implementation (domain logic decoupled from handlers)
+- Auth/RBAC middleware skeleton (`x-virival-user`, `x-virival-role`)
+- First wizard UI shell at `/ui`
 
 ## Run locally
 
 ```bash
 cd virival
+cp .env.example .env
 cargo run
 ```
 
 Defaults:
 - `APP_NAME=virival-api`
 - `BIND_ADDRESS=0.0.0.0:8090`
+- `DATABASE_URL=postgres://postgres:postgres@localhost:5432/virival`
+- `ALLOW_DEV_AUTH_BYPASS=true`
 
 Health:
 
 ```bash
 curl http://localhost:8090/health
+```
+
+Wizard shell:
+
+```bash
+curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_admin" http://localhost:8090/ui
 ```
 
 ## High-value endpoints
@@ -69,6 +79,14 @@ curl http://localhost:8090/health
 - `POST /api/v1/duas/{dua_id}/activate`
 - `GET /api/v1/studies/{study_id}/readiness`
 - `POST /api/v1/studies/{study_id}/phase`
+
+## Auth / RBAC skeleton
+
+- Middleware protects `/ui` and all `/api/v1/*` routes.
+- Dev default (if `ALLOW_DEV_AUTH_BYPASS=true`): automatic `platform_admin` identity when headers are missing.
+- Explicit headers for testing:
+  - `x-virival-user: you@org.tld`
+  - `x-virival-role: platform_admin|org_admin|investigator|site_coordinator|analyst|monitor`
 
 ## Phase transition rules (opinionated)
 

@@ -14,3 +14,9 @@ tower-http = { version = "=0.6.2", features = ["trace"] }
 tracing = "=0.1.40"
 tracing-subscriber = { version = "=0.3.18", features = ["env-filter", "fmt"] }
 uuid = { version = "=1.8.0", features = ["serde", "v4"] }
+dotenvy = "=0.15.7"
+async-trait = "=0.1.83"
+deadpool-postgres = "=0.14.1"
+tokio-postgres = { version = "=0.7.13", features = ["with-uuid-1", "with-chrono-0_4"] }
+postgres-protocol = "=0.6.10"
+postgres-types = "=0.2.12"
