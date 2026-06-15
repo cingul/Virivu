@@ -2,7 +2,7 @@
 
 Virival is a new, architected-from-scratch baseline for end-to-end research management.
 
-It is intentionally built in an isolated folder (`apps/virival`) so the legacy Virivu code can continue to run while this next-generation platform evolves in parallel.
+It lives in a top-level isolated folder (`virival/`) so the legacy Virivu code can continue to run while this next-generation platform evolves in parallel.
 
 ## Architectural stance
 
@@ -38,7 +38,7 @@ Next step is persistence (Postgres + migrations), auth, audit logs, and UI.
 ## Run locally
 
 ```bash
-cd apps/virival
+cd virival
 cargo run
 ```
 

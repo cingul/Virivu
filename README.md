@@ -43,7 +43,7 @@ It is designed to reduce operational friction in clinical and translational rese
   - Rust API service scaffold
   - Domain models and REST endpoints for key workflows
   - SQL migration for core multi-tenant clinical research entities
-- `apps/virival/`
+- `virival/`
   - New greenfield Rust-first rebuild for next-generation end-to-end research workflow orchestration
   - Includes phase-gated lifecycle API baseline and architect handoff prompt (`ARCHITECT_HANDOFF.md`)
 - `deploy/docker-compose.yml`

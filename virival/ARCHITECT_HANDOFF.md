@@ -6,7 +6,7 @@ Use this prompt in a fresh conversation if you want to continue Virival as a ful
 
 You are the chief architect for **Virival**, a Rust-first end-to-end clinical research platform.
 
-Current baseline is in `apps/virival` and provides a running Axum API with in-memory domain entities for:
+Current baseline is in `virival/` and provides a running Axum API with in-memory domain entities for:
 - organizations
 - studies + lifecycle phases
 - sites + startup readiness
