@@ -20,6 +20,7 @@ use crate::{
     auth::{extract_bearer_token, verify_google_workspace_user, AuthError, AuthenticatedUser},
     config::Config,
     db::Db,
+    error::{map_db_error, ApiError},
     models::{DataUseAgreement, DataUseAgreementSignature, OutboundEmail, StudyCrfField},
 };
 
@@ -12351,17 +12352,6 @@ fn parse_uuid_field(raw: &str, field_name: &str) -> Result<Uuid, ApiError> {
     })
 }
 
-fn map_db_error(error: anyhow::Error) -> ApiError {
-    let message = error.to_string();
-    if let Some(conflict) = message.strip_prefix("conflict:") {
-        return ApiError::Conflict(conflict.trim().to_string());
-    }
-    if let Some(validation) = message.strip_prefix("validation:") {
-        return ApiError::Validation(validation.trim().to_string());
-    }
-    ApiError::Internal(message)
-}
-
 fn optional_non_empty(input: &str) -> Option<&str> {
     if input.trim().is_empty() {
         None
@@ -15458,48 +15448,5 @@ fn require_org_role(
         Err(ApiError::Auth(AuthError::Forbidden(
             "user lacks required organization role".to_string(),
         )))
-    }
-}
-
-#[derive(Debug)]
-enum ApiError {
-    Auth(AuthError),
-    Validation(String),
-    NotFound(String),
-    Conflict(String),
-    Internal(String),
-}
-
-impl ApiError {
-    fn internal<E: ToString>(error: E) -> Self {
-        Self::Internal(error.to_string())
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Auth(error) => error.into_response(),
-            Self::Validation(msg) => (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": msg })),
-            )
-                .into_response(),
-            Self::NotFound(msg) => (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": msg })),
-            )
-                .into_response(),
-            Self::Conflict(msg) => (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": msg })),
-            )
-                .into_response(),
-            Self::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": msg })),
-            )
-                .into_response(),
-        }
     }
 }
