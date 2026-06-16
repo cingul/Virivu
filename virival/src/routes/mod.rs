@@ -1,7 +1,12 @@
 use axum::{
+    body::Body,
     extract::{Form, Path, Query, State},
+    http::{
+        header::{CONTENT_DISPOSITION, CONTENT_TYPE},
+        HeaderValue,
+    },
     middleware::from_fn_with_state,
-    response::{Html, Redirect},
+    response::{Html, Redirect, Response},
     routing::{get, post},
     Extension, Json, Router,
 };
@@ -16,10 +21,11 @@ use crate::{
         AppRole, AuthenticatedUser, CompleteCloseoutChecklistItemRequest,
         CreateCloseoutChecklistItemRequest, CreateCrfSubmissionRequest, CreateCrfTemplateRequest,
         CreateCrfTemplateVersionRequest, CreateDataQueryCommentRequest, CreateDataQueryRequest,
-        CreateDuaRequest, CreateMembershipRequest, CreateOrganizationRequest, CreateSiteRequest,
-        CreateStudyRequest, CreateVisitRequest, CreateVisitScheduleTemplateRequest, HealthResponse,
-        MarkSiteStartupRequest, RespondDataQueryRequest, StudyPhase, StudyReadiness,
-        TransitionStudyPhaseRequest,
+        CreateDuaRequest, CreateDuaSignatureRequest, CreateMembershipRequest,
+        CreateOrganizationRequest, CreateReminderJobRequest, CreateSiteRequest, CreateStudyRequest,
+        CreateVisitRequest, CreateVisitScheduleTemplateRequest, HealthResponse,
+        MarkSiteStartupRequest, ProcessReminderJobsRequest, ProcessReminderJobsResponse,
+        RespondDataQueryRequest, StudyPhase, StudyReadiness, TransitionStudyPhaseRequest,
     },
     state::AppState,
     workflow::validate_phase_transition,
@@ -40,6 +46,10 @@ pub fn router(state: AppState, app_name: String) -> Router {
         .route("/ui/workbench/sites", post(submit_workbench_site))
         .route("/ui/workbench/duas", post(submit_workbench_dua))
         .route(
+            "/ui/workbench/dua-signatures",
+            post(submit_workbench_dua_signature),
+        )
+        .route(
             "/ui/workbench/crf-design",
             post(submit_workbench_crf_design),
         )
@@ -57,6 +67,11 @@ pub fn router(state: AppState, app_name: String) -> Router {
         .route(
             "/ui/workbench/closeout-items",
             post(submit_workbench_closeout_item),
+        )
+        .route("/ui/workbench/reminders", post(submit_workbench_reminder))
+        .route(
+            "/ui/workbench/reminders/process",
+            post(submit_workbench_process_reminders),
         )
         .route(
             "/ui/workbench/studies/{study_id}/phase",
@@ -133,12 +148,25 @@ pub fn router(state: AppState, app_name: String) -> Router {
         )
         .route("/api/v1/duas", get(list_duas).post(create_dua))
         .route("/api/v1/duas/{dua_id}/activate", post(activate_dua))
+        .route(
+            "/api/v1/duas/{dua_id}/signatures",
+            get(list_dua_signatures).post(create_dua_signature),
+        )
+        .route("/api/v1/duas/{dua_id}/pdf", get(download_dua_pdf))
         .route("/api/v1/admin/memberships", post(create_membership))
         .route(
             "/api/v1/admin/organizations/{organization_id}/memberships",
             get(list_organization_memberships),
         )
         .route("/api/v1/admin/audit-logs", get(list_audit_logs))
+        .route(
+            "/api/v1/admin/reminder-jobs",
+            get(list_reminder_jobs).post(create_reminder_job),
+        )
+        .route(
+            "/api/v1/admin/reminder-jobs/process",
+            post(process_reminder_jobs),
+        )
         .route_layer(from_fn_with_state(state.clone(), require_auth))
         .with_state(state);
 
@@ -213,6 +241,11 @@ struct AuditApiQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct ReminderJobsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct WorkbenchQuery {
     organization_id: Option<Uuid>,
     study_id: Option<Uuid>,
@@ -246,6 +279,15 @@ struct WorkbenchSiteForm {
 struct WorkbenchDuaForm {
     organization_id: Uuid,
     counterparty: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchDuaSignatureForm {
+    dua_id: Uuid,
+    signer_name: String,
+    signer_email: String,
+    signer_role: String,
+    signature_text: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,6 +350,25 @@ struct WorkbenchCloseoutItemForm {
     item_label: Option<String>,
     is_required: Option<String>,
     item_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchReminderForm {
+    organization_id: Uuid,
+    study_id: Option<Uuid>,
+    patient_id: Option<Uuid>,
+    visit_id: Option<Uuid>,
+    channel: String,
+    recipient: String,
+    message: String,
+    scheduled_for: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchReminderProcessForm {
+    organization_id: Uuid,
+    study_id: Option<Uuid>,
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1226,6 +1287,221 @@ async fn activate_dua(
     Ok(Json(state.repository.activate_dua(dua_id).await?))
 }
 
+async fn create_dua_signature(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(dua_id): Path<Uuid>,
+    Json(input): Json<CreateDuaSignatureRequest>,
+) -> Result<Json<crate::models::DuaSignature>, ApiError> {
+    can_write(&user)?;
+    if input.signer_name.trim().is_empty()
+        || input.signer_email.trim().is_empty()
+        || input.signer_role.trim().is_empty()
+        || input.signature_text.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "signer_name, signer_email, signer_role, and signature_text are required".to_string(),
+        ));
+    }
+    state.repository.get_dua(dua_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .create_dua_signature(
+                dua_id,
+                input.signer_name.trim(),
+                input.signer_email.trim(),
+                input.signer_role.trim(),
+                input.signature_text.trim(),
+            )
+            .await?,
+    ))
+}
+
+async fn list_dua_signatures(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(dua_id): Path<Uuid>,
+) -> Result<Json<Vec<crate::models::DuaSignature>>, ApiError> {
+    can_read(&user)?;
+    state.repository.get_dua(dua_id).await?;
+    Ok(Json(state.repository.list_dua_signatures(dua_id).await?))
+}
+
+async fn download_dua_pdf(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(dua_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    can_read(&user)?;
+    let dua = state.repository.get_dua(dua_id).await?;
+    let organization = state
+        .repository
+        .get_organization(dua.organization_id)
+        .await?;
+    let signatures = state.repository.list_dua_signatures(dua_id).await?;
+    let content = build_dua_pdf_bytes(
+        &organization.name,
+        &dua.counterparty,
+        &dua.status,
+        &signatures,
+    );
+    let filename = format!("virival-dua-{}.pdf", dua.id);
+    let mut response = Response::new(Body::from(content));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/pdf"));
+    let content_disposition = format!("attachment; filename=\"{filename}\"");
+    response.headers_mut().insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_str(&content_disposition).map_err(|err| {
+            ApiError::Internal(format!("invalid content disposition header: {err}"))
+        })?,
+    );
+    Ok(response)
+}
+
+async fn create_reminder_job(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(input): Json<CreateReminderJobRequest>,
+) -> Result<Json<crate::models::ReminderJob>, ApiError> {
+    can_admin(&user)?;
+    if input.channel.trim().is_empty()
+        || input.recipient.trim().is_empty()
+        || input.message.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "channel, recipient, and message are required".to_string(),
+        ));
+    }
+    state
+        .repository
+        .get_organization(input.organization_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .create_reminder_job(
+                input.organization_id,
+                input.study_id,
+                input.patient_id,
+                input.visit_id,
+                input.channel.trim(),
+                input.recipient.trim(),
+                input.message.trim(),
+                input.scheduled_for,
+            )
+            .await?,
+    ))
+}
+
+async fn list_reminder_jobs(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(query): Query<ReminderJobsQuery>,
+) -> Result<Json<Vec<crate::models::ReminderJob>>, ApiError> {
+    can_platform_admin(&user)?;
+    let limit = query.limit.unwrap_or(50);
+    Ok(Json(state.repository.list_reminder_jobs(limit).await?))
+}
+
+async fn process_reminder_jobs(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(input): Json<ProcessReminderJobsRequest>,
+) -> Result<Json<ProcessReminderJobsResponse>, ApiError> {
+    can_platform_admin(&user)?;
+    let jobs = state
+        .repository
+        .process_due_reminder_jobs(input.limit.unwrap_or(50))
+        .await?;
+    Ok(Json(ProcessReminderJobsResponse {
+        processed_count: jobs.len(),
+        jobs,
+    }))
+}
+
+fn escape_pdf_text(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('(', "\\(")
+        .replace(')', "\\)")
+}
+
+fn build_dua_pdf_bytes(
+    organization_name: &str,
+    counterparty: &str,
+    status: &crate::models::AgreementStatus,
+    signatures: &[crate::models::DuaSignature],
+) -> Vec<u8> {
+    let mut lines = vec![
+        "Virival Data Use Agreement".to_string(),
+        format!("Generated at: {}", Utc::now()),
+        format!("Organization: {organization_name}"),
+        format!("Counterparty: {counterparty}"),
+        format!("Agreement status: {}", status.as_db()),
+        " ".to_string(),
+        "Signatures".to_string(),
+    ];
+    if signatures.is_empty() {
+        lines.push("No signatures yet.".to_string());
+    } else {
+        for signature in signatures {
+            lines.push(format!(
+                "{} ({}) · role={} · signed_at={}",
+                signature.signer_name,
+                signature.signer_email,
+                signature.signer_role,
+                signature.signed_at
+            ));
+        }
+    }
+
+    let mut content_stream = String::from("BT\n/F1 12 Tf\n50 760 Td\n");
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            content_stream.push_str("0 -16 Td\n");
+        }
+        content_stream.push_str(&format!("({}) Tj\n", escape_pdf_text(line)));
+    }
+    content_stream.push_str("ET");
+    let length = content_stream.len();
+
+    let objects = vec![
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n".to_string(),
+        "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n".to_string(),
+        "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n".to_string(),
+        format!(
+            "4 0 obj\n<< /Length {} >>\nstream\n{}\nendstream\nendobj\n",
+            length, content_stream
+        ),
+        "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n".to_string(),
+    ];
+
+    let mut pdf = Vec::new();
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    let mut offsets = Vec::new();
+    for object in objects {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(object.as_bytes());
+    }
+    let xref_offset = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            6, xref_offset
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
 fn workbench_tab(raw: Option<&str>) -> String {
     match raw.unwrap_or("setup") {
         "setup" | "design" | "execute" | "monitor" | "close" | "analytics" => {
@@ -1364,6 +1640,40 @@ async fn submit_workbench_dua(
         None,
         "setup",
         Some("DUA activated"),
+    )))
+}
+
+async fn submit_workbench_dua_signature(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchDuaSignatureForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.signer_name.trim().is_empty()
+        || form.signer_email.trim().is_empty()
+        || form.signer_role.trim().is_empty()
+        || form.signature_text.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "signer_name, signer_email, signer_role, and signature_text are required".to_string(),
+        ));
+    }
+    let dua = state.repository.get_dua(form.dua_id).await?;
+    state
+        .repository
+        .create_dua_signature(
+            dua.id,
+            form.signer_name.trim(),
+            form.signer_email.trim(),
+            form.signer_role.trim(),
+            form.signature_text.trim(),
+        )
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(dua.organization_id),
+        None,
+        "setup",
+        Some("DUA signature captured"),
     )))
 }
 
@@ -1624,6 +1934,60 @@ async fn submit_workbench_closeout_item(
     )))
 }
 
+async fn submit_workbench_reminder(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchReminderForm>,
+) -> Result<Redirect, ApiError> {
+    can_admin(&user)?;
+    if form.channel.trim().is_empty()
+        || form.recipient.trim().is_empty()
+        || form.message.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "channel, recipient, and message are required".to_string(),
+        ));
+    }
+    let scheduled_for = DateTime::parse_from_rfc3339(form.scheduled_for.trim())
+        .map_err(|err| ApiError::BadRequest(format!("scheduled_for must be RFC3339: {err}")))?
+        .with_timezone(&Utc);
+    state
+        .repository
+        .create_reminder_job(
+            form.organization_id,
+            form.study_id,
+            form.patient_id,
+            form.visit_id,
+            form.channel.trim(),
+            form.recipient.trim(),
+            form.message.trim(),
+            scheduled_for,
+        )
+        .await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(form.organization_id),
+        form.study_id,
+        "monitor",
+        Some("Reminder job scheduled"),
+    )))
+}
+
+async fn submit_workbench_process_reminders(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchReminderProcessForm>,
+) -> Result<Redirect, ApiError> {
+    can_admin(&user)?;
+    let limit = form.limit.unwrap_or(20);
+    let processed = state.repository.process_due_reminder_jobs(limit).await?;
+    Ok(Redirect::to(&workbench_href(
+        Some(form.organization_id),
+        form.study_id,
+        "monitor",
+        Some(&format!("Processed {} due reminder jobs", processed.len())),
+    )))
+}
+
 async fn submit_workbench_phase_transition(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -1661,6 +2025,8 @@ async fn render_workbench(
     let all_templates = state.repository.list_crf_templates().await?;
     let all_submissions = state.repository.list_crf_submissions().await?;
     let all_queries = state.repository.list_data_queries().await?;
+    let all_duas = state.repository.list_duas().await?;
+    let all_reminder_jobs = state.repository.list_reminder_jobs(200).await?;
 
     let selected_org = query
         .organization_id
@@ -1704,6 +2070,17 @@ async fn render_workbench(
     let study_queries = all_queries
         .iter()
         .filter(|query_entry| Some(query_entry.study_id) == selected_study)
+        .cloned()
+        .collect::<Vec<_>>();
+    let org_duas = all_duas
+        .iter()
+        .filter(|dua| Some(dua.organization_id) == selected_org)
+        .cloned()
+        .collect::<Vec<_>>();
+    let scoped_reminders = all_reminder_jobs
+        .iter()
+        .filter(|job| Some(job.organization_id) == selected_org)
+        .filter(|job| selected_study.is_none() || job.study_id == selected_study)
         .cloned()
         .collect::<Vec<_>>();
     let visit_schedule_templates = if let Some(study_id) = selected_study {
@@ -1865,6 +2242,17 @@ async fn render_workbench(
             )
         })
         .collect::<String>();
+    let dua_options = org_duas
+        .iter()
+        .map(|dua| {
+            format!(
+                r#"<option value="{id}">{counterparty} ({status})</option>"#,
+                id = dua.id,
+                counterparty = escape_html(&dua.counterparty),
+                status = dua.status.as_db()
+            )
+        })
+        .collect::<String>();
     let incomplete_closeout_options = closeout_items
         .iter()
         .filter(|item| !item.is_complete)
@@ -1906,6 +2294,79 @@ async fn render_workbench(
         .iter()
         .filter(|submission| submission.status.as_db() == "locked")
         .count();
+    let pending_reminders = scoped_reminders
+        .iter()
+        .filter(|job| job.status.as_db() == "pending")
+        .count();
+    let sent_reminders = scoped_reminders
+        .iter()
+        .filter(|job| job.status.as_db() == "sent")
+        .count();
+    let failed_reminders = scoped_reminders
+        .iter()
+        .filter(|job| job.status.as_db() == "failed")
+        .count();
+    let reminder_rows = if scoped_reminders.is_empty() {
+        r#"<tr><td colspan="5">No reminder jobs in current scope.</td></tr>"#.to_string()
+    } else {
+        scoped_reminders
+            .iter()
+            .take(12)
+            .map(|job| {
+                format!(
+                    r#"<tr><td>{recipient}</td><td>{channel}</td><td>{status}</td><td>{scheduled_for}</td><td>{processed_at}</td></tr>"#,
+                    recipient = escape_html(&job.recipient),
+                    channel = escape_html(&job.channel),
+                    status = job.status.as_db(),
+                    scheduled_for = job.scheduled_for,
+                    processed_at = job
+                        .processed_at
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "-".to_string())
+                )
+            })
+            .collect::<String>()
+    };
+
+    let mut dua_signature_rows = String::new();
+    let mut total_dua_signatures = 0usize;
+    for dua in &org_duas {
+        let signatures = state.repository.list_dua_signatures(dua.id).await?;
+        total_dua_signatures += signatures.len();
+        if signatures.is_empty() {
+            dua_signature_rows.push_str(&format!(
+                r#"<tr><td>{counterparty}</td><td>none</td><td>-</td><td>-</td></tr>"#,
+                counterparty = escape_html(&dua.counterparty)
+            ));
+        } else {
+            for signature in signatures {
+                dua_signature_rows.push_str(&format!(
+                    r#"<tr><td>{counterparty}</td><td>{signer}</td><td>{role}</td><td>{signed_at}</td></tr>"#,
+                    counterparty = escape_html(&dua.counterparty),
+                    signer = escape_html(&signature.signer_email),
+                    role = escape_html(&signature.signer_role),
+                    signed_at = signature.signed_at
+                ));
+            }
+        }
+    }
+    if dua_signature_rows.is_empty() {
+        dua_signature_rows = r#"<tr><td colspan="4">No DUA signatures yet.</td></tr>"#.to_string();
+    }
+    let dua_download_links = if org_duas.is_empty() {
+        "<span class=\"muted\">No DUAs yet.</span>".to_string()
+    } else {
+        org_duas
+            .iter()
+            .map(|dua| {
+                format!(
+                    r#"<a href="/api/v1/duas/{dua_id}/pdf" style="margin-right:0.4rem;">Download DUA PDF ({counterparty})</a>"#,
+                    dua_id = dua.id,
+                    counterparty = escape_html(&dua.counterparty)
+                )
+            })
+            .collect::<String>()
+    };
 
     let notice_html = query
         .notice
@@ -1922,6 +2383,23 @@ async fn render_workbench(
     let selected_study_value = selected_study
         .map(|study_id| study_id.to_string())
         .unwrap_or_else(String::new);
+    let process_reminder_form = if let Some(org_id) = selected_org {
+        let study_hidden = selected_study
+            .map(|study_id| {
+                format!(r#"<input type="hidden" name="study_id" value="{study_id}" />"#)
+            })
+            .unwrap_or_default();
+        format!(
+            r#"<form method="post" action="/ui/workbench/reminders/process">
+  <input type="hidden" name="organization_id" value="{org_id}" />
+  {study_hidden}
+  <input type="hidden" name="limit" value="25" />
+  <button type="submit">Process due reminders now</button>
+</form>"#
+        )
+    } else {
+        "<p class=\"muted\">Select organization context to process reminders.</p>".to_string()
+    };
     let tab_links = [
         "setup",
         "design",
@@ -2012,10 +2490,33 @@ async fn render_workbench(
     </form>
     <p class="muted">Current study phase: <strong>{selected_study_phase}</strong></p>
   </article>
+  <article class="panel">
+    <h3>Capture DUA e-signature</h3>
+    <form method="post" action="/ui/workbench/dua-signatures">
+      <label>DUA</label><select name="dua_id" required>{dua_options}</select>
+      <label>Signer name</label><input name="signer_name" placeholder="Jane Doe" required />
+      <label>Signer email</label><input name="signer_email" placeholder="jane@hospital.org" required />
+      <label>Signer role</label><input name="signer_role" placeholder="Legal Signatory" required />
+      <label>Signature text</label><input name="signature_text" placeholder="Jane Doe /s/" required />
+      <button type="submit">Record signature</button>
+    </form>
+    <p class="muted">{dua_download_links}</p>
+  </article>
+  <article class="panel full">
+    <h3>DUA signature ledger</h3>
+    <p class="muted">Captured signatures: <strong>{total_dua_signatures}</strong></p>
+    <div class="table-wrap">
+      <table><thead><tr><th>Counterparty</th><th>Signer</th><th>Role</th><th>Signed at</th></tr></thead><tbody>{dua_signature_rows}</tbody></table>
+    </div>
+  </article>
 </section>"#,
             org_options = org_options.as_str(),
             study_select_options = study_select_options.as_str(),
-            selected_study_phase = escape_html(&selected_study_phase)
+            selected_study_phase = escape_html(&selected_study_phase),
+            dua_options = dua_options.as_str(),
+            dua_download_links = dua_download_links.as_str(),
+            total_dua_signatures = total_dua_signatures,
+            dua_signature_rows = dua_signature_rows.as_str()
         ),
         "design" => format!(
             r#"<section class="panel-grid">
@@ -2147,13 +2648,43 @@ async fn render_workbench(
     </form>
     <p class="muted">Open: <strong>{open_queries}</strong> · Responded: <strong>{responded_queries}</strong> · Closed: <strong>{closed_queries}</strong></p>
   </article>
+  <article class="panel">
+    <h3>Schedule reminder job</h3>
+    <form method="post" action="/ui/workbench/reminders">
+      <label>Organization</label><select name="organization_id" required>{org_options}</select>
+      <label>Study (optional)</label><select name="study_id"><option value="">None</option>{study_select_options}</select>
+      <label>Patient (optional)</label><select name="patient_id"><option value="">None</option>{patient_options}</select>
+      <label>Visit (optional)</label><select name="visit_id"><option value="">None</option>{visit_options}</select>
+      <label>Channel</label><input name="channel" placeholder="email" value="email" required />
+      <label>Recipient</label><input name="recipient" placeholder="patient@domain.org" required />
+      <label>Message</label><input name="message" placeholder="Reminder: visit tomorrow at 10:00" required />
+      <label>Scheduled for (RFC3339)</label><input name="scheduled_for" placeholder="2026-06-16T14:00:00Z" required />
+      <button type="submit">Queue reminder</button>
+    </form>
+    <p class="muted">Pending: <strong>{pending_reminders}</strong> · Sent: <strong>{sent_reminders}</strong> · Failed: <strong>{failed_reminders}</strong></p>
+    {process_reminder_form}
+  </article>
+  <article class="panel full">
+    <h3>Reminder queue snapshot</h3>
+    <div class="table-wrap">
+      <table><thead><tr><th>Recipient</th><th>Channel</th><th>Status</th><th>Scheduled</th><th>Processed</th></tr></thead><tbody>{reminder_rows}</tbody></table>
+    </div>
+  </article>
 </section>"#,
             study_select_options = study_select_options.as_str(),
             submission_options = submission_options.as_str(),
             query_options = query_options.as_str(),
+            org_options = org_options.as_str(),
+            patient_options = patient_options.as_str(),
+            visit_options = visit_options.as_str(),
             open_queries = open_queries,
             responded_queries = responded_queries,
             closed_queries = closed_queries,
+            pending_reminders = pending_reminders,
+            sent_reminders = sent_reminders,
+            failed_reminders = failed_reminders,
+            reminder_rows = reminder_rows.as_str(),
+            process_reminder_form = process_reminder_form.as_str(),
         ),
         "close" => format!(
             r#"<section class="panel-grid">
@@ -2211,6 +2742,8 @@ async fn render_workbench(
   <article class="kpi"><h4>Visits</h4><strong>{visits}</strong></article>
   <article class="kpi"><h4>Submissions (locked)</h4><strong>{locked}/{total_submissions}</strong></article>
   <article class="kpi"><h4>Queries (open/responded/closed)</h4><strong>{open}/{responded}/{closed}</strong></article>
+  <article class="kpi"><h4>DUA signatures</h4><strong>{dua_signatures}</strong></article>
+  <article class="kpi"><h4>Reminders (pending/sent/failed)</h4><strong>{pending_reminders}/{sent_reminders}/{failed_reminders}</strong></article>
   <article class="kpi"><h4>Required closeout completion</h4><strong>{closeout_percent}%</strong></article>
 </section>
 <section class="panel" style="margin-top:0.75rem;">
@@ -2225,6 +2758,10 @@ async fn render_workbench(
             open = open_queries,
             responded = responded_queries,
             closed = closed_queries,
+            dua_signatures = total_dua_signatures,
+            pending_reminders = pending_reminders,
+            sent_reminders = sent_reminders,
+            failed_reminders = failed_reminders,
             closeout_percent = closeout_percent,
             guidance = guidance.as_str()
         ),
@@ -2278,7 +2815,7 @@ async fn render_workbench(
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival Phase 6 · Research Workbench</h1>
+      <h1>Virival Phase 7 · Research Workbench</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> ({role}). Focus organization: <strong>{selected_org}</strong>. Focus study: <strong>{selected_study}</strong>.</p>
       <p class="muted"><strong>Workflow coach:</strong> {guidance}</p>
       {stage_cards}
@@ -2402,7 +2939,7 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival · Phase 6 Product Shell</h1>
+      <h1>Virival · Phase 7 Product Shell</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> (<strong>{email}</strong>) with role <strong>{role}</strong>. Source: <strong>{auth_source}</strong>. Organization scope: <strong>{org_scope}</strong>.</p>
       <span class="chip">workflow-first architecture mode</span>
       <p style="margin:0.55rem 0 0;"><a href="/ui/workbench" style="display:inline-block;background:#02182b;color:#fff;text-decoration:none;border-radius:10px;padding:0.5rem 0.75rem;font-weight:700;">Open Research Workbench →</a></p>
@@ -2410,7 +2947,8 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
     <section class="grid">
       <div class="card"><h3>1. Open the Workbench</h3><p>Use <code>/ui/workbench</code> for tabbed setup, design, execute, monitor, closeout, and analytics workflows.</p></div>
       <div class="card"><h3>2. Assign membership</h3><p>Use <code>POST /api/v1/admin/memberships</code> or the membership admin UI to persist org roles.</p></div>
-      <div class="card"><h3>3. Audit governance</h3><p>Track identity, resource actions, and outcomes in <code>/ui/admin/audit</code>.</p></div>
+      <div class="card"><h3>3. Compliance workflows</h3><p>Capture DUA signatures, download DUA PDF exports, and schedule reminder jobs from the workbench.</p></div>
+      <div class="card"><h3>4. Audit governance</h3><p>Track identity, resource actions, and outcomes in <code>/ui/admin/audit</code>.</p></div>
     </section>
     <section class="api">
       <strong>Auth options</strong>

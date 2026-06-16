@@ -48,11 +48,16 @@ Your mission is to evolve this into production-ready architecture while preservi
 - Added server-rendered operational forms for setup/design/execute/monitor/close actions.
 - Added in-workbench analytics KPIs for site/patient/visit/submission/query/closeout posture.
 
-### Phase 7 - Compliance and delivery
-- Introduce e-sign + PDF generation for DUA/consent.
-- Add background jobs for reminders and escalations.
-- Implement S3/GCS signed uploads for media.
+### Phase 7 completed (compliance and delivery slice 1)
+- Added DUA e-signature persistence (`dua_signatures`) with API + workbench flows.
+- Added DUA PDF document export endpoint (`GET /api/v1/duas/{dua_id}/pdf`).
+- Added reminder jobs queue (`reminder_jobs`) with scheduling + due-job processing APIs.
+- Added workbench reminder scheduling and in-UI "process due reminders now" flow.
+
+### Phase 8 - Compliance and delivery slice 2
+- Implement S3/GCS signed uploads for media and consent assets.
 - Add CI checks, integration tests, and deployment manifests.
+- Introduce background worker runtime for reminder/escalation dispatch transport adapters.
 
 ## Coding style
 - Keep modules small and explicit.

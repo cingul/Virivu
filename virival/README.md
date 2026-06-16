@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 6 baseline)
+## Current scope (Phase 7 baseline)
 
 Virival now includes:
 
@@ -37,6 +37,8 @@ Virival now includes:
 - Dedicated tabbed web workbench (`/ui/workbench`) for setup, design, execute, monitor, closeout, and analytics
 - Wizard-guided stage cards with context-aware workflow coaching
 - Direct UI form actions that orchestrate core operations (org/study/site/DUA/CRF/versioning/patient/visit/submission/query/closeout/phase)
+- DUA signature capture + PDF document export
+- Reminder jobs queue with processing endpoint for due reminders
 - PostgreSQL-backed persistence with boot-time SQL migrations
 - Repository interface + PostgreSQL implementation (domain logic decoupled from handlers)
 - Auth/RBAC middleware with Google OIDC RS256 signature verification via cached JWKS + dev fallback
@@ -100,11 +102,17 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 - `POST /api/v1/closeout-checklist/{item_id}/complete`
 - `POST /api/v1/duas`
 - `POST /api/v1/duas/{dua_id}/activate`
+- `POST /api/v1/duas/{dua_id}/signatures`
+- `GET /api/v1/duas/{dua_id}/signatures`
+- `GET /api/v1/duas/{dua_id}/pdf`
 - `GET /api/v1/studies/{study_id}/readiness`
 - `POST /api/v1/studies/{study_id}/phase`
 - `POST /api/v1/admin/memberships`
 - `GET /api/v1/admin/organizations/{organization_id}/memberships`
 - `GET /api/v1/admin/audit-logs?limit=50`
+- `POST /api/v1/admin/reminder-jobs`
+- `GET /api/v1/admin/reminder-jobs?limit=50`
+- `POST /api/v1/admin/reminder-jobs/process`
 
 ## Admin UI routes
 
@@ -114,12 +122,15 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 - `POST /ui/workbench/studies`
 - `POST /ui/workbench/sites`
 - `POST /ui/workbench/duas`
+- `POST /ui/workbench/dua-signatures`
 - `POST /ui/workbench/crf-design`
 - `POST /ui/workbench/visit-schedules`
 - `POST /ui/workbench/patients`
 - `POST /ui/workbench/visits`
 - `POST /ui/workbench/submissions`
 - `POST /ui/workbench/queries`
+- `POST /ui/workbench/reminders`
+- `POST /ui/workbench/reminders/process`
 - `POST /ui/workbench/closeout-items`
 - `POST /ui/workbench/studies/{study_id}/phase`
 - `GET /ui/admin/memberships`

@@ -9,10 +9,10 @@ use crate::{
     error::ApiError,
     models::{
         AgreementStatus, AppRole, AuditLogRecord, CloseoutChecklistItem, CrfSubmission,
-        CrfTemplate, CrfTemplateVersion, DataQuery, DataQueryComment, DuaAgreement,
-        NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus, Site, Study,
-        StudyPhase, StudyReadiness, SubmissionStatus, User, Visit, VisitScheduleTemplate,
-        VisitStatus,
+        CrfTemplate, CrfTemplateVersion, DataQuery, DataQueryComment, DuaAgreement, DuaSignature,
+        NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus, ReminderJob,
+        ReminderJobStatus, Site, Study, StudyPhase, StudyReadiness, SubmissionStatus, User, Visit,
+        VisitScheduleTemplate, VisitStatus,
     },
 };
 
@@ -164,8 +164,32 @@ pub trait Repository: Send + Sync {
         organization_id: Uuid,
         counterparty: &str,
     ) -> Result<DuaAgreement, ApiError>;
+    async fn get_dua(&self, dua_id: Uuid) -> Result<DuaAgreement, ApiError>;
     async fn list_duas(&self) -> Result<Vec<DuaAgreement>, ApiError>;
     async fn activate_dua(&self, dua_id: Uuid) -> Result<DuaAgreement, ApiError>;
+    async fn create_dua_signature(
+        &self,
+        dua_id: Uuid,
+        signer_name: &str,
+        signer_email: &str,
+        signer_role: &str,
+        signature_text: &str,
+    ) -> Result<DuaSignature, ApiError>;
+    async fn list_dua_signatures(&self, dua_id: Uuid) -> Result<Vec<DuaSignature>, ApiError>;
+
+    async fn create_reminder_job(
+        &self,
+        organization_id: Uuid,
+        study_id: Option<Uuid>,
+        patient_id: Option<Uuid>,
+        visit_id: Option<Uuid>,
+        channel: &str,
+        recipient: &str,
+        message: &str,
+        scheduled_for: chrono::DateTime<chrono::Utc>,
+    ) -> Result<ReminderJob, ApiError>;
+    async fn list_reminder_jobs(&self, limit: i64) -> Result<Vec<ReminderJob>, ApiError>;
+    async fn process_due_reminder_jobs(&self, limit: i64) -> Result<Vec<ReminderJob>, ApiError>;
 
     async fn compute_readiness(&self, study_id: Uuid) -> Result<StudyReadiness, ApiError>;
 
@@ -979,6 +1003,21 @@ impl Repository for PgRepository {
         map_dua(&row)
     }
 
+    async fn get_dua(&self, dua_id: Uuid) -> Result<DuaAgreement, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "SELECT id, organization_id, counterparty, status, created_at
+                 FROM dua_agreements
+                 WHERE id = $1",
+                &[&dua_id],
+            )
+            .await
+            .map_err(map_query_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("dua {dua_id}")))?;
+        map_dua(&row)
+    }
+
     async fn list_duas(&self) -> Result<Vec<DuaAgreement>, ApiError> {
         let client = self.client().await?;
         let rows = client
@@ -1004,6 +1043,186 @@ impl Repository for PgRepository {
             .map_err(map_write_err)?
             .ok_or_else(|| ApiError::NotFound(format!("dua {dua_id}")))?;
         map_dua(&row)
+    }
+
+    async fn create_dua_signature(
+        &self,
+        dua_id: Uuid,
+        signer_name: &str,
+        signer_email: &str,
+        signer_role: &str,
+        signature_text: &str,
+    ) -> Result<DuaSignature, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO dua_signatures(
+                    id,
+                    dua_agreement_id,
+                    signer_name,
+                    signer_email,
+                    signer_role,
+                    signature_text,
+                    signed_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                RETURNING id, dua_agreement_id, signer_name, signer_email, signer_role, signature_text, signed_at",
+                &[
+                    &Uuid::new_v4(),
+                    &dua_id,
+                    &signer_name,
+                    &signer_email,
+                    &signer_role,
+                    &signature_text,
+                ],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_dua_signature(&row)
+    }
+
+    async fn list_dua_signatures(&self, dua_id: Uuid) -> Result<Vec<DuaSignature>, ApiError> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT id, dua_agreement_id, signer_name, signer_email, signer_role, signature_text, signed_at
+                 FROM dua_signatures
+                 WHERE dua_agreement_id = $1
+                 ORDER BY signed_at ASC",
+                &[&dua_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_dua_signature).collect()
+    }
+
+    async fn create_reminder_job(
+        &self,
+        organization_id: Uuid,
+        study_id: Option<Uuid>,
+        patient_id: Option<Uuid>,
+        visit_id: Option<Uuid>,
+        channel: &str,
+        recipient: &str,
+        message: &str,
+        scheduled_for: chrono::DateTime<chrono::Utc>,
+    ) -> Result<ReminderJob, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO reminder_jobs(
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    visit_id,
+                    channel,
+                    recipient,
+                    message,
+                    status,
+                    scheduled_for,
+                    processed_at,
+                    last_error,
+                    created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, NULL, NOW())
+                RETURNING
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    visit_id,
+                    channel,
+                    recipient,
+                    message,
+                    status,
+                    scheduled_for,
+                    processed_at,
+                    last_error,
+                    created_at",
+                &[
+                    &Uuid::new_v4(),
+                    &organization_id,
+                    &study_id,
+                    &patient_id,
+                    &visit_id,
+                    &channel,
+                    &recipient,
+                    &message,
+                    &ReminderJobStatus::Pending.as_db(),
+                    &scheduled_for,
+                ],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_reminder_job(&row)
+    }
+
+    async fn list_reminder_jobs(&self, limit: i64) -> Result<Vec<ReminderJob>, ApiError> {
+        let client = self.client().await?;
+        let safe_limit = if limit <= 0 { 20 } else { limit.min(500) };
+        let rows = client
+            .query(
+                "SELECT
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    visit_id,
+                    channel,
+                    recipient,
+                    message,
+                    status,
+                    scheduled_for,
+                    processed_at,
+                    last_error,
+                    created_at
+                 FROM reminder_jobs
+                 ORDER BY scheduled_for ASC
+                 LIMIT $1",
+                &[&safe_limit],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_reminder_job).collect()
+    }
+
+    async fn process_due_reminder_jobs(&self, limit: i64) -> Result<Vec<ReminderJob>, ApiError> {
+        let client = self.client().await?;
+        let safe_limit = if limit <= 0 { 20 } else { limit.min(500) };
+        let rows = client
+            .query(
+                "WITH due AS (
+                    SELECT id
+                    FROM reminder_jobs
+                    WHERE status = 'pending'
+                      AND scheduled_for <= NOW()
+                    ORDER BY scheduled_for ASC
+                    LIMIT $1
+                )
+                UPDATE reminder_jobs r
+                SET
+                    status = 'sent',
+                    processed_at = NOW(),
+                    last_error = NULL
+                WHERE r.id IN (SELECT id FROM due)
+                RETURNING
+                    r.id,
+                    r.organization_id,
+                    r.study_id,
+                    r.patient_id,
+                    r.visit_id,
+                    r.channel,
+                    r.recipient,
+                    r.message,
+                    r.status,
+                    r.scheduled_for,
+                    r.processed_at,
+                    r.last_error,
+                    r.created_at",
+                &[&safe_limit],
+            )
+            .await
+            .map_err(map_write_err)?;
+        rows.iter().map(map_reminder_job).collect()
     }
 
     async fn compute_readiness(&self, study_id: Uuid) -> Result<StudyReadiness, ApiError> {
@@ -1462,6 +1681,38 @@ fn map_dua(row: &Row) -> Result<DuaAgreement, ApiError> {
         organization_id: row.get("organization_id"),
         counterparty: row.get("counterparty"),
         status,
+        created_at: row.get("created_at"),
+    })
+}
+
+fn map_dua_signature(row: &Row) -> Result<DuaSignature, ApiError> {
+    Ok(DuaSignature {
+        id: row.get("id"),
+        dua_agreement_id: row.get("dua_agreement_id"),
+        signer_name: row.get("signer_name"),
+        signer_email: row.get("signer_email"),
+        signer_role: row.get("signer_role"),
+        signature_text: row.get("signature_text"),
+        signed_at: row.get("signed_at"),
+    })
+}
+
+fn map_reminder_job(row: &Row) -> Result<ReminderJob, ApiError> {
+    let status = ReminderJobStatus::from_str(row.get("status"))
+        .map_err(|err| ApiError::Internal(format!("invalid reminder status in database: {err}")))?;
+    Ok(ReminderJob {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        study_id: row.get("study_id"),
+        patient_id: row.get("patient_id"),
+        visit_id: row.get("visit_id"),
+        channel: row.get("channel"),
+        recipient: row.get("recipient"),
+        message: row.get("message"),
+        status,
+        scheduled_for: row.get("scheduled_for"),
+        processed_at: row.get("processed_at"),
+        last_error: row.get("last_error"),
         created_at: row.get("created_at"),
     })
 }

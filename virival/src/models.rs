@@ -141,6 +141,37 @@ pub enum AgreementStatus {
     Active,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderJobStatus {
+    Pending,
+    Sent,
+    Failed,
+}
+
+impl ReminderJobStatus {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            ReminderJobStatus::Pending => "pending",
+            ReminderJobStatus::Sent => "sent",
+            ReminderJobStatus::Failed => "failed",
+        }
+    }
+}
+
+impl FromStr for ReminderJobStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(ReminderJobStatus::Pending),
+            "sent" => Ok(ReminderJobStatus::Sent),
+            "failed" => Ok(ReminderJobStatus::Failed),
+            other => Err(format!("invalid reminder job status value: {other}")),
+        }
+    }
+}
+
 impl AgreementStatus {
     pub fn as_db(&self) -> &'static str {
         match self {
@@ -345,6 +376,34 @@ pub struct DuaAgreement {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuaSignature {
+    pub id: Uuid,
+    pub dua_agreement_id: Uuid,
+    pub signer_name: String,
+    pub signer_email: String,
+    pub signer_role: String,
+    pub signature_text: String,
+    pub signed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReminderJob {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub study_id: Option<Uuid>,
+    pub patient_id: Option<Uuid>,
+    pub visit_id: Option<Uuid>,
+    pub channel: String,
+    pub recipient: String,
+    pub message: String,
+    pub status: ReminderJobStatus,
+    pub scheduled_for: DateTime<Utc>,
+    pub processed_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StudyReadiness {
     pub study_id: Uuid,
@@ -519,6 +578,37 @@ pub struct CompleteCloseoutChecklistItemRequest {
 pub struct CreateDuaRequest {
     pub organization_id: Uuid,
     pub counterparty: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateDuaSignatureRequest {
+    pub signer_name: String,
+    pub signer_email: String,
+    pub signer_role: String,
+    pub signature_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateReminderJobRequest {
+    pub organization_id: Uuid,
+    pub study_id: Option<Uuid>,
+    pub patient_id: Option<Uuid>,
+    pub visit_id: Option<Uuid>,
+    pub channel: String,
+    pub recipient: String,
+    pub message: String,
+    pub scheduled_for: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProcessReminderJobsRequest {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProcessReminderJobsResponse {
+    pub processed_count: usize,
+    pub jobs: Vec<ReminderJob>,
 }
 
 #[derive(Debug, Deserialize)]
