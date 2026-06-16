@@ -22,6 +22,7 @@ use crate::{
     db::Db,
     error::{map_db_error, ApiError},
     models::{DataUseAgreement, DataUseAgreementSignature, OutboundEmail, StudyCrfField},
+    workflow::{query_can_close, query_can_respond, query_is_closed, query_is_open, query_is_responded},
 };
 
 const ROLE_PLATFORM_ADMIN: &[&str] = &["platform_admin"];
@@ -3478,7 +3479,7 @@ async fn render_app_dashboard(
     let (open_queries_count, stale_queries_count, aging_queries_count) = {
         let open: Vec<_> = project_queries
             .iter()
-            .filter(|q| q.status.trim().to_ascii_lowercase() != "closed")
+            .filter(|q| !query_is_closed(&q.status))
             .collect();
         let open_count = open.len();
         let stale = open
@@ -7202,7 +7203,7 @@ async fn render_study_workbench(
     let now = Utc::now();
     let open_queries = data_queries
         .iter()
-        .filter(|q| q.status.trim().to_ascii_lowercase() != "closed")
+        .filter(|q| !query_is_closed(&q.status))
         .collect::<Vec<_>>();
 
     let stale_queries_count = open_queries
@@ -7495,7 +7496,7 @@ async fn render_study_workbench(
         .count();
     let open_query_count = data_queries
         .iter()
-        .filter(|query| query.status.trim().to_ascii_lowercase() != "closed")
+        .filter(|query| !query_is_closed(&query.status))
         .count();
     let today = Utc::now().date_naive();
     let overdue_visit_count = patient_visits
@@ -8189,15 +8190,15 @@ async fn render_study_workbench(
 
     let query_open_count = data_queries
         .iter()
-        .filter(|q| q.status.trim().eq_ignore_ascii_case("open"))
+        .filter(|q| query_is_open(&q.status))
         .count();
     let query_responded_count = data_queries
         .iter()
-        .filter(|q| q.status.trim().eq_ignore_ascii_case("responded"))
+        .filter(|q| query_is_responded(&q.status))
         .count();
     let query_closed_count = data_queries
         .iter()
-        .filter(|q| q.status.trim().eq_ignore_ascii_case("closed"))
+        .filter(|q| query_is_closed(&q.status))
         .count();
     let query_header = if query_age_filter == "stale" {
         format!(
@@ -8245,10 +8246,9 @@ async fn render_study_workbench(
                 } else {
                     format!(r#"<span style="background:#047857;color:white;padding:1px 3px;border-radius:2px;font-size:0.58rem;font-weight:600;margin-left:3px;" title="Recent query">{}d</span>"#, age_days)
                 };
-                let status = q.status.trim().to_ascii_lowercase();
-                let response_form = if status == "closed" {
+                let response_form = if query_is_closed(&q.status) {
                     "<small>closed</small>".to_string()
-                } else if status == "responded" {
+                } else if query_can_close(&q.status) {
                     format!(
                         r#"<form method="post" action="/ui/studies/queries/{}/close" style="margin:0.4rem 0;">
   <input type="hidden" name="admin_email" value="{}" />
@@ -8257,7 +8257,7 @@ async fn render_study_workbench(
                         q.id,
                         html_escape(admin_email.trim())
                     )
-                } else {
+                } else if query_can_respond(&q.status) {
                     format!(
                         r#"<form method="post" action="/ui/studies/queries/{}/respond" style="margin:0.4rem 0;">
   <input type="hidden" name="admin_email" value="{}" />
@@ -8268,6 +8268,8 @@ async fn render_study_workbench(
                         q.id,
                         html_escape(admin_email.trim())
                     )
+                } else {
+                    "<small>workflow state unavailable</small>".to_string()
                 };
                 format!(
                     "<li><strong>{}</strong> <small>submission={} field={} status={} {}</small><div>{}</div>{}</li>",

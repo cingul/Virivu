@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod models;
 mod routes;
+mod workflow;
 
 use anyhow::Context;
 use diesel::{pg::PgConnection, prelude::*, sql_query};

@@ -13,6 +13,7 @@ use crate::models::{
     StudyCrfTemplate, StudyDataQuery, StudyOperationalSummary, StudyPhaseEvent, StudyReadiness,
     StudyStartupChecklistItem, StudyVisitTemplate, User, UserMembership,
 };
+use crate::workflow::{query_can_close, query_can_respond, query_is_closed, QUERY_STATUS_RESPONDED};
 
 #[derive(Clone)]
 pub struct Db {
@@ -1617,7 +1618,7 @@ impl Db {
             .await?
             .ok_or_else(|| anyhow!("conflict: data query not found"))?;
         let existing_status: String = existing.get("status");
-        if !existing_status.trim().eq_ignore_ascii_case("open") {
+        if !query_can_respond(&existing_status) {
             return Err(anyhow!(
                 "conflict: data query must be open before it can be responded"
             ));
@@ -1627,7 +1628,7 @@ impl Db {
                 r#"
                 UPDATE study_data_queries
                 SET
-                    status = 'responded',
+                    status = $3,
                     response_text = $2,
                     updated_at = NOW()
                 WHERE id = $1
@@ -1644,7 +1645,7 @@ impl Db {
                     created_at,
                     updated_at
                 "#,
-                &[&query_id, &response_text],
+                &[&query_id, &response_text, &QUERY_STATUS_RESPONDED],
             )
             .await?;
         Ok(row_to_study_data_query(&row))
@@ -1664,10 +1665,10 @@ impl Db {
             .await?
             .ok_or_else(|| anyhow!("conflict: data query not found"))?;
         let existing_status: String = existing.get("status");
-        if existing_status.trim().eq_ignore_ascii_case("closed") {
+        if query_is_closed(&existing_status) {
             return Err(anyhow!("conflict: data query is already closed"));
         }
-        if !existing_status.trim().eq_ignore_ascii_case("responded") {
+        if !query_can_close(&existing_status) {
             return Err(anyhow!(
                 "conflict: data query must be responded before it can be closed"
             ));
