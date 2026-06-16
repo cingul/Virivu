@@ -2727,28 +2727,58 @@ async fn render_workbench(
             )
         })
         .collect::<String>();
-    let submission_options = study_submissions
-        .iter()
-        .map(|submission| {
-            format!(
-                r#"<option value="{id}">{id} ({status})</option>"#,
-                id = submission.id,
-                status = submission.status.as_db()
-            )
-        })
-        .collect::<String>();
-    let query_options = study_queries
+    let has_submission_options = !study_submissions.is_empty();
+    let submission_options = if has_submission_options {
+        study_submissions
+            .iter()
+            .map(|submission| {
+                format!(
+                    r#"<option value="{id}">{id} ({status})</option>"#,
+                    id = submission.id,
+                    status = submission.status.as_db()
+                )
+            })
+            .collect::<String>()
+    } else {
+        r#"<option value="" selected disabled>No CRF submissions yet for this study</option>"#
+            .to_string()
+    };
+    let open_or_responded_queries = study_queries
         .iter()
         .filter(|query_entry| query_entry.status.as_db() != "closed")
-        .map(|query_entry| {
-            format!(
-                r#"<option value="{id}">{summary} ({status})</option>"#,
-                id = query_entry.id,
-                summary = escape_html(&query_entry.summary),
-                status = query_entry.status.as_db()
-            )
-        })
-        .collect::<String>();
+        .collect::<Vec<_>>();
+    let has_query_options = !open_or_responded_queries.is_empty();
+    let query_options = if has_query_options {
+        open_or_responded_queries
+            .iter()
+            .map(|query_entry| {
+                format!(
+                    r#"<option value="{id}">{summary} ({status})</option>"#,
+                    id = query_entry.id,
+                    summary = escape_html(&query_entry.summary),
+                    status = query_entry.status.as_db()
+                )
+            })
+            .collect::<String>()
+    } else {
+        r#"<option value="" selected disabled>No open/responded queries for this study</option>"#
+            .to_string()
+    };
+    let execute_tab_href = workbench_href(selected_org, selected_study, "execute", None);
+    let no_submission_hint = if has_submission_options {
+        String::new()
+    } else {
+        format!(
+            r#"<p class="muted" style="margin-top:0.5rem;">Create a CRF submission first in <a href="{href}" style="font-weight:700;color:#02182b;">Execute tab</a>, then return here to raise a query.</p>"#,
+            href = escape_html(&execute_tab_href)
+        )
+    };
+    let no_query_hint = if has_query_options {
+        String::new()
+    } else {
+        r#"<p class="muted" style="margin-top:0.5rem;">No unresolved queries yet. Raise a query first to enable respond/close actions.</p>"#
+            .to_string()
+    };
     let dua_options = org_duas
         .iter()
         .map(|dua| {
@@ -3178,8 +3208,9 @@ async fn render_workbench(
       <label>Study</label><select name="study_id" required>{study_select_options}</select>
       <label>Submission</label><select name="submission_id" required>{submission_options}</select>
       <label>Summary</label><input name="summary" placeholder="Please confirm units" required />
-      <button type="submit">Raise query</button>
+      <button type="submit" {raise_query_disabled}>Raise query</button>
     </form>
+    {no_submission_hint}
   </article>
   <article class="panel">
     <h3>Respond to query</h3>
@@ -3188,8 +3219,9 @@ async fn render_workbench(
       <label>Study</label><select name="study_id" required>{study_select_options}</select>
       <label>Query</label><select name="query_id" required>{query_options}</select>
       <label>Response comment (optional)</label><input name="comment_text" placeholder="Updated source doc attached" />
-      <button type="submit">Mark responded</button>
+      <button type="submit" {respond_query_disabled}>Mark responded</button>
     </form>
+    {no_query_hint}
   </article>
   <article class="panel">
     <h3>Close query</h3>
@@ -3197,7 +3229,7 @@ async fn render_workbench(
       <input type="hidden" name="action" value="close" />
       <label>Study</label><select name="study_id" required>{study_select_options}</select>
       <label>Query</label><select name="query_id" required>{query_options}</select>
-      <button type="submit">Close query</button>
+      <button type="submit" {close_query_disabled}>Close query</button>
     </form>
     <p class="muted">Open: <strong>{open_queries}</strong> · Responded: <strong>{responded_queries}</strong> · Closed: <strong>{closed_queries}</strong></p>
   </article>
@@ -3227,6 +3259,15 @@ async fn render_workbench(
             study_select_options = study_select_options.as_str(),
             submission_options = submission_options.as_str(),
             query_options = query_options.as_str(),
+            raise_query_disabled = if has_submission_options {
+                ""
+            } else {
+                "disabled"
+            },
+            respond_query_disabled = if has_query_options { "" } else { "disabled" },
+            close_query_disabled = if has_query_options { "" } else { "disabled" },
+            no_submission_hint = no_submission_hint.as_str(),
+            no_query_hint = no_query_hint.as_str(),
             org_options = org_options.as_str(),
             patient_options = patient_options.as_str(),
             visit_options = visit_options.as_str(),
