@@ -12,7 +12,7 @@ mod workflow;
 
 use config::Config;
 use db::{create_pool, run_migrations};
-use media::MediaUrlSigner;
+use media::{build_media_scanner, build_media_storage, MediaUploadPolicy, MediaUrlSigner};
 use oidc::OidcVerifier;
 use repository::PgRepository;
 use state::AppState;
@@ -39,14 +39,28 @@ async fn main() {
     }
     let repository = Arc::new(PgRepository::new(pool));
     let media_signer = Arc::new(MediaUrlSigner::new(&config.media_signing_secret));
-    let media_storage_root = Arc::new(std::path::PathBuf::from(&config.media_storage_root));
-    if let Err(err) = std::fs::create_dir_all(media_storage_root.as_ref()) {
-        panic!(
-            "failed to create media storage root {}: {}",
-            media_storage_root.display(),
-            err
-        );
+    let media_storage_root = std::path::PathBuf::from(&config.media_storage_root);
+    if config.media_storage_backend == "local" {
+        if let Err(err) = std::fs::create_dir_all(&media_storage_root) {
+            panic!(
+                "failed to create media storage root {}: {}",
+                media_storage_root.display(),
+                err
+            );
+        }
     }
+    let media_storage = build_media_storage(
+        &config.media_storage_backend,
+        media_storage_root.clone(),
+        config.media_storage_bucket.as_deref(),
+    )
+    .unwrap_or_else(|err| panic!("failed to initialize media storage backend: {err}"));
+    let media_scanner =
+        build_media_scanner(&config.media_scan_mode, &config.media_scan_blocked_keywords);
+    let media_upload_policy = Arc::new(MediaUploadPolicy {
+        max_upload_bytes: config.media_max_upload_bytes,
+        allowed_content_types: config.media_allowed_content_types.clone(),
+    });
     let oidc_verifier = Arc::new(OidcVerifier::new(
         config.google_client_id.clone(),
         config.google_workspace_domain.clone(),
@@ -58,7 +72,9 @@ async fn main() {
         oidc_verifier,
         allow_dev_auth_bypass: config.allow_dev_auth_bypass,
         media_signer,
-        media_storage_root,
+        media_storage,
+        media_scanner,
+        media_upload_policy,
         media_signed_url_ttl_seconds: config.media_signed_url_ttl_seconds,
     };
 
@@ -98,7 +114,12 @@ async fn main() {
         google_jwks_url = ?config.google_jwks_url,
         oidc_jwks_cache_seconds = config.oidc_jwks_cache_seconds,
         run_mode = %config.run_mode,
+        media_storage_backend = %config.media_storage_backend,
+        media_storage_bucket = ?config.media_storage_bucket,
         media_storage_root = %config.media_storage_root,
+        media_max_upload_bytes = config.media_max_upload_bytes,
+        media_allowed_content_types = ?config.media_allowed_content_types,
+        media_scan_mode = %config.media_scan_mode,
         media_signed_url_ttl_seconds = config.media_signed_url_ttl_seconds,
         "starting Virival API server"
     );

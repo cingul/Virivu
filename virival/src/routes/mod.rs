@@ -1484,6 +1484,16 @@ async fn create_media_upload_ticket(
     if let Some(patient_id) = input.patient_id {
         state.repository.get_patient(patient_id).await?;
     }
+    let normalized_content_type = input.content_type.trim().to_ascii_lowercase();
+    if !state
+        .media_upload_policy
+        .allows_content_type(&normalized_content_type)
+    {
+        return Err(ApiError::BadRequest(format!(
+            "content type is not allowed by policy: {}",
+            input.content_type.trim()
+        )));
+    }
 
     let max_ttl = state.media_signed_url_ttl_seconds.max(60);
     let requested_ttl = input.expires_in_seconds.unwrap_or(max_ttl.min(900));
@@ -1504,7 +1514,7 @@ async fn create_media_upload_ticket(
             input.category.trim(),
             input.filename.trim(),
             &object_key,
-            input.content_type.trim(),
+            &normalized_content_type,
             expires_at,
             Some(user.user_id),
         )
@@ -1580,15 +1590,30 @@ async fn upload_media_asset(
         ));
     }
     let asset = state.repository.get_media_asset(asset_id).await?;
-    let path = media_asset_path(state.media_storage_root.as_ref(), &asset.object_key);
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|err| ApiError::Internal(format!("failed creating media directory: {err}")))?;
+    if body.len() as u64 > state.media_upload_policy.max_upload_bytes {
+        return Err(ApiError::BadRequest(format!(
+            "payload exceeds MEDIA_MAX_UPLOAD_BYTES ({})",
+            state.media_upload_policy.max_upload_bytes
+        )));
     }
-    tokio::fs::write(&path, body.as_ref())
+    if !state
+        .media_upload_policy
+        .allows_content_type(&asset.content_type)
+    {
+        return Err(ApiError::BadRequest(format!(
+            "asset content type is not allowed by policy: {}",
+            asset.content_type
+        )));
+    }
+    state
+        .media_scanner
+        .scan(&asset.filename, &asset.content_type, body.as_ref())
+        .map_err(ApiError::Conflict)?;
+    state
+        .media_storage
+        .put_object(&asset.object_key, body.as_ref())
         .await
-        .map_err(|err| ApiError::Internal(format!("failed writing media file: {err}")))?;
+        .map_err(ApiError::Internal)?;
     let updated = state
         .repository
         .mark_media_asset_uploaded(asset_id, body.len() as i64)
@@ -1616,8 +1641,9 @@ async fn download_media_asset(
         ));
     }
     let asset = state.repository.get_media_asset(asset_id).await?;
-    let path = media_asset_path(state.media_storage_root.as_ref(), &asset.object_key);
-    let bytes = tokio::fs::read(&path)
+    let bytes = state
+        .media_storage
+        .get_object(&asset.object_key)
         .await
         .map_err(|err| ApiError::NotFound(format!("media payload unavailable: {err}")))?;
     let mut response = Response::new(Body::from(bytes));
@@ -1655,12 +1681,6 @@ fn sanitize_filename(raw: &str) -> String {
         sanitized = "asset.bin".to_string();
     }
     sanitized
-}
-
-fn media_asset_path(root: &std::path::Path, object_key: &str) -> std::path::PathBuf {
-    object_key
-        .split('/')
-        .fold(root.to_path_buf(), |acc, part| acc.join(part))
 }
 
 fn escape_pdf_text(raw: &str) -> String {
@@ -2243,6 +2263,26 @@ async fn submit_workbench_media_ticket(
             "category, filename, and content_type are required".to_string(),
         ));
     }
+    state
+        .repository
+        .get_organization(form.organization_id)
+        .await?;
+    if let Some(study_id) = form.study_id {
+        state.repository.get_study(study_id).await?;
+    }
+    if let Some(patient_id) = form.patient_id {
+        state.repository.get_patient(patient_id).await?;
+    }
+    let normalized_content_type = form.content_type.trim().to_ascii_lowercase();
+    if !state
+        .media_upload_policy
+        .allows_content_type(&normalized_content_type)
+    {
+        return Err(ApiError::BadRequest(format!(
+            "content type is not allowed by policy: {}",
+            form.content_type.trim()
+        )));
+    }
     let expires_at =
         Utc::now() + chrono::Duration::seconds(state.media_signed_url_ttl_seconds.max(60) as i64);
     let object_key = format!(
@@ -2260,7 +2300,7 @@ async fn submit_workbench_media_ticket(
             form.category.trim(),
             form.filename.trim(),
             &object_key,
-            form.content_type.trim(),
+            &normalized_content_type,
             expires_at,
             Some(user.user_id),
         )
@@ -3164,7 +3204,7 @@ async fn render_workbench(
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival Phase 8 · Research Workbench</h1>
+      <h1>Virival Phase 9 · Research Workbench</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> ({role}). Focus organization: <strong>{selected_org}</strong>. Focus study: <strong>{selected_study}</strong>.</p>
       <p class="muted"><strong>Workflow coach:</strong> {guidance}</p>
       {stage_cards}
@@ -3288,7 +3328,7 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival · Phase 8 Product Shell</h1>
+      <h1>Virival · Phase 9 Product Shell</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> (<strong>{email}</strong>) with role <strong>{role}</strong>. Source: <strong>{auth_source}</strong>. Organization scope: <strong>{org_scope}</strong>.</p>
       <span class="chip">workflow-first architecture mode</span>
       <p style="margin:0.55rem 0 0;"><a href="/ui/workbench" style="display:inline-block;background:#02182b;color:#fff;text-decoration:none;border-radius:10px;padding:0.5rem 0.75rem;font-weight:700;">Open Research Workbench →</a></p>

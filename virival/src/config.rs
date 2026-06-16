@@ -14,8 +14,14 @@ pub struct Config {
     pub worker_poll_seconds: u64,
     pub worker_batch_size: i64,
     pub media_storage_root: String,
+    pub media_storage_backend: String,
+    pub media_storage_bucket: Option<String>,
     pub media_signing_secret: String,
     pub media_signed_url_ttl_seconds: u64,
+    pub media_max_upload_bytes: u64,
+    pub media_allowed_content_types: Vec<String>,
+    pub media_scan_mode: String,
+    pub media_scan_blocked_keywords: Vec<String>,
 }
 
 impl Config {
@@ -62,6 +68,15 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "./data/media".to_string());
+        let media_storage_backend = env::var("MEDIA_STORAGE_BACKEND")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "local".to_string());
+        let media_storage_bucket = env::var("MEDIA_STORAGE_BUCKET")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         let media_signing_secret = env::var("MEDIA_SIGNING_SECRET")
             .ok()
             .map(|value| value.trim().to_string())
@@ -71,6 +86,45 @@ impl Config {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(900);
+        let media_max_upload_bytes = env::var("MEDIA_MAX_UPLOAD_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(25 * 1024 * 1024);
+        let media_allowed_content_types = env::var("MEDIA_ALLOWED_CONTENT_TYPES")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|entry| entry.trim().to_ascii_lowercase())
+                    .filter(|entry| !entry.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|entries| !entries.is_empty())
+            .unwrap_or_else(|| {
+                vec![
+                    "application/pdf".to_string(),
+                    "image/png".to_string(),
+                    "image/jpeg".to_string(),
+                    "image/webp".to_string(),
+                    "video/mp4".to_string(),
+                    "video/quicktime".to_string(),
+                ]
+            });
+        let media_scan_mode = env::var("MEDIA_SCAN_MODE")
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "noop".to_string());
+        let media_scan_blocked_keywords = env::var("MEDIA_SCAN_BLOCKED_KEYWORDS")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|entry| entry.trim().to_ascii_lowercase())
+                    .filter(|entry| !entry.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         Self {
             app_name,
             bind_address,
@@ -84,8 +138,14 @@ impl Config {
             worker_poll_seconds,
             worker_batch_size,
             media_storage_root,
+            media_storage_backend,
+            media_storage_bucket,
             media_signing_secret,
             media_signed_url_ttl_seconds,
+            media_max_upload_bytes,
+            media_allowed_content_types,
+            media_scan_mode,
+            media_scan_blocked_keywords,
         }
     }
 }

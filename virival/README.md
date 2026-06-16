@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 8 baseline)
+## Current scope (Phase 9 baseline)
 
 Virival now includes:
 
@@ -42,6 +42,9 @@ Virival now includes:
 - Signed media upload ticket flow for consent/media assets
 - Secure media upload/download endpoints using HMAC-signed URLs
 - Worker runtime mode for reminder queue polling
+- Pluggable media storage abstraction (`local`, with S3/GCS-ready backend interface)
+- Media upload policy guardrails (max bytes + allowlisted content types)
+- Configurable media scanning hooks (`noop` / keyword-based rejection mode)
 - CI workflow for formatting/check/test
 - Deployment scaffolding: Dockerfile, docker-compose, and Kubernetes manifests
 - PostgreSQL-backed persistence with boot-time SQL migrations
@@ -72,8 +75,14 @@ Defaults:
 - `WORKER_POLL_SECONDS=30`
 - `WORKER_BATCH_SIZE=50`
 - `MEDIA_STORAGE_ROOT=./data/media`
+- `MEDIA_STORAGE_BACKEND=local` (`local|s3|gcs`)
+- `MEDIA_STORAGE_BUCKET=` (required when non-local adapters are implemented)
 - `MEDIA_SIGNING_SECRET=change-me-in-production`
 - `MEDIA_SIGNED_URL_TTL_SECONDS=900`
+- `MEDIA_MAX_UPLOAD_BYTES=26214400`
+- `MEDIA_ALLOWED_CONTENT_TYPES=application/pdf,image/png,image/jpeg,image/webp,video/mp4,video/quicktime`
+- `MEDIA_SCAN_MODE=noop` (`noop|keyword`)
+- `MEDIA_SCAN_BLOCKED_KEYWORDS=eicar,malware_test_signature`
 
 Health:
 

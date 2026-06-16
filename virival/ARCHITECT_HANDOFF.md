@@ -61,11 +61,17 @@ Your mission is to evolve this into production-ready architecture while preservi
 - Added CI checks workflow (`.github/workflows/virival-ci.yml`) and unit tests for URL signing.
 - Added deployment scaffolding (Dockerfile, docker-compose, Kubernetes stack manifest).
 
-### Phase 9 - Platform hardening and production controls
-- Replace local media storage with pluggable S3/GCS adapter implementations.
-- Add end-to-end integration tests with isolated PostgreSQL fixtures.
-- Add rate limiting, upload size limits, and content scanning hooks for media assets.
-- Add observability stack (metrics/health depth, structured spans, worker dashboards).
+### Phase 9 completed (platform hardening slice 1)
+- Added pluggable media storage abstraction (`MediaStorage`) with local implementation and S3/GCS-ready backend selection.
+- Added media upload guardrails: max payload size and allowlisted content types.
+- Added configurable scanning hooks via `MEDIA_SCAN_MODE` (`noop` / keyword scanner) and blocked keyword policy.
+- Added additional unit/integration-style module tests for storage, scanner, signer, and upload policy behavior.
+
+### Phase 10 - Platform hardening slice 2
+- Implement concrete S3/GCS storage adapters and signed URL handoff without local disk dependency.
+- Add end-to-end integration tests with isolated PostgreSQL fixtures and API-level workflow assertions.
+- Add observability stack (metrics endpoints, worker queue dashboards, structured span enrichment).
+- Add request rate-limiting and per-tenant upload quotas.
 
 ## Coding style
 - Keep modules small and explicit.
