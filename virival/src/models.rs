@@ -442,12 +442,30 @@ pub struct MediaAsset {
     pub filename: String,
     pub object_key: String,
     pub content_type: String,
+    pub expected_byte_size: i64,
     pub byte_size: i64,
     pub status: MediaAssetStatus,
     pub upload_expires_at: DateTime<Utc>,
     pub uploaded_at: Option<DateTime<Utc>>,
     pub created_by_user_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrganizationMediaPolicy {
+    pub organization_id: Uuid,
+    pub max_total_bytes: Option<i64>,
+    pub max_asset_bytes: Option<i64>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrganizationMediaUsage {
+    pub organization_id: Uuid,
+    pub uploaded_bytes: i64,
+    pub pending_reserved_bytes: i64,
+    pub uploaded_asset_count: i64,
+    pub pending_asset_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -665,6 +683,7 @@ pub struct CreateMediaUploadTicketRequest {
     pub category: String,
     pub filename: String,
     pub content_type: String,
+    pub expected_byte_size: i64,
     pub expires_in_seconds: Option<u64>,
 }
 
@@ -674,6 +693,12 @@ pub struct MediaUploadTicketResponse {
     pub upload_url: String,
     pub download_url: String,
     pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpsertOrganizationMediaPolicyRequest {
+    pub max_total_bytes: Option<i64>,
+    pub max_asset_bytes: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

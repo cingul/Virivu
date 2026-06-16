@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 9 baseline)
+## Current scope (Phase 10 baseline)
 
 Virival now includes:
 
@@ -45,6 +45,9 @@ Virival now includes:
 - Pluggable media storage abstraction (`local`, with S3/GCS-ready backend interface)
 - Media upload policy guardrails (max bytes + allowlisted content types)
 - Configurable media scanning hooks (`noop` / keyword-based rejection mode)
+- Organization-level media policy controls (`max_total_bytes`, `max_asset_bytes`)
+- Reserved-byte quota accounting for pending uploads to prevent over-allocation
+- Media API rate limiting per actor (`MEDIA_RATE_LIMIT_PER_MINUTE`)
 - CI workflow for formatting/check/test
 - Deployment scaffolding: Dockerfile, docker-compose, and Kubernetes manifests
 - PostgreSQL-backed persistence with boot-time SQL migrations
@@ -83,6 +86,7 @@ Defaults:
 - `MEDIA_ALLOWED_CONTENT_TYPES=application/pdf,image/png,image/jpeg,image/webp,video/mp4,video/quicktime`
 - `MEDIA_SCAN_MODE=noop` (`noop|keyword`)
 - `MEDIA_SCAN_BLOCKED_KEYWORDS=eicar,malware_test_signature`
+- `MEDIA_RATE_LIMIT_PER_MINUTE=120`
 
 Health:
 
@@ -137,6 +141,9 @@ RUN_MODE=reminder_worker WORKER_POLL_SECONDS=10 WORKER_BATCH_SIZE=50 cargo run
 - `GET /api/v1/media-assets/download/{asset_id}?expires=...&sig=...`
 - `GET /api/v1/media-assets?organization_id=...`
 - `GET /api/v1/media-assets/{asset_id}`
+- `GET /api/v1/admin/organizations/{organization_id}/media-policy`
+- `POST /api/v1/admin/organizations/{organization_id}/media-policy`
+- `GET /api/v1/admin/organizations/{organization_id}/media-usage`
 - `GET /api/v1/studies/{study_id}/readiness`
 - `POST /api/v1/studies/{study_id}/phase`
 - `POST /api/v1/admin/memberships`
@@ -145,6 +152,8 @@ RUN_MODE=reminder_worker WORKER_POLL_SECONDS=10 WORKER_BATCH_SIZE=50 cargo run
 - `POST /api/v1/admin/reminder-jobs`
 - `GET /api/v1/admin/reminder-jobs?limit=50`
 - `POST /api/v1/admin/reminder-jobs/process`
+
+Upload ticket requests now require `expected_byte_size` so tenant quota policy can reserve capacity before upload.
 
 ## Admin UI routes
 

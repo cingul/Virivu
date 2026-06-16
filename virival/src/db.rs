@@ -74,6 +74,12 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), ApiError> {
         include_str!("../migrations/0006_phase8_media_assets.sql"),
     )
     .await?;
+    apply_migration(
+        &client,
+        "0007_phase10_media_policy_quota",
+        include_str!("../migrations/0007_phase10_media_policy_quota.sql"),
+    )
+    .await?;
     Ok(())
 }
 

@@ -22,6 +22,7 @@ pub struct Config {
     pub media_allowed_content_types: Vec<String>,
     pub media_scan_mode: String,
     pub media_scan_blocked_keywords: Vec<String>,
+    pub media_rate_limit_per_minute: usize,
 }
 
 impl Config {
@@ -125,6 +126,10 @@ impl Config {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let media_rate_limit_per_minute = env::var("MEDIA_RATE_LIMIT_PER_MINUTE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(120);
         Self {
             app_name,
             bind_address,
@@ -146,6 +151,7 @@ impl Config {
             media_allowed_content_types,
             media_scan_mode,
             media_scan_blocked_keywords,
+            media_rate_limit_per_minute,
         }
     }
 }

@@ -5,6 +5,7 @@ mod error;
 mod media;
 mod models;
 mod oidc;
+mod rate_limit;
 mod repository;
 mod routes;
 mod state;
@@ -14,6 +15,7 @@ use config::Config;
 use db::{create_pool, run_migrations};
 use media::{build_media_scanner, build_media_storage, MediaUploadPolicy, MediaUrlSigner};
 use oidc::OidcVerifier;
+use rate_limit::SimpleRateLimiter;
 use repository::PgRepository;
 use state::AppState;
 use std::sync::Arc;
@@ -61,6 +63,10 @@ async fn main() {
         max_upload_bytes: config.media_max_upload_bytes,
         allowed_content_types: config.media_allowed_content_types.clone(),
     });
+    let media_rate_limiter = Arc::new(SimpleRateLimiter::new(
+        std::time::Duration::from_secs(60),
+        config.media_rate_limit_per_minute.max(1),
+    ));
     let oidc_verifier = Arc::new(OidcVerifier::new(
         config.google_client_id.clone(),
         config.google_workspace_domain.clone(),
@@ -75,6 +81,7 @@ async fn main() {
         media_storage,
         media_scanner,
         media_upload_policy,
+        media_rate_limiter,
         media_signed_url_ttl_seconds: config.media_signed_url_ttl_seconds,
     };
 
@@ -120,6 +127,7 @@ async fn main() {
         media_max_upload_bytes = config.media_max_upload_bytes,
         media_allowed_content_types = ?config.media_allowed_content_types,
         media_scan_mode = %config.media_scan_mode,
+        media_rate_limit_per_minute = config.media_rate_limit_per_minute,
         media_signed_url_ttl_seconds = config.media_signed_url_ttl_seconds,
         "starting Virival API server"
     );

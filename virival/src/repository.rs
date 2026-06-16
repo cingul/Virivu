@@ -10,9 +10,10 @@ use crate::{
     models::{
         AgreementStatus, AppRole, AuditLogRecord, CloseoutChecklistItem, CrfSubmission,
         CrfTemplate, CrfTemplateVersion, DataQuery, DataQueryComment, DuaAgreement, DuaSignature,
-        MediaAsset, MediaAssetStatus, NewAuditLogEntry, Organization, OrganizationMembership,
-        Patient, QueryStatus, ReminderJob, ReminderJobStatus, Site, Study, StudyPhase,
-        StudyReadiness, SubmissionStatus, User, Visit, VisitScheduleTemplate, VisitStatus,
+        MediaAsset, MediaAssetStatus, NewAuditLogEntry, Organization, OrganizationMediaPolicy,
+        OrganizationMediaUsage, OrganizationMembership, Patient, QueryStatus, ReminderJob,
+        ReminderJobStatus, Site, Study, StudyPhase, StudyReadiness, SubmissionStatus, User, Visit,
+        VisitScheduleTemplate, VisitStatus,
     },
 };
 
@@ -199,6 +200,7 @@ pub trait Repository: Send + Sync {
         filename: &str,
         object_key: &str,
         content_type: &str,
+        expected_byte_size: i64,
         upload_expires_at: chrono::DateTime<chrono::Utc>,
         created_by_user_id: Option<Uuid>,
     ) -> Result<MediaAsset, ApiError>;
@@ -213,6 +215,20 @@ pub trait Repository: Send + Sync {
         asset_id: Uuid,
         byte_size: i64,
     ) -> Result<MediaAsset, ApiError>;
+    async fn get_organization_media_policy(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<Option<OrganizationMediaPolicy>, ApiError>;
+    async fn upsert_organization_media_policy(
+        &self,
+        organization_id: Uuid,
+        max_total_bytes: Option<i64>,
+        max_asset_bytes: Option<i64>,
+    ) -> Result<OrganizationMediaPolicy, ApiError>;
+    async fn get_organization_media_usage(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<OrganizationMediaUsage, ApiError>;
 
     async fn compute_readiness(&self, study_id: Uuid) -> Result<StudyReadiness, ApiError>;
 
@@ -1257,6 +1273,7 @@ impl Repository for PgRepository {
         filename: &str,
         object_key: &str,
         content_type: &str,
+        expected_byte_size: i64,
         upload_expires_at: chrono::DateTime<chrono::Utc>,
         created_by_user_id: Option<Uuid>,
     ) -> Result<MediaAsset, ApiError> {
@@ -1272,13 +1289,14 @@ impl Repository for PgRepository {
                     filename,
                     object_key,
                     content_type,
+                    expected_byte_size,
                     byte_size,
                     status,
                     upload_expires_at,
                     uploaded_at,
                     created_by_user_id,
                     created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, NULL, $11, NOW())
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, $11, NULL, $12, NOW())
                 RETURNING
                     id,
                     organization_id,
@@ -1288,6 +1306,7 @@ impl Repository for PgRepository {
                     filename,
                     object_key,
                     content_type,
+                    expected_byte_size,
                     byte_size,
                     status,
                     upload_expires_at,
@@ -1303,6 +1322,7 @@ impl Repository for PgRepository {
                     &filename,
                     &object_key,
                     &content_type,
+                    &expected_byte_size,
                     &MediaAssetStatus::PendingUpload.as_db(),
                     &upload_expires_at,
                     &created_by_user_id,
@@ -1326,6 +1346,7 @@ impl Repository for PgRepository {
                     filename,
                     object_key,
                     content_type,
+                    expected_byte_size,
                     byte_size,
                     status,
                     upload_expires_at,
@@ -1360,6 +1381,7 @@ impl Repository for PgRepository {
                     filename,
                     object_key,
                     content_type,
+                    expected_byte_size,
                     byte_size,
                     status,
                     upload_expires_at,
@@ -1400,6 +1422,7 @@ impl Repository for PgRepository {
                     filename,
                     object_key,
                     content_type,
+                    expected_byte_size,
                     byte_size,
                     status,
                     upload_expires_at,
@@ -1412,6 +1435,78 @@ impl Repository for PgRepository {
             .map_err(map_write_err)?
             .ok_or_else(|| ApiError::NotFound(format!("media asset {asset_id}")))?;
         map_media_asset(&row)
+    }
+
+    async fn get_organization_media_policy(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<Option<OrganizationMediaPolicy>, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "SELECT organization_id, max_total_bytes, max_asset_bytes, updated_at
+                 FROM organization_media_policies
+                 WHERE organization_id = $1",
+                &[&organization_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        row.map(|row| map_organization_media_policy(&row))
+            .transpose()
+    }
+
+    async fn upsert_organization_media_policy(
+        &self,
+        organization_id: Uuid,
+        max_total_bytes: Option<i64>,
+        max_asset_bytes: Option<i64>,
+    ) -> Result<OrganizationMediaPolicy, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO organization_media_policies(
+                    organization_id,
+                    max_total_bytes,
+                    max_asset_bytes,
+                    updated_at
+                ) VALUES ($1, $2, $3, NOW())
+                ON CONFLICT(organization_id) DO UPDATE SET
+                    max_total_bytes = EXCLUDED.max_total_bytes,
+                    max_asset_bytes = EXCLUDED.max_asset_bytes,
+                    updated_at = NOW()
+                RETURNING organization_id, max_total_bytes, max_asset_bytes, updated_at",
+                &[&organization_id, &max_total_bytes, &max_asset_bytes],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_organization_media_policy(&row)
+    }
+
+    async fn get_organization_media_usage(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<OrganizationMediaUsage, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "SELECT
+                    COALESCE(SUM(byte_size) FILTER (WHERE status = 'uploaded'), 0)::BIGINT AS uploaded_bytes,
+                    COALESCE(SUM(expected_byte_size) FILTER (WHERE status = 'pending_upload'), 0)::BIGINT AS pending_reserved_bytes,
+                    COUNT(*) FILTER (WHERE status = 'uploaded') AS uploaded_asset_count,
+                    COUNT(*) FILTER (WHERE status = 'pending_upload') AS pending_asset_count
+                 FROM media_assets
+                 WHERE organization_id = $1",
+                &[&organization_id],
+            )
+            .await
+            .map_err(map_query_err)?;
+        Ok(OrganizationMediaUsage {
+            organization_id,
+            uploaded_bytes: row.get("uploaded_bytes"),
+            pending_reserved_bytes: row.get("pending_reserved_bytes"),
+            uploaded_asset_count: row.get("uploaded_asset_count"),
+            pending_asset_count: row.get("pending_asset_count"),
+        })
     }
 
     async fn compute_readiness(&self, study_id: Uuid) -> Result<StudyReadiness, ApiError> {
@@ -1918,12 +2013,22 @@ fn map_media_asset(row: &Row) -> Result<MediaAsset, ApiError> {
         filename: row.get("filename"),
         object_key: row.get("object_key"),
         content_type: row.get("content_type"),
+        expected_byte_size: row.get("expected_byte_size"),
         byte_size: row.get("byte_size"),
         status,
         upload_expires_at: row.get("upload_expires_at"),
         uploaded_at: row.get("uploaded_at"),
         created_by_user_id: row.get("created_by_user_id"),
         created_at: row.get("created_at"),
+    })
+}
+
+fn map_organization_media_policy(row: &Row) -> Result<OrganizationMediaPolicy, ApiError> {
+    Ok(OrganizationMediaPolicy {
+        organization_id: row.get("organization_id"),
+        max_total_bytes: row.get("max_total_bytes"),
+        max_asset_bytes: row.get("max_asset_bytes"),
+        updated_at: row.get("updated_at"),
     })
 }
 

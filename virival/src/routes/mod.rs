@@ -27,6 +27,7 @@ use crate::{
         CreateVisitScheduleTemplateRequest, HealthResponse, MarkSiteStartupRequest,
         MediaUploadTicketResponse, ProcessReminderJobsRequest, ProcessReminderJobsResponse,
         RespondDataQueryRequest, StudyPhase, StudyReadiness, TransitionStudyPhaseRequest,
+        UpsertOrganizationMediaPolicyRequest,
     },
     state::AppState,
     workflow::validate_phase_transition,
@@ -174,6 +175,14 @@ pub fn router(state: AppState, app_name: String) -> Router {
             "/api/v1/admin/organizations/{organization_id}/memberships",
             get(list_organization_memberships),
         )
+        .route(
+            "/api/v1/admin/organizations/{organization_id}/media-policy",
+            get(get_organization_media_policy).post(upsert_organization_media_policy),
+        )
+        .route(
+            "/api/v1/admin/organizations/{organization_id}/media-usage",
+            get(get_organization_media_usage),
+        )
         .route("/api/v1/admin/audit-logs", get(list_audit_logs))
         .route(
             "/api/v1/admin/reminder-jobs",
@@ -229,6 +238,22 @@ fn can_admin(user: &AuthenticatedUser) -> Result<(), ApiError> {
 
 fn can_platform_admin(user: &AuthenticatedUser) -> Result<(), ApiError> {
     require_any_role(user, &[AppRole::PlatformAdmin])
+}
+
+fn enforce_media_rate_limit(
+    state: &AppState,
+    user: &AuthenticatedUser,
+    action: &str,
+    scope: &str,
+) -> Result<(), ApiError> {
+    let key = format!("media:{action}:{scope}:{}", user.subject);
+    if state.media_rate_limiter.allow(&key) {
+        Ok(())
+    } else {
+        Err(ApiError::TooManyRequests(
+            "media request rate limit exceeded; retry shortly".to_string(),
+        ))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,6 +432,7 @@ struct WorkbenchMediaTicketForm {
     category: String,
     filename: String,
     content_type: String,
+    expected_byte_size: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -455,6 +481,63 @@ async fn list_organization_memberships(
         state
             .repository
             .list_organization_memberships(organization_id)
+            .await?,
+    ))
+}
+
+async fn get_organization_media_policy(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(organization_id): Path<Uuid>,
+) -> Result<Json<Option<crate::models::OrganizationMediaPolicy>>, ApiError> {
+    can_admin(&user)?;
+    state.repository.get_organization(organization_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .get_organization_media_policy(organization_id)
+            .await?,
+    ))
+}
+
+async fn upsert_organization_media_policy(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(organization_id): Path<Uuid>,
+    Json(input): Json<UpsertOrganizationMediaPolicyRequest>,
+) -> Result<Json<crate::models::OrganizationMediaPolicy>, ApiError> {
+    can_platform_admin(&user)?;
+    if input.max_total_bytes.is_some_and(|value| value <= 0)
+        || input.max_asset_bytes.is_some_and(|value| value <= 0)
+    {
+        return Err(ApiError::BadRequest(
+            "media policy limits must be positive when provided".to_string(),
+        ));
+    }
+    state.repository.get_organization(organization_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .upsert_organization_media_policy(
+                organization_id,
+                input.max_total_bytes,
+                input.max_asset_bytes,
+            )
+            .await?,
+    ))
+}
+
+async fn get_organization_media_usage(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(organization_id): Path<Uuid>,
+) -> Result<Json<crate::models::OrganizationMediaUsage>, ApiError> {
+    can_admin(&user)?;
+    state.repository.get_organization(organization_id).await?;
+    Ok(Json(
+        state
+            .repository
+            .get_organization_media_usage(organization_id)
             .await?,
     ))
 }
@@ -1466,6 +1549,7 @@ async fn create_media_upload_ticket(
     Json(input): Json<CreateMediaUploadTicketRequest>,
 ) -> Result<Json<MediaUploadTicketResponse>, ApiError> {
     can_write(&user)?;
+    enforce_media_rate_limit(&state, &user, "ticket", &input.organization_id.to_string())?;
     if input.category.trim().is_empty()
         || input.filename.trim().is_empty()
         || input.content_type.trim().is_empty()
@@ -1484,6 +1568,11 @@ async fn create_media_upload_ticket(
     if let Some(patient_id) = input.patient_id {
         state.repository.get_patient(patient_id).await?;
     }
+    if input.expected_byte_size <= 0 {
+        return Err(ApiError::BadRequest(
+            "expected_byte_size must be positive".to_string(),
+        ));
+    }
     let normalized_content_type = input.content_type.trim().to_ascii_lowercase();
     if !state
         .media_upload_policy
@@ -1493,6 +1582,36 @@ async fn create_media_upload_ticket(
             "content type is not allowed by policy: {}",
             input.content_type.trim()
         )));
+    }
+    let policy = state
+        .repository
+        .get_organization_media_policy(input.organization_id)
+        .await?;
+    let usage = state
+        .repository
+        .get_organization_media_usage(input.organization_id)
+        .await?;
+    let global_max = state.media_upload_policy.max_upload_bytes as i64;
+    let effective_asset_max = policy
+        .as_ref()
+        .and_then(|value| value.max_asset_bytes)
+        .map(|value| value.min(global_max))
+        .unwrap_or(global_max);
+    if input.expected_byte_size > effective_asset_max {
+        return Err(ApiError::BadRequest(format!(
+            "expected_byte_size exceeds asset limit ({} bytes)",
+            effective_asset_max
+        )));
+    }
+    if let Some(total_limit) = policy.as_ref().and_then(|value| value.max_total_bytes) {
+        let projected_total =
+            usage.uploaded_bytes + usage.pending_reserved_bytes + input.expected_byte_size;
+        if projected_total > total_limit {
+            return Err(ApiError::Conflict(format!(
+                "organization media quota exceeded (limit={}, projected={})",
+                total_limit, projected_total
+            )));
+        }
     }
 
     let max_ttl = state.media_signed_url_ttl_seconds.max(60);
@@ -1515,6 +1634,7 @@ async fn create_media_upload_ticket(
             input.filename.trim(),
             &object_key,
             &normalized_content_type,
+            input.expected_byte_size,
             expires_at,
             Some(user.user_id),
         )
@@ -1571,11 +1691,12 @@ async fn get_media_asset(
 
 async fn upload_media_asset(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(asset_id): Path<Uuid>,
     Query(query): Query<SignedMediaQuery>,
     body: axum::body::Bytes,
 ) -> Result<Json<crate::models::MediaAsset>, ApiError> {
+    enforce_media_rate_limit(&state, &user, "upload", &asset_id.to_string())?;
     if query.expires < Utc::now().timestamp() {
         return Err(ApiError::Unauthorized(
             "signed upload URL has expired".to_string(),
@@ -1605,6 +1726,12 @@ async fn upload_media_asset(
             asset.content_type
         )));
     }
+    if asset.expected_byte_size > 0 && body.len() as i64 > asset.expected_byte_size {
+        return Err(ApiError::BadRequest(format!(
+            "payload exceeds expected_byte_size for asset ({})",
+            asset.expected_byte_size
+        )));
+    }
     state
         .media_scanner
         .scan(&asset.filename, &asset.content_type, body.as_ref())
@@ -1623,10 +1750,11 @@ async fn upload_media_asset(
 
 async fn download_media_asset(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(asset_id): Path<Uuid>,
     Query(query): Query<SignedMediaQuery>,
 ) -> Result<Response, ApiError> {
+    enforce_media_rate_limit(&state, &user, "download", &asset_id.to_string())?;
     if query.expires < Utc::now().timestamp() {
         return Err(ApiError::Unauthorized(
             "signed download URL has expired".to_string(),
@@ -2255,12 +2383,18 @@ async fn submit_workbench_media_ticket(
     Form(form): Form<WorkbenchMediaTicketForm>,
 ) -> Result<Redirect, ApiError> {
     can_write(&user)?;
+    enforce_media_rate_limit(&state, &user, "ticket", &form.organization_id.to_string())?;
     if form.category.trim().is_empty()
         || form.filename.trim().is_empty()
         || form.content_type.trim().is_empty()
     {
         return Err(ApiError::BadRequest(
             "category, filename, and content_type are required".to_string(),
+        ));
+    }
+    if form.expected_byte_size <= 0 {
+        return Err(ApiError::BadRequest(
+            "expected_byte_size must be positive".to_string(),
         ));
     }
     state
@@ -2283,6 +2417,36 @@ async fn submit_workbench_media_ticket(
             form.content_type.trim()
         )));
     }
+    let policy = state
+        .repository
+        .get_organization_media_policy(form.organization_id)
+        .await?;
+    let usage = state
+        .repository
+        .get_organization_media_usage(form.organization_id)
+        .await?;
+    let global_max = state.media_upload_policy.max_upload_bytes as i64;
+    let effective_asset_max = policy
+        .as_ref()
+        .and_then(|value| value.max_asset_bytes)
+        .map(|value| value.min(global_max))
+        .unwrap_or(global_max);
+    if form.expected_byte_size > effective_asset_max {
+        return Err(ApiError::BadRequest(format!(
+            "expected_byte_size exceeds asset limit ({} bytes)",
+            effective_asset_max
+        )));
+    }
+    if let Some(total_limit) = policy.as_ref().and_then(|value| value.max_total_bytes) {
+        let projected_total =
+            usage.uploaded_bytes + usage.pending_reserved_bytes + form.expected_byte_size;
+        if projected_total > total_limit {
+            return Err(ApiError::Conflict(format!(
+                "organization media quota exceeded (limit={}, projected={})",
+                total_limit, projected_total
+            )));
+        }
+    }
     let expires_at =
         Utc::now() + chrono::Duration::seconds(state.media_signed_url_ttl_seconds.max(60) as i64);
     let object_key = format!(
@@ -2301,6 +2465,7 @@ async fn submit_workbench_media_ticket(
             form.filename.trim(),
             &object_key,
             &normalized_content_type,
+            form.expected_byte_size,
             expires_at,
             Some(user.user_id),
         )
@@ -2985,6 +3150,7 @@ async fn render_workbench(
       <label>Category</label><input name="category" placeholder="consent_pdf" value="consent_pdf" required />
       <label>Filename</label><input name="filename" placeholder="consent-form.pdf" required />
       <label>Content type</label><input name="content_type" placeholder="application/pdf" value="application/pdf" required />
+      <label>Expected bytes</label><input name="expected_byte_size" type="number" min="1" value="102400" required />
       <button type="submit">Generate signed upload ticket</button>
     </form>
   </article>
@@ -3204,7 +3370,7 @@ async fn render_workbench(
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival Phase 9 · Research Workbench</h1>
+      <h1>Virival Phase 10 · Research Workbench</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> ({role}). Focus organization: <strong>{selected_org}</strong>. Focus study: <strong>{selected_study}</strong>.</p>
       <p class="muted"><strong>Workflow coach:</strong> {guidance}</p>
       {stage_cards}
@@ -3328,7 +3494,7 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival · Phase 9 Product Shell</h1>
+      <h1>Virival · Phase 10 Product Shell</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> (<strong>{email}</strong>) with role <strong>{role}</strong>. Source: <strong>{auth_source}</strong>. Organization scope: <strong>{org_scope}</strong>.</p>
       <span class="chip">workflow-first architecture mode</span>
       <p style="margin:0.55rem 0 0;"><a href="/ui/workbench" style="display:inline-block;background:#02182b;color:#fff;text-decoration:none;border-radius:10px;padding:0.5rem 0.75rem;font-weight:700;">Open Research Workbench →</a></p>

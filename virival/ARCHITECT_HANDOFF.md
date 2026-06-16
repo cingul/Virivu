@@ -67,11 +67,20 @@ Your mission is to evolve this into production-ready architecture while preservi
 - Added configurable scanning hooks via `MEDIA_SCAN_MODE` (`noop` / keyword scanner) and blocked keyword policy.
 - Added additional unit/integration-style module tests for storage, scanner, signer, and upload policy behavior.
 
-### Phase 10 - Platform hardening slice 2
+### Phase 10 completed (platform hardening slice 2 - quota + throttling)
+- Added organization media policy persistence (`organization_media_policies`) with admin APIs:
+  - `GET /api/v1/admin/organizations/{organization_id}/media-policy`
+  - `POST /api/v1/admin/organizations/{organization_id}/media-policy`
+  - `GET /api/v1/admin/organizations/{organization_id}/media-usage`
+- Added `expected_byte_size` reservation on media upload tickets and persisted it on `media_assets`.
+- Enforced tenant media quota checks (per-asset and total org quota using uploaded + pending reserved bytes).
+- Added API/media workbench rate limiting with configurable `MEDIA_RATE_LIMIT_PER_MINUTE`.
+- Added `429 Too Many Requests` API error mapping and unit tests for the in-memory limiter.
+
+### Phase 11 - Platform hardening slice 3
 - Implement concrete S3/GCS storage adapters and signed URL handoff without local disk dependency.
 - Add end-to-end integration tests with isolated PostgreSQL fixtures and API-level workflow assertions.
 - Add observability stack (metrics endpoints, worker queue dashboards, structured span enrichment).
-- Add request rate-limiting and per-tenant upload quotas.
 
 ## Coding style
 - Keep modules small and explicit.

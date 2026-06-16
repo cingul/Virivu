@@ -18,6 +18,8 @@ pub enum ApiError {
     Conflict(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("too many requests: {0}")]
+    TooManyRequests(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -35,6 +37,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let payload = ErrorPayload {
