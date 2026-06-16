@@ -6,12 +6,12 @@ use tokio_postgres::{NoTls, Row};
 use uuid::Uuid;
 
 use crate::models::{
-    DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite, MediaUploadTicket,
-    Organization, OrganizationSummaryRow, OutboundEmail, Patient, PatientSession, PatientStudyVisit,
-    Project, ProjectProgressRow, ProSubmission, Provider, Site, SiteStartupChecklistItem,
-    StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission, StudyCrfTemplate, StudyDataQuery,
-    StudyOperationalSummary, StudyPhaseEvent, StudyReadiness, StudyStartupChecklistItem,
-    StudyVisitTemplate, User, UserMembership, AuditLog,
+    AuditLog, DataUseAgreement, DataUseAgreementSignature, Encounter, FormInvite,
+    MediaUploadTicket, Organization, OrganizationSummaryRow, OutboundEmail, Patient,
+    PatientSession, PatientStudyVisit, ProSubmission, Project, ProjectProgressRow, Provider, Site,
+    SiteStartupChecklistItem, StudyCloseChecklistItem, StudyCrfField, StudyCrfSubmission,
+    StudyCrfTemplate, StudyDataQuery, StudyOperationalSummary, StudyPhaseEvent, StudyReadiness,
+    StudyStartupChecklistItem, StudyVisitTemplate, User, UserMembership,
 };
 
 #[derive(Clone)]
@@ -55,10 +55,7 @@ const DEFAULT_STUDY_STARTUP_CHECKLIST_ITEMS: [(&str, &str); 8] = [
 ];
 
 const DEFAULT_SITE_STARTUP_CHECKLIST_ITEMS: [(&str, &str); 8] = [
-    (
-        "data_use_agreement",
-        "Data Use Agreement (DUA) Executed",
-    ),
+    ("data_use_agreement", "Data Use Agreement (DUA) Executed"),
     (
         "security_risk_assessment",
         "IT & Cybersecurity Risk Assessment Approved",
@@ -79,10 +76,7 @@ const DEFAULT_SITE_STARTUP_CHECKLIST_ITEMS: [(&str, &str); 8] = [
         "protocol_training",
         "Protocol and EDC System Training Completed",
     ),
-    (
-        "delegation_log",
-        "Delegation of Authority Log Signed",
-    ),
+    ("delegation_log", "Delegation of Authority Log Signed"),
     (
         "statement_of_investigator",
         "Statement of Investigator (e.g., FDA Form 1572) Signed",
@@ -221,10 +215,7 @@ impl Db {
             .collect())
     }
 
-    pub async fn get_organization_id_by_hex(
-        &self,
-        hex_code: &str,
-    ) -> anyhow::Result<Uuid> {
+    pub async fn get_organization_id_by_hex(&self, hex_code: &str) -> anyhow::Result<Uuid> {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
@@ -234,14 +225,14 @@ impl Db {
             .await?;
         match row {
             Some(r) => Ok(r.get("id")),
-            None => Err(anyhow::anyhow!("organization not found with hex code: {}", hex_code)),
+            None => Err(anyhow::anyhow!(
+                "organization not found with hex code: {}",
+                hex_code
+            )),
         }
     }
 
-    pub async fn get_project_id_by_hex(
-        &self,
-        hex_code: &str,
-    ) -> anyhow::Result<Uuid> {
+    pub async fn get_project_id_by_hex(&self, hex_code: &str) -> anyhow::Result<Uuid> {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
@@ -251,14 +242,14 @@ impl Db {
             .await?;
         match row {
             Some(r) => Ok(r.get("id")),
-            None => Err(anyhow::anyhow!("project not found with hex code: {}", hex_code)),
+            None => Err(anyhow::anyhow!(
+                "project not found with hex code: {}",
+                hex_code
+            )),
         }
     }
 
-    pub async fn get_site_id_by_hex(
-        &self,
-        hex_code: &str,
-    ) -> anyhow::Result<Uuid> {
+    pub async fn get_site_id_by_hex(&self, hex_code: &str) -> anyhow::Result<Uuid> {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
@@ -268,14 +259,14 @@ impl Db {
             .await?;
         match row {
             Some(r) => Ok(r.get("id")),
-            None => Err(anyhow::anyhow!("site not found with hex code: {}", hex_code)),
+            None => Err(anyhow::anyhow!(
+                "site not found with hex code: {}",
+                hex_code
+            )),
         }
     }
 
-    pub async fn get_patient_id_by_hex(
-        &self,
-        hex_code: &str,
-    ) -> anyhow::Result<Uuid> {
+    pub async fn get_patient_id_by_hex(&self, hex_code: &str) -> anyhow::Result<Uuid> {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
@@ -285,7 +276,10 @@ impl Db {
             .await?;
         match row {
             Some(r) => Ok(r.get("id")),
-            None => Err(anyhow::anyhow!("patient not found with hex code: {}", hex_code)),
+            None => Err(anyhow::anyhow!(
+                "patient not found with hex code: {}",
+                hex_code
+            )),
         }
     }
 
@@ -305,7 +299,10 @@ impl Db {
         Ok(rows.iter().map(row_to_site).collect())
     }
 
-    pub async fn list_sites_by_organization(&self, organization_id: Uuid) -> anyhow::Result<Vec<Site>> {
+    pub async fn list_sites_by_organization(
+        &self,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Vec<Site>> {
         let client = self.pool.get().await?;
         let rows = client
             .query(
@@ -1283,7 +1280,7 @@ impl Db {
                 ],
             )
             .await?;
-        
+
         let site_opt: Option<Uuid> = client
             .query_opt("SELECT site_id FROM patients WHERE id = $1", &[&patient_id])
             .await?
@@ -1293,7 +1290,7 @@ impl Db {
         } else {
             self.touch_project_activity(project_id).await?;
         }
-        
+
         Ok(row_to_study_crf_submission(&row))
     }
 
@@ -1486,6 +1483,27 @@ impl Db {
         raised_by_user_id: Option<Uuid>,
     ) -> anyhow::Result<StudyDataQuery> {
         let client = self.pool.get().await?;
+        let submission = client
+            .query_opt(
+                r#"
+                SELECT project_id, status
+                FROM study_crf_submissions
+                WHERE id = $1
+                "#,
+                &[&submission_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("conflict: submission not found"))?;
+        let submission_project_id: Uuid = submission.get("project_id");
+        if submission_project_id != project_id {
+            return Err(anyhow!("conflict: submission does not belong to project"));
+        }
+        let submission_status: String = submission.get("status");
+        if submission_status.trim().eq_ignore_ascii_case("draft") {
+            return Err(anyhow!(
+                "conflict: cannot raise data query on a draft submission"
+            ));
+        }
         let row = client
             .query_one(
                 r#"
@@ -1588,6 +1606,22 @@ impl Db {
         response_text: &str,
     ) -> anyhow::Result<StudyDataQuery> {
         let client = self.pool.get().await?;
+        if response_text.trim().is_empty() {
+            return Err(anyhow!("validation: response_text is required"));
+        }
+        let existing = client
+            .query_opt(
+                "SELECT status FROM study_data_queries WHERE id = $1",
+                &[&query_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("conflict: data query not found"))?;
+        let existing_status: String = existing.get("status");
+        if !existing_status.trim().eq_ignore_ascii_case("open") {
+            return Err(anyhow!(
+                "conflict: data query must be open before it can be responded"
+            ));
+        }
         let row = client
             .query_one(
                 r#"
@@ -1622,6 +1656,22 @@ impl Db {
         resolved_by_user_id: Option<Uuid>,
     ) -> anyhow::Result<StudyDataQuery> {
         let client = self.pool.get().await?;
+        let existing = client
+            .query_opt(
+                "SELECT status FROM study_data_queries WHERE id = $1",
+                &[&query_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow!("conflict: data query not found"))?;
+        let existing_status: String = existing.get("status");
+        if existing_status.trim().eq_ignore_ascii_case("closed") {
+            return Err(anyhow!("conflict: data query is already closed"));
+        }
+        if !existing_status.trim().eq_ignore_ascii_case("responded") {
+            return Err(anyhow!(
+                "conflict: data query must be responded before it can be closed"
+            ));
+        }
         let row = client
             .query_one(
                 r#"
@@ -2086,8 +2136,11 @@ impl Db {
             let project_hex = self.ensure_project_hex_code(&client, pid).await?;
             self.generate_unique_site_hex(&client, &project_hex).await?
         } else {
-            let org_hex = self.ensure_organization_hex_code(&client, organization_id).await?;
-            self.generate_unique_org_level_site_hex(&client, &org_hex).await?
+            let org_hex = self
+                .ensure_organization_hex_code(&client, organization_id)
+                .await?;
+            self.generate_unique_org_level_site_hex(&client, &org_hex)
+                .await?
         };
 
         let row = client
@@ -2101,7 +2154,8 @@ impl Db {
             )
             .await?;
         let site_id: Uuid = row.get("id");
-        self.ensure_default_site_startup_checklist_items(site_id).await?;
+        self.ensure_default_site_startup_checklist_items(site_id)
+            .await?;
 
         Ok(Site {
             id: site_id,
@@ -2129,7 +2183,10 @@ impl Db {
     pub async fn delete_organization(&self, organization_id: Uuid) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
         client
-            .execute("DELETE FROM organizations WHERE id = $1", &[&organization_id])
+            .execute(
+                "DELETE FROM organizations WHERE id = $1",
+                &[&organization_id],
+            )
             .await?;
         Ok(())
     }
@@ -2139,15 +2196,36 @@ impl Db {
         let tx = client.transaction().await?;
 
         // ── 0. Attempt schema migration (add new columns if missing) ──────────
-        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS site_id UUID", &[]).await;
-        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS encounter_id UUID", &[]).await;
+        let _ = tx
+            .execute(
+                "ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS site_id UUID",
+                &[],
+            )
+            .await;
+        let _ = tx
+            .execute(
+                "ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS encounter_id UUID",
+                &[],
+            )
+            .await;
         let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS entity_type VARCHAR(64) NOT NULL DEFAULT 'patient'", &[]).await;
-        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS entity_id UUID", &[]).await;
-        let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS file_name VARCHAR(256)", &[]).await;
+        let _ = tx
+            .execute(
+                "ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS entity_id UUID",
+                &[],
+            )
+            .await;
+        let _ = tx
+            .execute(
+                "ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS file_name VARCHAR(256)",
+                &[],
+            )
+            .await;
         let _ = tx.execute("ALTER TABLE media_upload_tickets ADD COLUMN IF NOT EXISTS description VARCHAR(512)", &[]).await;
 
         // ── 1. Wipe all data in dependency order ──────────────────────────────
-        tx.execute("DELETE FROM data_use_agreement_signatures", &[]).await?;
+        tx.execute("DELETE FROM data_use_agreement_signatures", &[])
+            .await?;
         tx.execute("DELETE FROM data_use_agreements", &[]).await?;
         tx.execute("DELETE FROM media_upload_tickets", &[]).await?;
         tx.execute("DELETE FROM form_invites", &[]).await?;
@@ -2161,8 +2239,10 @@ impl Db {
         tx.execute("DELETE FROM study_crf_templates", &[]).await?;
         tx.execute("DELETE FROM study_visit_templates", &[]).await?;
         tx.execute("DELETE FROM study_phase_events", &[]).await?;
-        tx.execute("DELETE FROM study_close_checklist_items", &[]).await?;
-        tx.execute("DELETE FROM study_startup_checklist_items", &[]).await?;
+        tx.execute("DELETE FROM study_close_checklist_items", &[])
+            .await?;
+        tx.execute("DELETE FROM study_startup_checklist_items", &[])
+            .await?;
         tx.execute("DELETE FROM sites", &[]).await?;
         tx.execute("DELETE FROM projects", &[]).await?;
         tx.execute("DELETE FROM user_memberships WHERE organization_id IS NOT NULL OR project_id IS NOT NULL", &[]).await?;
@@ -2407,7 +2487,6 @@ impl Db {
         Ok(())
     }
 
-
     pub async fn list_all_projects(&self) -> anyhow::Result<Vec<Project>> {
         let client = self.pool.get().await?;
         let rows = client
@@ -2454,21 +2533,29 @@ impl Db {
         Ok(rows.iter().map(row_to_patient).collect())
     }
 
-
-
     pub async fn set_site_status(&self, site_id: Uuid, status: &str) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
         client
-            .execute("UPDATE sites SET status = $1, last_activity_at = NOW() WHERE id = $2", &[&status, &site_id])
+            .execute(
+                "UPDATE sites SET status = $1, last_activity_at = NOW() WHERE id = $2",
+                &[&status, &site_id],
+            )
             .await?;
         Ok(())
     }
 
     /// Attach an existing site (typically org-level) to a specific project/study.
-    pub async fn attach_site_to_project(&self, site_id: Uuid, project_id: Uuid) -> anyhow::Result<()> {
+    pub async fn attach_site_to_project(
+        &self,
+        site_id: Uuid,
+        project_id: Uuid,
+    ) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
         client
-            .execute("UPDATE sites SET project_id = $1, last_activity_at = NOW() WHERE id = $2", &[&project_id, &site_id])
+            .execute(
+                "UPDATE sites SET project_id = $1, last_activity_at = NOW() WHERE id = $2",
+                &[&project_id, &site_id],
+            )
             .await?;
         Ok(())
     }
@@ -2477,7 +2564,10 @@ impl Db {
     pub async fn detach_site_from_project(&self, site_id: Uuid) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
         client
-            .execute("UPDATE sites SET project_id = NULL, last_activity_at = NOW() WHERE id = $1", &[&site_id])
+            .execute(
+                "UPDATE sites SET project_id = NULL, last_activity_at = NOW() WHERE id = $1",
+                &[&site_id],
+            )
             .await?;
         Ok(())
     }
@@ -2485,7 +2575,10 @@ impl Db {
     pub async fn set_project_status(&self, project_id: Uuid, status: &str) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
         client
-            .execute("UPDATE projects SET status = $1, last_activity_at = NOW() WHERE id = $2", &[&status, &project_id])
+            .execute(
+                "UPDATE projects SET status = $1, last_activity_at = NOW() WHERE id = $2",
+                &[&status, &project_id],
+            )
             .await?;
         Ok(())
     }
@@ -2518,9 +2611,12 @@ impl Db {
         Ok(())
     }
 
-    pub async fn auto_archive_dormant_entities(&self, days_threshold: f64) -> anyhow::Result<(u64, u64)> {
+    pub async fn auto_archive_dormant_entities(
+        &self,
+        days_threshold: f64,
+    ) -> anyhow::Result<(u64, u64)> {
         let client = self.pool.get().await?;
-        
+
         let updated_sites = client
             .execute(
                 "UPDATE sites 
@@ -2529,7 +2625,7 @@ impl Db {
                 &[&days_threshold],
             )
             .await?;
-            
+
         let updated_projects = client
             .execute(
                 "UPDATE projects 
@@ -2538,7 +2634,7 @@ impl Db {
                 &[&days_threshold],
             )
             .await?;
-            
+
         Ok((updated_sites, updated_projects))
     }
 
@@ -2787,10 +2883,7 @@ impl Db {
     }
 
     /// Create a patient portal magic-link session
-    pub async fn create_patient_session(
-        &self,
-        patient_id: Uuid,
-    ) -> anyhow::Result<PatientSession> {
+    pub async fn create_patient_session(&self, patient_id: Uuid) -> anyhow::Result<PatientSession> {
         // Use two UUIDs concatenated (no dashes) as a 256-bit secure token
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let expires_at = Utc::now() + Duration::days(7);
@@ -2981,10 +3074,7 @@ impl Db {
     }
 
     /// Find a patient by email for portal login
-    pub async fn get_patient_by_email(
-        &self,
-        email: &str,
-    ) -> anyhow::Result<Option<Patient>> {
+    pub async fn get_patient_by_email(&self, email: &str) -> anyhow::Result<Option<Patient>> {
         let client = self.pool.get().await?;
         let row = client
             .query_opt(
@@ -3252,7 +3342,11 @@ impl Db {
 
     /// For dev bypass users: ensure they have a platform_admin membership so they can see
     /// all organizations even if no explicit seed memberships exist.
-    pub async fn ensure_dev_platform_admin(&self, user_id: &Uuid, email: &str) -> anyhow::Result<()> {
+    pub async fn ensure_dev_platform_admin(
+        &self,
+        user_id: &Uuid,
+        email: &str,
+    ) -> anyhow::Result<()> {
         let client = self.pool.get().await?;
         // Insert a platform-level admin membership (NULL org + NULL project)
         let _ = client
@@ -3431,7 +3525,9 @@ impl Db {
         date_of_birth: Option<NaiveDate>,
     ) -> anyhow::Result<Patient> {
         let client = self.pool.get().await?;
-        let project = self.get_project(project_id).await?
+        let project = self
+            .get_project(project_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("project not found for patient creation"))?;
         let organization_id = project.organization_id;
 
@@ -4581,7 +4677,6 @@ fn normalize_encounter_type(raw: &str) -> Option<String> {
     }
 }
 
-
 fn normalize_organization_kind(raw: &str) -> Option<String> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "platform_root" => Some("platform_root".to_string()),
@@ -4984,4 +5079,3 @@ fn row_to_site(row: &Row) -> Site {
         created_at: row.get("created_at"),
     }
 }
-

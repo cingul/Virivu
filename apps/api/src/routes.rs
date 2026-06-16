@@ -72,7 +72,6 @@ pub struct AppContext {
     pub db: Db,
 }
 
-
 async fn render_portal_placeholder() -> Result<Html<String>, ApiError> {
     let body = r#"
 <div style="max-width:820px; margin: 40px auto; font-family: system-ui, sans-serif;">
@@ -169,24 +168,40 @@ async fn submit_patient_intake(
 
     let study_code = form.study_code.trim();
     if study_code.is_empty() || form.email.trim().is_empty() {
-        return Err(ApiError::Validation("Study code and email are required for portal intake.".to_string()));
+        return Err(ApiError::Validation(
+            "Study code and email are required for portal intake.".to_string(),
+        ));
     }
 
     // Try to resolve study_code to a project (by protocol_code or name contains)
     let projects = ctx.db.list_all_projects().await.unwrap_or_default();
 
     let matched_project = projects.iter().find(|p| {
-        p.protocol_code.as_deref().map_or(false, |c| c.eq_ignore_ascii_case(study_code)) ||
-        p.name.to_lowercase().contains(&study_code.to_lowercase())
+        p.protocol_code
+            .as_deref()
+            .map_or(false, |c| c.eq_ignore_ascii_case(study_code))
+            || p.name.to_lowercase().contains(&study_code.to_lowercase())
     });
 
     let site_id = if let Some(proj) = matched_project {
         // Prefer a site attached to the project; fall back to any org-level site
-        let project_sites = ctx.db.list_sites_by_project(proj.id).await.ok().unwrap_or_default();
+        let project_sites = ctx
+            .db
+            .list_sites_by_project(proj.id)
+            .await
+            .ok()
+            .unwrap_or_default();
         if let Some(s) = project_sites.first() {
             s.id
-        } else if let Ok(org_sites) = ctx.db.list_sites_by_organization(proj.organization_id).await {
-            org_sites.first().map(|s| s.id).unwrap_or_else(uuid::Uuid::nil)
+        } else if let Ok(org_sites) = ctx
+            .db
+            .list_sites_by_organization(proj.organization_id)
+            .await
+        {
+            org_sites
+                .first()
+                .map(|s| s.id)
+                .unwrap_or_else(uuid::Uuid::nil)
         } else {
             uuid::Uuid::nil()
         }
@@ -197,7 +212,9 @@ async fn submit_patient_intake(
     let patient = ctx
         .db
         .create_patient(
-            matched_project.map(|p| p.id).unwrap_or_else(uuid::Uuid::nil),
+            matched_project
+                .map(|p| p.id)
+                .unwrap_or_else(uuid::Uuid::nil),
             Some(site_id),
             Some(&format!("intake:{}", study_code)),
             Some(form.email.trim()),
@@ -211,17 +228,22 @@ async fn submit_patient_intake(
         "Study code: {} | resolved_site: {} | matched_project: {}",
         study_code,
         site_id,
-        matched_project.map(|p| p.id.to_string()).unwrap_or_else(|| "none".to_string())
+        matched_project
+            .map(|p| p.id.to_string())
+            .unwrap_or_else(|| "none".to_string())
     );
-    let _ = ctx.db.insert_audit_log(
-        "patients",
-        patient.id,
-        "intake_submitted_via_portal",
-        None,
-        None,
-        None,
-        Some(&audit_details),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "patients",
+            patient.id,
+            "intake_submitted_via_portal",
+            None,
+            None,
+            None,
+            Some(&audit_details),
+        )
+        .await;
 
     Ok(Redirect::to("/portal/intake/success"))
 }
@@ -283,21 +305,31 @@ async fn render_patient_portal_home(
         .get_patient_by_portal_token_multiuse(token)
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::Auth(AuthError::Forbidden("Invalid or expired patient portal link".to_string())))?;
+        .ok_or_else(|| {
+            ApiError::Auth(AuthError::Forbidden(
+                "Invalid or expired patient portal link".to_string(),
+            ))
+        })?;
 
     let now = Utc::now();
-    let recent_submissions = ctx.db.list_pro_submissions(patient.id).await.unwrap_or_default();
+    let recent_submissions = ctx
+        .db
+        .list_pro_submissions(patient.id)
+        .await
+        .unwrap_or_default();
 
     // Patient's own structured CRF submissions (the visit-linked ones they submit via the advanced form)
-    let my_structured_submissions = if let Ok(all) = ctx.db.list_study_crf_submissions(patient.project_id).await {
-        all.into_iter()
-            .filter(|s| s.patient_id == patient.id && s.entered_by_user_id.is_none())
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let my_structured_submissions =
+        if let Ok(all) = ctx.db.list_study_crf_submissions(patient.project_id).await {
+            all.into_iter()
+                .filter(|s| s.patient_id == patient.id && s.entered_by_user_id.is_none())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
     let recent_html = if recent_submissions.is_empty() {
-        "<p style=\"color:#64748b;font-size:0.9rem;\">No prior reports submitted yet.</p>".to_string()
+        "<p style=\"color:#64748b;font-size:0.9rem;\">No prior reports submitted yet.</p>"
+            .to_string()
     } else {
         recent_submissions
             .iter()
@@ -325,13 +357,18 @@ async fn render_patient_portal_home(
             .join("")
     };
 
-    let scheduled_visits = ctx.db.list_patient_study_visits_for_patient(patient.id).await.unwrap_or_default();
+    let scheduled_visits = ctx
+        .db
+        .list_patient_study_visits_for_patient(patient.id)
+        .await
+        .unwrap_or_default();
 
     // Build visit lookup for nice display in the patient's own structured report history
     let visit_display: std::collections::HashMap<uuid::Uuid, String> = scheduled_visits
         .iter()
         .map(|v| {
-            let date = v.scheduled_for
+            let date = v
+                .scheduled_for
                 .map(|d| d.format("%Y-%m-%d").to_string())
                 .unwrap_or_else(|| "unscheduled".to_string());
             (v.id, format!("{} ({})", date, html_escape(&v.status)))
@@ -398,7 +435,11 @@ async fn render_patient_portal_home(
             .join("")
     };
 
-    let available_templates = ctx.db.list_study_crf_templates(patient.project_id).await.unwrap_or_default();
+    let available_templates = ctx
+        .db
+        .list_study_crf_templates(patient.project_id)
+        .await
+        .unwrap_or_default();
 
     let template_options_html = available_templates
         .iter()
@@ -413,18 +454,30 @@ async fn render_patient_portal_home(
         .join("");
 
     let sample_answers = if let Some(first_template) = available_templates.first() {
-        let fields = ctx.db.list_study_crf_fields(first_template.id).await.unwrap_or_default();
+        let fields = ctx
+            .db
+            .list_study_crf_fields(first_template.id)
+            .await
+            .unwrap_or_default();
         generate_sample_answers_json(&fields)
     } else {
         "{\n  \"field_key\": \"value\"\n}".to_string()
     };
 
     let rendered_fields_html = if let Some(first_template) = available_templates.first() {
-        let fields = ctx.db.list_study_crf_fields(first_template.id).await.unwrap_or_default();
+        let fields = ctx
+            .db
+            .list_study_crf_fields(first_template.id)
+            .await
+            .unwrap_or_default();
         if fields.is_empty() {
             "<p style=\"color:#64748b;font-size:0.8rem;\">No fields defined for this template yet.</p>".to_string()
         } else {
-            fields.iter().map(|f| render_crf_field_for_data_entry(f, "")).collect::<Vec<_>>().join("")
+            fields
+                .iter()
+                .map(|f| render_crf_field_for_data_entry(f, ""))
+                .collect::<Vec<_>>()
+                .join("")
         }
     } else {
         "<p style=\"color:#64748b;font-size:0.8rem;\">No CRF templates defined for this study yet.</p>".to_string()
@@ -458,7 +511,10 @@ async fn render_patient_portal_home(
         .iter()
         .take(8)
         .map(|v| {
-            let date_str = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "TBD".to_string());
+            let date_str = v
+                .scheduled_for
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "TBD".to_string());
             format!(
                 "<option value=\"{}\">{} — {}</option>",
                 v.id,
@@ -566,7 +622,9 @@ async fn submit_patient_pro_report(
 ) -> Result<Redirect, ApiError> {
     let token = query.token.as_deref().unwrap_or("").trim();
     if token.is_empty() {
-        return Err(ApiError::Validation("Missing patient portal token".to_string()));
+        return Err(ApiError::Validation(
+            "Missing patient portal token".to_string(),
+        ));
     }
 
     let patient = ctx
@@ -574,15 +632,33 @@ async fn submit_patient_pro_report(
         .get_patient_by_portal_token_multiuse(token)
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::Auth(AuthError::Forbidden("Invalid or expired patient portal link".to_string())))?;
+        .ok_or_else(|| {
+            ApiError::Auth(AuthError::Forbidden(
+                "Invalid or expired patient portal link".to_string(),
+            ))
+        })?;
 
     // Extract known simple fields (with safe defaults for the daily check-in path)
-    let symptoms = form.get("symptoms").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-    let severity = form.get("severity").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
-    let additional_notes = form.get("additional_notes").and_then(|v| v.as_str()).map(|s| s.trim().to_string());
+    let symptoms = form
+        .get("symptoms")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let severity = form
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string());
+    let additional_notes = form
+        .get("additional_notes")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string());
 
     let mut answers = serde_json::Map::new();
-    answers.insert("symptoms".to_string(), serde_json::Value::String(symptoms.clone()));
+    answers.insert(
+        "symptoms".to_string(),
+        serde_json::Value::String(symptoms.clone()),
+    );
     if let Some(sev) = severity {
         if !sev.is_empty() {
             answers.insert("severity".to_string(), serde_json::Value::String(sev));
@@ -590,7 +666,10 @@ async fn submit_patient_pro_report(
     }
     if let Some(notes) = additional_notes {
         if !notes.is_empty() {
-            answers.insert("additional_notes".to_string(), serde_json::Value::String(notes));
+            answers.insert(
+                "additional_notes".to_string(),
+                serde_json::Value::String(notes),
+            );
         }
     }
     let answers_json = serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string());
@@ -602,29 +681,40 @@ async fn submit_patient_pro_report(
         .map_err(ApiError::internal)?;
 
     // Strong audit for patient-reported data (compliance important)
-    let _ = ctx.db.insert_audit_log(
-        "pro_submissions",
-        patient.id, // using patient id as entity for the event
-        "patient_reported_data",
-        None,
-        None,
-        Some(&answers_json),
-        Some(&format!("Patient portal daily check-in ({} chars)", symptoms.len())),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "pro_submissions",
+            patient.id, // using patient id as entity for the event
+            "patient_reported_data",
+            None,
+            None,
+            Some(&answers_json),
+            Some(&format!(
+                "Patient portal daily check-in ({} chars)",
+                symptoms.len()
+            )),
+        )
+        .await;
 
     // If the patient selected a scheduled visit + template, create a real CRF submission.
     // Collect structured answers from posted "field_*" inputs if present (from the rendered form fields),
     // otherwise fall back to the explicit answers_json textarea or the free-text.
     if let Some(visit_id_str) = form.get("patient_visit_id").and_then(|v| v.as_str()) {
         if let Ok(visit_id) = parse_uuid_field(visit_id_str, "patient_visit_id") {
-            let chosen_template_id = form.get("template_id")
+            let chosen_template_id = form
+                .get("template_id")
                 .and_then(|v| v.as_str())
                 .and_then(|s| parse_uuid_field(s, "template_id").ok());
 
             let template_id = if let Some(tid) = chosen_template_id {
                 tid
             } else {
-                let templates = ctx.db.list_study_crf_templates(patient.project_id).await.unwrap_or_default();
+                let templates = ctx
+                    .db
+                    .list_study_crf_templates(patient.project_id)
+                    .await
+                    .unwrap_or_default();
                 templates.first().map(|t| t.id).unwrap_or_default()
             };
 
@@ -638,12 +728,19 @@ async fn submit_patient_pro_report(
                             let field_key = key.trim_start_matches("field_");
                             if let Some(s) = val.as_str() {
                                 if !s.trim().is_empty() {
-                                    crf_answers_map.insert(field_key.to_string(), serde_json::Value::String(s.trim().to_string()));
+                                    crf_answers_map.insert(
+                                        field_key.to_string(),
+                                        serde_json::Value::String(s.trim().to_string()),
+                                    );
                                 }
                             } else if let Some(n) = val.as_i64() {
-                                crf_answers_map.insert(field_key.to_string(), serde_json::Value::Number(n.into()));
+                                crf_answers_map.insert(
+                                    field_key.to_string(),
+                                    serde_json::Value::Number(n.into()),
+                                );
                             } else if let Some(b) = val.as_bool() {
-                                crf_answers_map.insert(field_key.to_string(), serde_json::Value::Bool(b));
+                                crf_answers_map
+                                    .insert(field_key.to_string(), serde_json::Value::Bool(b));
                             }
                         }
                     }
@@ -661,7 +758,8 @@ async fn submit_patient_pro_report(
                     answers_json.clone()
                 };
 
-                let _ = ctx.db
+                let _ = ctx
+                    .db
                     .create_study_crf_submission(
                         patient.project_id,
                         template_id,
@@ -672,20 +770,29 @@ async fn submit_patient_pro_report(
                     )
                     .await;
 
-                let _ = ctx.db.insert_audit_log(
-                    "study_crf_submissions",
-                    patient.id,
-                    "patient_submitted_via_portal",
-                    None,
-                    None,
-                    Some(&crf_answers),
-                    Some(&format!("Patient submitted structured data for visit {} via portal", visit_id)),
-                ).await;
+                let _ = ctx
+                    .db
+                    .insert_audit_log(
+                        "study_crf_submissions",
+                        patient.id,
+                        "patient_submitted_via_portal",
+                        None,
+                        None,
+                        Some(&crf_answers),
+                        Some(&format!(
+                            "Patient submitted structured data for visit {} via portal",
+                            visit_id
+                        )),
+                    )
+                    .await;
             }
         }
     }
 
-    Ok(Redirect::to(&format!("/portal/home?token={}&notice=Thank+you.+Your+report+was+submitted.", query_escape(token))))
+    Ok(Redirect::to(&format!(
+        "/portal/home?token={}&notice=Thank+you.+Your+report+was+submitted.",
+        query_escape(token)
+    )))
 }
 
 /// Coordinator action: generate (or refresh) a magic portal link for a patient.
@@ -742,7 +849,10 @@ pub fn router(ctx: AppContext) -> Router {
         .route("/portal/intake/success", get(render_patient_intake_success))
         .route("/portal/home", get(render_patient_portal_home))
         .route("/portal/home", post(submit_patient_pro_report))
-        .route("/ui/patients/{patient_id}/portal-link", post(generate_patient_portal_link))
+        .route(
+            "/ui/patients/{patient_id}/portal-link",
+            post(generate_patient_portal_link),
+        )
         .route("/ui/foundation", get(render_foundation_command_center))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
@@ -852,10 +962,7 @@ pub fn router(ctx: AppContext) -> Router {
             "/ui/app/projects/{project_id}/toggle-dormancy",
             post(submit_app_project_toggle_dormancy),
         )
-        .route(
-            "/ui/app/auto-archive",
-            post(submit_app_auto_archive),
-        )
+        .route("/ui/app/auto-archive", post(submit_app_auto_archive))
         .route(
             "/ui/app/create-organization",
             post(submit_app_create_organization),
@@ -1094,7 +1201,7 @@ fn is_localhost_request(request: &Request) -> bool {
     // Best effort: check the direct connection peer (not always available in Axum extractors here)
     // For docker-compose local use this is usually sufficient.
     true // Conservative: if we can't prove it's remote, allow it when the flag is on.
-    // In practice for docker this is fine; the bigger protection is the ALLOW_UNSAFE flag.
+         // In practice for docker this is fine; the bigger protection is the ALLOW_UNSAFE flag.
 }
 
 async fn authenticate_from_dev_headers(
@@ -1158,7 +1265,11 @@ async fn authenticate_from_dev_headers(
         .db
         .load_memberships_for_email(email)
         .await
-        .map_err(|e| AuthError::Internal(format!("unable to reload user memberships after dev grant: {e}")))?;
+        .map_err(|e| {
+            AuthError::Internal(format!(
+                "unable to reload user memberships after dev grant: {e}"
+            ))
+        })?;
 
     Ok(AuthenticatedUser {
         user_id: user.id,
@@ -1271,8 +1382,16 @@ async fn create_site(
             payload.project_id,
             payload.name.trim(),
             payload.principal_investigator.trim(),
-            payload.co_principal_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            payload.sub_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            payload
+                .co_principal_investigator
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            payload
+                .sub_investigator
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -1468,11 +1587,19 @@ async fn add_study_crf_field(
     }
     let branching_logic = payload.branching_logic_json.as_deref().and_then(|s| {
         let t = s.trim();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     });
     let edit_checks = payload.edit_checks_json.as_deref().and_then(|s| {
         let t = s.trim();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     });
     let field = ctx
         .db
@@ -1737,17 +1864,21 @@ async fn mark_study_crf_submission_submitted(
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
     if submission.status == "locked" {
-        let _ = ctx.db.insert_audit_log(
-            "study_crf_submissions",
-            submission_id,
-            "mutation_rejected",
-            Some(user.user_id),
-            None,
-            None,
-            Some("Attempt to mark locked submission as submitted (answers frozen)"),
-        ).await;
+        let _ = ctx
+            .db
+            .insert_audit_log(
+                "study_crf_submissions",
+                submission_id,
+                "mutation_rejected",
+                Some(user.user_id),
+                None,
+                None,
+                Some("Attempt to mark locked submission as submitted (answers frozen)"),
+            )
+            .await;
         return Err(ApiError::Validation(
-            "This CRF submission is locked. Answers are frozen and it cannot be re-submitted.".to_string(),
+            "This CRF submission is locked. Answers are frozen and it cannot be re-submitted."
+                .to_string(),
         ));
     }
     if submission.status != "draft" {
@@ -1784,15 +1915,18 @@ async fn lock_study_crf_submission(
     require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
 
     if submission.status == "locked" {
-        let _ = ctx.db.insert_audit_log(
-            "study_crf_submissions",
-            submission_id,
-            "mutation_rejected",
-            Some(user.user_id),
-            None,
-            None,
-            Some("Attempt to re-lock an already locked submission"),
-        ).await;
+        let _ = ctx
+            .db
+            .insert_audit_log(
+                "study_crf_submissions",
+                submission_id,
+                "mutation_rejected",
+                Some(user.user_id),
+                None,
+                None,
+                Some("Attempt to re-lock an already locked submission"),
+            )
+            .await;
         return Err(ApiError::Validation(
             "This CRF submission is already locked. Answers are frozen.".to_string(),
         ));
@@ -1842,6 +1976,11 @@ async fn create_study_data_query(
             "submission does not belong to project".to_string(),
         ));
     }
+    if submission.status.trim().eq_ignore_ascii_case("draft") {
+        return Err(ApiError::Conflict(
+            "cannot raise data query on a draft submission".to_string(),
+        ));
+    }
     let query = ctx
         .db
         .create_study_data_query(
@@ -1852,7 +1991,7 @@ async fn create_study_data_query(
             Some(user.user_id),
         )
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(map_db_error)?;
     Ok((StatusCode::CREATED, Json(query)))
 }
 
@@ -1900,11 +2039,16 @@ async fn respond_study_data_query(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
+    if payload.response_text.trim().is_empty() {
+        return Err(ApiError::Validation(
+            "response_text is required".to_string(),
+        ));
+    }
     let updated = ctx
         .db
         .respond_study_data_query(query_id, payload.response_text.trim())
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(map_db_error)?;
     Ok(Json(updated))
 }
 
@@ -1930,7 +2074,7 @@ async fn close_study_data_query(
         .db
         .close_study_data_query(query_id, Some(user.user_id))
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(map_db_error)?;
     Ok(Json(updated))
 }
 
@@ -2104,8 +2248,11 @@ async fn create_patient(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
 
-    let project_id = site.project_id
-        .ok_or_else(|| ApiError::Validation("This endpoint currently requires the site to be attached to a study".to_string()))?;
+    let project_id = site.project_id.ok_or_else(|| {
+        ApiError::Validation(
+            "This endpoint currently requires the site to be attached to a study".to_string(),
+        )
+    })?;
     let project = ctx
         .db
         .get_project(project_id)
@@ -2167,11 +2314,31 @@ async fn create_provider(
             payload.name.trim(),
             payload.title.as_deref().unwrap_or("").trim(),
             payload.referral_source.as_deref().unwrap_or("").trim(),
-            payload.email.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            payload.phone_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            payload.npi_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            payload.address.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            payload.notes.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            payload
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            payload
+                .phone_number
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            payload
+                .npi_number
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            payload
+                .address
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            payload
+                .notes
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -2375,8 +2542,8 @@ struct AppCreateSiteForm {
 #[derive(Debug, Deserialize)]
 struct AppCreatePatientForm {
     admin_email: String,
-    project_id: String,   // required for patient enrollment
-    site_id: String,      // optional
+    project_id: String, // required for patient enrollment
+    site_id: String,    // optional
     external_subject_id: String,
     email: String,
     date_of_birth: String,
@@ -2434,9 +2601,9 @@ struct StudyWorkbenchQuery {
     error: Option<String>,
     view: Option<String>,
     patient_report_age: Option<String>, // "stale" | "aging" | "all" (or absent) to filter the Patient Reports (via portal) list
-    query_age: Option<String>,          // "stale" | "aging" | "all" — mirrors patient_report_age for monitor query filtering
+    query_age: Option<String>, // "stale" | "aging" | "all" — mirrors patient_report_age for monitor query filtering
     patient_related_queries: Option<String>, // "1" or absent — filter queries list to only those on patient-entered submissions
-    patient_id: Option<String>,              // filter patient reports list to a specific patient (for per-patient actionability from badges)
+    patient_id: Option<String>, // filter patient reports list to a specific patient (for per-patient actionability from badges)
 }
 
 #[derive(Debug, Deserialize)]
@@ -2728,7 +2895,11 @@ async fn render_foundation_command_center(
     let organization_options_html = organizations
         .iter()
         .map(|org| {
-            let selected = if Some(org.id) == selected_org_id { "selected" } else { "" };
+            let selected = if Some(org.id) == selected_org_id {
+                "selected"
+            } else {
+                ""
+            };
             format!(
                 r#"<option value="{}" {}>{} ({})</option>"#,
                 org.id,
@@ -2965,8 +3136,15 @@ async fn render_app_dashboard(
     // for Organizations and Studies (and the whole UI) populate correctly.
     if ctx.config.allow_dev_auth_bypass {
         let dev_subject = format!("dev-{}", admin_email);
-        if let Ok(user) = ctx.db.upsert_user(&admin_email, &dev_subject, &admin_email).await {
-            let _ = ctx.db.ensure_dev_platform_admin(&user.id, &admin_email).await;
+        if let Ok(user) = ctx
+            .db
+            .upsert_user(&admin_email, &dev_subject, &admin_email)
+            .await
+        {
+            let _ = ctx
+                .db
+                .ensure_dev_platform_admin(&user.id, &admin_email)
+                .await;
         }
     }
 
@@ -2988,7 +3166,10 @@ async fn render_app_dashboard(
         } else {
             'outer: for org in &organizations {
                 if let Ok(org_projects) = ctx.db.list_projects_by_organization(org.id).await {
-                    if let Some(proj) = org_projects.into_iter().find(|p| p.id.to_string().starts_with(proj_raw)) {
+                    if let Some(proj) = org_projects
+                        .into_iter()
+                        .find(|p| p.id.to_string().starts_with(proj_raw))
+                    {
                         resolved_project = Some(proj);
                         break 'outer;
                     }
@@ -3004,16 +3185,22 @@ async fn render_app_dashboard(
             .organization_id
             .as_deref()
             .and_then(|raw| {
-                raw.parse::<Uuid>().ok().and_then(|parsed| {
-                    // Only accept org IDs from the query string if they actually exist
-                    // in the organizations this user is allowed to see.
-                    // This prevents ancient placeholder UUIDs (0000...001 etc.)
-                    // from ending up in hidden form fields and causing
-                    // "project_id must be a valid UUID" errors later.
-                    organizations.iter().find(|o| o.id == parsed).map(|o| o.id)
-                }).or_else(|| {
-                    organizations.iter().find(|o| o.id.to_string().starts_with(raw)).map(|o| o.id)
-                })
+                raw.parse::<Uuid>()
+                    .ok()
+                    .and_then(|parsed| {
+                        // Only accept org IDs from the query string if they actually exist
+                        // in the organizations this user is allowed to see.
+                        // This prevents ancient placeholder UUIDs (0000...001 etc.)
+                        // from ending up in hidden form fields and causing
+                        // "project_id must be a valid UUID" errors later.
+                        organizations.iter().find(|o| o.id == parsed).map(|o| o.id)
+                    })
+                    .or_else(|| {
+                        organizations
+                            .iter()
+                            .find(|o| o.id.to_string().starts_with(raw))
+                            .map(|o| o.id)
+                    })
             })
             .or_else(|| {
                 organizations
@@ -3041,7 +3228,10 @@ async fn render_app_dashboard(
             .as_deref()
             .and_then(|raw| {
                 raw.parse::<Uuid>().ok().or_else(|| {
-                    projects.iter().find(|p| p.id.to_string().starts_with(raw)).map(|p| p.id)
+                    projects
+                        .iter()
+                        .find(|p| p.id.to_string().starts_with(raw))
+                        .map(|p| p.id)
                 })
             })
             .filter(|pid| projects.iter().any(|project| project.id == *pid))
@@ -3058,7 +3248,9 @@ async fn render_app_dashboard(
         let incoming_proj_raw = query.project_id.as_deref().unwrap_or("").trim();
 
         let resolved_org_str = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
-        let resolved_proj_str = selected_project_id.map(|id| id.to_string()).unwrap_or_default();
+        let resolved_proj_str = selected_project_id
+            .map(|id| id.to_string())
+            .unwrap_or_default();
 
         let org_was_bad = !incoming_org_raw.is_empty() && incoming_org_raw != resolved_org_str;
         let proj_was_bad = !incoming_proj_raw.is_empty() && incoming_proj_raw != resolved_proj_str;
@@ -3114,11 +3306,12 @@ async fn render_app_dashboard(
     }
 
     // For the current study context, separate attached sites vs other org sites
-    let (study_attached_sites, other_org_sites): (Vec<_>, Vec<_>) = if let Some(pid) = selected_project_id {
-        sites.iter().partition(|s| s.project_id == Some(pid))
-    } else {
-        (vec![], sites.iter().collect())
-    };
+    let (study_attached_sites, other_org_sites): (Vec<_>, Vec<_>) =
+        if let Some(pid) = selected_project_id {
+            sites.iter().partition(|s| s.project_id == Some(pid))
+        } else {
+            (vec![], sites.iter().collect())
+        };
 
     let study_attached_site_count = study_attached_sites.len();
 
@@ -3127,7 +3320,10 @@ async fn render_app_dashboard(
     // Small dedicated "Study Sites" management block for the studies view
     let study_sites_management_html = if let Some(pid) = selected_project_id {
         let attach_note = if other_org_site_count > 0 {
-            format!(" • {} other org sites available to attach", other_org_site_count)
+            format!(
+                " • {} other org sites available to attach",
+                other_org_site_count
+            )
         } else {
             "".to_string()
         };
@@ -3139,7 +3335,11 @@ async fn render_app_dashboard(
             study_attached_site_count,
             attach_note,
             html_escape(admin_email.trim()),
-            if let Some(oid) = selected_org_id { format!("&organization_id={}", oid) } else { "".to_string() },
+            if let Some(oid) = selected_org_id {
+                format!("&organization_id={}", oid)
+            } else {
+                "".to_string()
+            },
             format!("&project_id={}", pid)
         )
     } else {
@@ -3152,7 +3352,10 @@ async fn render_app_dashboard(
             .unwrap_or_default();
         let proj_qs = format!("&project_id={}", pid);
         let other_note = if other_org_site_count > 0 {
-            format!(" ({} other org sites available to attach)", other_org_site_count)
+            format!(
+                " ({} other org sites available to attach)",
+                other_org_site_count
+            )
         } else {
             "".to_string()
         };
@@ -3241,7 +3444,10 @@ async fn render_app_dashboard(
 
     // Per-patient last portal report lookup (from the recent_pro_reports already loaded)
     // Used to render risk/age badges on individual patient cards below.
-    let last_report_by_patient: std::collections::HashMap<uuid::Uuid, chrono::DateTime<chrono::Utc>> = {
+    let last_report_by_patient: std::collections::HashMap<
+        uuid::Uuid,
+        chrono::DateTime<chrono::Utc>,
+    > = {
         let mut map = std::collections::HashMap::new();
         for r in &recent_pro_reports {
             // keep only the most recent per patient (recent_pro_reports is already ordered DESC)
@@ -3258,8 +3464,11 @@ async fn render_app_dashboard(
         let mut a = 0usize;
         for r in &recent_pro_reports {
             let (age, bucket) = patient_report_age(r.created_at, now);
-            if bucket == "stale" { s += 1; }
-            else if bucket == "aging" { a += 1; }
+            if bucket == "stale" {
+                s += 1;
+            } else if bucket == "aging" {
+                a += 1;
+            }
         }
         (s, a)
     };
@@ -3271,11 +3480,17 @@ async fn render_app_dashboard(
             .filter(|q| q.status.trim().to_ascii_lowercase() != "closed")
             .collect();
         let open_count = open.len();
-        let stale = open.iter().filter(|q| (now - q.created_at).num_days() > 30).count();
-        let aging = open.iter().filter(|q| {
-            let d = (now - q.created_at).num_days();
-            d > 7 && d <= 30
-        }).count();
+        let stale = open
+            .iter()
+            .filter(|q| (now - q.created_at).num_days() > 30)
+            .count();
+        let aging = open
+            .iter()
+            .filter(|q| {
+                let d = (now - q.created_at).num_days();
+                d > 7 && d <= 30
+            })
+            .count();
         (open_count, stale, aging)
     };
 
@@ -3308,12 +3523,20 @@ async fn render_app_dashboard(
         if parts.is_empty() {
             "<span style=\"color:#718096;font-size:0.7rem;\">no open queries</span>".to_string()
         } else {
-            let orgp = selected_org_id.map(|o| format!("&organization_id={}", o)).unwrap_or_default();
+            let orgp = selected_org_id
+                .map(|o| format!("&organization_id={}", o))
+                .unwrap_or_default();
             let wb_link = format!(
                 r#"<a href="/ui/studies?admin_email={}{}&project_id={}&view=queries" style="font-size:0.65rem;color:#2b6cb0;font-weight:600;margin-left:8px;">Open in workbench →</a>"#,
-                admin_email_q, orgp, selected_project_id.unwrap_or_default()
+                admin_email_q,
+                orgp,
+                selected_project_id.unwrap_or_default()
             );
-            format!("<span style=\"margin-left:6px;\">{}{}</span>", parts.join(" "), wb_link)
+            format!(
+                "<span style=\"margin-left:6px;\">{}{}</span>",
+                parts.join(" "),
+                wb_link
+            )
         }
     } else {
         String::new()
@@ -3385,7 +3608,10 @@ async fn render_app_dashboard(
         .as_deref()
         .and_then(|raw| {
             raw.parse::<Uuid>().ok().or_else(|| {
-                patients.iter().find(|p| p.id.to_string().starts_with(raw)).map(|p| p.id)
+                patients
+                    .iter()
+                    .find(|p| p.id.to_string().starts_with(raw))
+                    .map(|p| p.id)
             })
         })
         .filter(|pid| patients.iter().any(|patient| patient.id == *pid))
@@ -3469,7 +3695,8 @@ async fn render_app_dashboard(
     let colors = [color1, color2, color3, color4, color5];
 
     let organizations_html = if organizations.is_empty() {
-        "<p style=\"color:#718096;font-style:italic;\">No organizations available yet.</p>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No organizations available yet.</p>"
+            .to_string()
     } else {
         organizations
             .iter()
@@ -3537,7 +3764,10 @@ async fn render_app_dashboard(
             .join("")
     };
 
-    let (active_projects, other_projects): (Vec<&crate::models::Project>, Vec<&crate::models::Project>) = projects
+    let (active_projects, other_projects): (
+        Vec<&crate::models::Project>,
+        Vec<&crate::models::Project>,
+    ) = projects
         .iter()
         .partition(|p| Some(p.id) == selected_project_id);
 
@@ -3560,7 +3790,7 @@ async fn render_app_dashboard(
         let c2 = colors[b2 % 5];
         let c3 = colors[b3 % 5];
         let c4 = colors[b4 % 5];
-        
+
         let logo_svg = format!(
             r#"<svg width="32" height="32" viewBox="0 0 32 32" style="border-radius:6px; box-shadow:inset 0 0 4px rgba(0,0,0,0.15); display:block;">
   <rect x="0" y="0" width="16" height="16" fill="{}" />
@@ -3616,13 +3846,21 @@ async fn render_app_dashboard(
     let active_project_html = if active_projects.is_empty() {
         "<p style=\"color:#718096;font-style:italic;\">No active project selected.</p>".to_string()
     } else {
-        active_projects.iter().map(|p| format_project_card(p)).collect::<Vec<_>>().join("")
+        active_projects
+            .iter()
+            .map(|p| format_project_card(p))
+            .collect::<Vec<_>>()
+            .join("")
     };
 
     let other_projects_html = if other_projects.is_empty() {
         "<p style=\"color:#718096;font-style:italic;\">No other projects found.</p>".to_string()
     } else {
-        other_projects.iter().map(|p| format_project_card(p)).collect::<Vec<_>>().join("")
+        other_projects
+            .iter()
+            .map(|p| format_project_card(p))
+            .collect::<Vec<_>>()
+            .join("")
     };
 
     let study_context_sites_note = if let Some(pid) = selected_project_id {
@@ -3890,22 +4128,40 @@ async fn render_app_dashboard(
     };
 
     let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
-    let selected_project_value = selected_project_id.map(|id| id.to_string()).unwrap_or_default();
-    let selected_patient_value = selected_patient_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_project_value = selected_project_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let selected_patient_value = selected_patient_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
     let selected_project_qs = if selected_project_value.is_empty() {
         String::new()
     } else {
         format!("&project_id={selected_project_value}")
     };
 
-    let selected_org_hex = selected_org_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
-    let selected_project_hex = selected_project_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
-    let _selected_patient_hex = selected_patient_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
+    let selected_org_hex = selected_org_id
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
+    let selected_project_hex = selected_project_id
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
+    let _selected_patient_hex = selected_patient_id
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
 
     let context_bar = render_context_bar(
-        if selected_org_value.is_empty() { None } else { Some(&selected_org_value) },
-        if selected_project_value.is_empty() { None } else { Some(&selected_project_value) },
-        admin_email.trim()
+        if selected_org_value.is_empty() {
+            None
+        } else {
+            Some(&selected_org_value)
+        },
+        if selected_project_value.is_empty() {
+            None
+        } else {
+            Some(&selected_project_value)
+        },
+        admin_email.trim(),
     );
 
     let org_summary_html = if let Some(summary) = org_summary {
@@ -3942,9 +4198,14 @@ async fn render_app_dashboard(
 
   </div>
 </div>"#,
-            html_escape(admin_email.trim()), selected_org_value.clone(), summary.projects,
-            html_escape(admin_email.trim()), selected_org_value.clone(), summary.sites,
-            summary.sent_form_invites, summary.generated_media_upload_links
+            html_escape(admin_email.trim()),
+            selected_org_value.clone(),
+            summary.projects,
+            html_escape(admin_email.trim()),
+            selected_org_value.clone(),
+            summary.sites,
+            summary.sent_form_invites,
+            summary.generated_media_upload_links
         )
     } else {
         "<div style=\"background:#e7e5da; padding:1rem; border-radius:8px; color:#02182b; font-weight:500; font-size:0.9rem; margin-bottom:1.5rem;\">ℹ️ Select an organization from the Overview tab to view detailed metrics.</div>".to_string()
@@ -3980,8 +4241,12 @@ async fn render_app_dashboard(
 
   </div>
 </div>"#,
-            html_escape(admin_email.trim()), selected_org_value.clone(), selected_project_value.clone(),
-            summary.total_sites, summary.total_form_invites, summary.total_media_captures_requested
+            html_escape(admin_email.trim()),
+            selected_org_value.clone(),
+            selected_project_value.clone(),
+            summary.total_sites,
+            summary.total_form_invites,
+            summary.total_media_captures_requested
         )
     } else {
         "<div style=\"background:#e7e5da; padding:1rem; border-radius:8px; color:#02182b; font-weight:500; font-size:0.9rem;\">ℹ️ Select a project from the Overview tab to view granular insights.</div>".to_string()
@@ -3989,7 +4254,11 @@ async fn render_app_dashboard(
 
     let pending_intakes: Vec<_> = patients
         .iter()
-        .filter(|p| p.external_subject_id.as_deref().map_or(false, |s| s.starts_with("intake:")))
+        .filter(|p| {
+            p.external_subject_id
+                .as_deref()
+                .map_or(false, |s| s.starts_with("intake:"))
+        })
         .collect();
 
     let pending_intakes_html = if !pending_intakes.is_empty() || selected_project_id.is_some() {
@@ -4019,14 +4288,19 @@ async fn render_app_dashboard(
                {}
              </div>"#,
             count_str,
-            if items.is_empty() { "<span style=\"font-size:0.85rem; color:#854d0e;\">No pending portal intakes for this project.</span>" } else { &items }
+            if items.is_empty() {
+                "<span style=\"font-size:0.85rem; color:#854d0e;\">No pending portal intakes for this project.</span>"
+            } else {
+                &items
+            }
         )
     } else {
         String::new()
     };
 
     let patients_html = if patients.is_empty() {
-        "<p style=\"color:#718096;font-style:italic;\">No patients yet for selected project.</p>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No patients yet for selected project.</p>"
+            .to_string()
     } else {
         patients
             .iter()
@@ -4146,12 +4420,12 @@ async fn render_app_dashboard(
             let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
             let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
             let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
-            
+
             let c1 = colors[b1 % 5];
             let c2 = colors[b2 % 5];
             let c3 = colors[b3 % 5];
             let c4 = colors[b4 % 5];
-            
+
             let logo_svg = format!(
                 r#"<svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
   <rect x="0" y="0" width="16" height="16" fill="{}" />
@@ -4188,7 +4462,8 @@ async fn render_app_dashboard(
     };
 
     let encounters_html = if encounters.is_empty() {
-        "<p style=\"color:#718096;font-style:italic;\">No encounters yet for selected patient.</p>".to_string()
+        "<p style=\"color:#718096;font-style:italic;\">No encounters yet for selected patient.</p>"
+            .to_string()
     } else {
         let mut html = String::new();
         html.push_str(r#"<table style="width:100%; border-collapse:collapse; margin-top:0.5rem; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
@@ -4206,7 +4481,11 @@ async fn render_app_dashboard(
                 .provider_id
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "none".to_string());
-            let notes_label = if encounter.notes.is_empty() { "—" } else { &encounter.notes };
+            let notes_label = if encounter.notes.is_empty() {
+                "—"
+            } else {
+                &encounter.notes
+            };
             html.push_str(&format!(
                 r#"<tr style="border-bottom:1px solid #e2e8f0; hover:background:#f7fafc;">
       <td style="padding:0.75rem 1rem;"><code style="background:#e7e5da; color:#f05708; padding:0.2rem 0.4rem; border-radius:4px; font-weight:bold;">{}</code></td>
@@ -4299,19 +4578,26 @@ async fn render_app_dashboard(
         .join("");
     let mut sorted_sites = sites.clone();
     if let Some(current_proj) = selected_project_id {
-        sorted_sites.sort_by_key(|s| if s.project_id == Some(current_proj) { 0 } else { 1 });
+        sorted_sites.sort_by_key(|s| {
+            if s.project_id == Some(current_proj) {
+                0
+            } else {
+                1
+            }
+        });
     }
 
     let site_options_html = sorted_sites
         .iter()
         .map(|site| {
-            let attachment = if selected_project_id.is_some() && site.project_id == selected_project_id {
-                " (this study)"
-            } else if site.project_id.is_some() {
-                " (other study)"
-            } else {
-                " (org-level)"
-            };
+            let attachment =
+                if selected_project_id.is_some() && site.project_id == selected_project_id {
+                    " (this study)"
+                } else if site.project_id.is_some() {
+                    " (other study)"
+                } else {
+                    " (org-level)"
+                };
             format!(
                 r#"<option value="{}" data-id="{}">{}{}</option>"#,
                 site.id.to_string().chars().take(8).collect::<String>(),
@@ -4371,9 +4657,12 @@ async fn render_app_dashboard(
   <a href="/ui/dua?admin_email={}&organization_id={}">DUA Console</a>
 </nav>"#,
         foundation_hub_url,
-        admin_email_q, selected_org_value,
-        admin_email_q, selected_org_value,
-        admin_email_q, selected_org_value,
+        admin_email_q,
+        selected_org_value,
+        admin_email_q,
+        selected_org_value,
+        admin_email_q,
+        selected_org_value,
     );
 
     let _tab_bar = format!(
@@ -4386,13 +4675,27 @@ async fn render_app_dashboard(
   <a class="tab-button {}" href="?view=analytics&admin_email={}&organization_id={}">Analytics</a>
   <a class="tab-button {}" href="?view=legal&admin_email={}&organization_id={}">Legal</a>
 </nav>"#,
-        is_active("overview"), admin_email_q, selected_org_value,
-        is_active("projects"), admin_email_q, selected_org_value,
-        is_active("sites"), admin_email_q, selected_org_value,
-        is_active("patients"), admin_email_q, selected_org_value,
-        is_active("providers"), admin_email_q, selected_org_value,
-        is_active("analytics"), admin_email_q, selected_org_value,
-        is_active("legal"), admin_email_q, selected_org_value,
+        is_active("overview"),
+        admin_email_q,
+        selected_org_value,
+        is_active("projects"),
+        admin_email_q,
+        selected_org_value,
+        is_active("sites"),
+        admin_email_q,
+        selected_org_value,
+        is_active("patients"),
+        admin_email_q,
+        selected_org_value,
+        is_active("providers"),
+        admin_email_q,
+        selected_org_value,
+        is_active("analytics"),
+        admin_email_q,
+        selected_org_value,
+        is_active("legal"),
+        admin_email_q,
+        selected_org_value,
     );
 
     let panel_content = match view {
@@ -4529,8 +4832,7 @@ async fn render_app_dashboard(
   <div style="margin-top:0.75rem;">
     <a href="{legal_url}" class="status-chip" style="background:#283e28;color:#fff;text-decoration:none;">Open DUA Console</a>
   </div>
-</section>"#
-                ,
+</section>"#,
                 org_badge_bg = if org_done { "#dcfce7" } else { "#ffedd5" },
                 org_badge_fg = if org_done { "#166534" } else { "#9a3412" },
                 org_badge = if org_done { "complete" } else { "pending" },
@@ -4851,7 +5153,14 @@ async fn render_app_dashboard(
             project_actions_disabled_btn_style,
             pending_intakes_html,
             recent_pro_reports_html,
-            if queries_health_html.is_empty() { "".to_string() } else { format!(r#"<div style="margin-top:0.75rem; padding:6px 10px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; font-size:0.82rem;"><strong style="color:#0369a1;">Queries Health</strong> {}</div>"#, queries_health_html) },
+            if queries_health_html.is_empty() {
+                "".to_string()
+            } else {
+                format!(
+                    r#"<div style="margin-top:0.75rem; padding:6px 10px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; font-size:0.82rem;"><strong style="color:#0369a1;">Queries Health</strong> {}</div>"#,
+                    queries_health_html
+                )
+            },
             if project_actions_disabled {
                 "opacity:0.6;cursor:not-allowed;".to_string()
             } else {
@@ -5015,7 +5324,7 @@ async fn render_app_dashboard(
 </section>"#,
             org_summary_html, project_summary_html
         ),
-                "media" => format!(
+        "media" => format!(
             r#"<section class="card">
   <h2>8) Media Vault</h2>
   <div style="background:#f7fafc; padding:2rem; text-align:center; border-radius:8px; border:2px dashed #cbd5e0;">
@@ -5242,7 +5551,7 @@ async fn render_app_dashboard(
                 html_escape(admin_val),
                 org_logo,
                 html_escape(&org_val),
-                html_escape(admin_val), // for admin_email in href
+                html_escape(admin_val),           // for admin_email in href
                 html_escape(&selected_org_value), // for organization_id in href
                 html_escape(&selected_project_value), // for project_id in href
                 proj_logo,
@@ -5253,7 +5562,7 @@ async fn render_app_dashboard(
                 html_escape(admin_val),
                 quickstart_html = quickstart_html
             )
-        },
+        }
     };
 
     let auto_archive_banner = format!(
@@ -5418,7 +5727,10 @@ async fn render_app_dashboard(
                 "Build CRFs, schedule visits, monitor queries, and close the study.",
             ),
         ];
-        let done_count = workflow_steps.iter().filter(|(_, _, done, _, _)| *done).count();
+        let done_count = workflow_steps
+            .iter()
+            .filter(|(_, _, done, _, _)| *done)
+            .count();
         let next_step = workflow_steps
             .iter()
             .find(|(_, _, done, _, _)| !done)
@@ -5786,7 +6098,8 @@ async fn submit_app_create_site(
         // In a real-auth environment the route would be protected and the extractor would have run.
         // For now this path is not exercised in the user's dev setup.
         return Err(ApiError::Auth(AuthError::Unauthorized(
-            "authenticated user required (real auth path not fully wired for this UI form yet)".to_string(),
+            "authenticated user required (real auth path not fully wired for this UI form yet)"
+                .to_string(),
         )));
     };
 
@@ -5825,8 +6138,14 @@ async fn submit_app_create_site(
             project_id,
             form.site_name.trim(),
             form.principal_investigator.trim(),
-            form.co_principal_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            form.sub_investigator.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            form.co_principal_investigator
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            form.sub_investigator
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -5907,13 +6226,17 @@ async fn submit_app_site_toggle_dormancy(
         .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
 
     require_org_role(&user, site.organization_id, ROLE_ORG_MANAGERS)?;
-    
-    let next_status = if site.status == "dormant" { "active" } else { "dormant" };
+
+    let next_status = if site.status == "dormant" {
+        "active"
+    } else {
+        "dormant"
+    };
     ctx.db
         .set_site_status(site_id, next_status)
         .await
         .map_err(ApiError::internal)?;
-        
+
     let notice = format!("Site status updated to {}", next_status);
     Ok(Redirect::to(&format!(
         "/ui/app?admin_email={}&organization_id={}&project_id={}&view=sites&notice={}",
@@ -6043,13 +6366,17 @@ async fn submit_app_project_toggle_dormancy(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
     require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
-    
-    let next_status = if project.status == "dormant" { "active" } else { "dormant" };
+
+    let next_status = if project.status == "dormant" {
+        "active"
+    } else {
+        "dormant"
+    };
     ctx.db
         .set_project_status(project_id, next_status)
         .await
         .map_err(ApiError::internal)?;
-        
+
     let notice = format!("Study status updated to {}", next_status);
     Ok(Redirect::to(&format!(
         "/ui/app?admin_email={}&organization_id={}&project_id={}&view=projects&notice={}",
@@ -6071,7 +6398,7 @@ async fn submit_app_auto_archive(
         .auto_archive_dormant_entities(days_threshold)
         .await
         .map_err(ApiError::internal)?;
-        
+
     let notice = format!(
         "Inactivity scan completed: archived {} sites and {} studies with no activity for 3+ years.",
         sites_archived, projects_archived
@@ -6183,7 +6510,13 @@ async fn submit_app_create_patient(
 
     let patient = ctx
         .db
-        .create_patient(project_id, site_id, external_subject_id, patient_email, date_of_birth)
+        .create_patient(
+            project_id,
+            site_id,
+            external_subject_id,
+            patient_email,
+            date_of_birth,
+        )
         .await
         .map_err(ApiError::internal)?;
 
@@ -6217,11 +6550,26 @@ async fn submit_app_create_provider(
             form.provider_name.trim(),
             form.provider_title.trim(),
             form.referral_source.trim(),
-            form.email.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            form.phone_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            form.npi_number.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            form.address.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-            form.notes.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            form.email
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            form.phone_number
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            form.npi_number
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            form.address
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            form.notes
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
         )
         .await
         .map_err(ApiError::internal)?;
@@ -6305,9 +6653,7 @@ async fn submit_app_send_invite(
                     "/ui/app?admin_email={}&organization_id={}&view=patients&notice={}",
                     query_escape(user.email.as_str()),
                     organization_id,
-                    query_escape(
-                        "Study context is invalid. Re-select the study and retry invite."
-                    )
+                    query_escape("Study context is invalid. Re-select the study and retry invite.")
                 )));
             }
         }
@@ -6457,11 +6803,7 @@ async fn submit_app_create_media_ticket(
         organization_id,
         project_id
     );
-    Ok(Html(render_cingulum_page(
-        "Media Upload Ticket Created",
-        body,
-    ))
-    .into_response())
+    Ok(Html(render_cingulum_page("Media Upload Ticket Created", body)).into_response())
 }
 
 /// Compute age in whole days + standardized bucket for patient-entered reports and queries.
@@ -6504,7 +6846,10 @@ async fn render_study_workbench(
         } else {
             'outer: for org in &organizations {
                 if let Ok(org_projects) = ctx.db.list_projects_by_organization(org.id).await {
-                    if let Some(proj) = org_projects.into_iter().find(|p| p.id.to_string().starts_with(proj_raw)) {
+                    if let Some(proj) = org_projects
+                        .into_iter()
+                        .find(|p| p.id.to_string().starts_with(proj_raw))
+                    {
                         resolved_project = Some(proj);
                         break 'outer;
                     }
@@ -6521,7 +6866,10 @@ async fn render_study_workbench(
             .as_deref()
             .and_then(|raw| {
                 raw.parse::<Uuid>().ok().or_else(|| {
-                    organizations.iter().find(|o| o.id.to_string().starts_with(raw)).map(|o| o.id)
+                    organizations
+                        .iter()
+                        .find(|o| o.id.to_string().starts_with(raw))
+                        .map(|o| o.id)
                 })
             })
             .or_else(|| {
@@ -6550,7 +6898,10 @@ async fn render_study_workbench(
             .as_deref()
             .and_then(|raw| {
                 raw.parse::<Uuid>().ok().or_else(|| {
-                    projects.iter().find(|p| p.id.to_string().starts_with(raw)).map(|p| p.id)
+                    projects
+                        .iter()
+                        .find(|p| p.id.to_string().starts_with(raw))
+                        .map(|p| p.id)
                 })
             })
             .filter(|pid| projects.iter().any(|p| p.id == *pid))
@@ -6654,17 +7005,23 @@ async fn render_study_workbench(
 
     let patient_pending_sdv_count = submissions
         .iter()
-        .filter(|s| s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending")
+        .filter(|s| {
+            s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending"
+        })
         .count();
 
     let patient_submitted_unlocked_count = submissions
         .iter()
-        .filter(|s| s.entered_by_user_id.is_none() && s.status.trim().to_ascii_lowercase() == "submitted")
+        .filter(|s| {
+            s.entered_by_user_id.is_none() && s.status.trim().to_ascii_lowercase() == "submitted"
+        })
         .count();
 
     let patient_pending_sdv_count = submissions
         .iter()
-        .filter(|s| s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending")
+        .filter(|s| {
+            s.entered_by_user_id.is_none() && s.sdv_status.trim().to_ascii_lowercase() == "pending"
+        })
         .count();
 
     // Patient report aging (parallel to query aging)
@@ -6684,13 +7041,19 @@ async fn render_study_workbench(
 
     // New at-risk signal: patients with no recent (last 30d) structured patient reports
     let patients_with_no_recent_structured = if !patients.is_empty() {
-        patients.iter().filter(|p| {
-            !submissions.iter().any(|s| {
-                s.patient_id == p.id && s.entered_by_user_id.is_none() &&
-                (now - s.created_at).num_days() <= 30
+        patients
+            .iter()
+            .filter(|p| {
+                !submissions.iter().any(|s| {
+                    s.patient_id == p.id
+                        && s.entered_by_user_id.is_none()
+                        && (now - s.created_at).num_days() <= 30
+                })
             })
-        }).count()
-    } else { 0 };
+            .count()
+    } else {
+        0
+    };
 
     // (patient_aging_html constructed just before the body template)
 
@@ -6700,6 +7063,16 @@ async fn render_study_workbench(
         .and_then(|raw| raw.parse::<Uuid>().ok())
         .filter(|sid| submissions.iter().any(|s| s.id == *sid))
         .or_else(|| submissions.first().map(|s| s.id));
+    let queryable_submissions = submissions
+        .iter()
+        .filter(|submission| !submission.status.trim().eq_ignore_ascii_case("draft"))
+        .collect::<Vec<_>>();
+    let selected_query_submission_id = query
+        .submission_id
+        .as_deref()
+        .and_then(|raw| raw.parse::<Uuid>().ok())
+        .filter(|sid| queryable_submissions.iter().any(|s| s.id == *sid))
+        .or_else(|| queryable_submissions.first().map(|s| s.id));
 
     // Rich provenance + compact answers preview for selected submission (especially useful for patient-entered data)
     let (selected_submission_display, answers_preview) = if let Some(sid) = selected_submission_id {
@@ -6721,44 +7094,74 @@ async fn render_study_workbench(
 
             let preview = if sub.entered_by_user_id.is_none() {
                 // For patient reports, show a readable key-value preview of answers + visit context
-                let answers_preview = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&sub.answers_json) {
-                    if let Some(obj) = val.as_object() {
-                        // If the selected submission's template matches the currently viewed template in the UI,
-                        // use the loaded fields to render with proper labels instead of raw keys.
-                        let use_labels = selected_template_id == Some(sub.template_id);
-                        let field_map: std::collections::HashMap<_, _> = if use_labels {
-                            fields.iter().map(|f| (f.field_key.clone(), f.field_label.clone())).collect()
-                        } else {
-                            std::collections::HashMap::new()
-                        };
-
-                        let pairs = obj.iter().map(|(k, v)| {
-                            let label = if use_labels {
-                                field_map.get(k).cloned().unwrap_or_else(|| k.clone())
+                let answers_preview =
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&sub.answers_json) {
+                        if let Some(obj) = val.as_object() {
+                            // If the selected submission's template matches the currently viewed template in the UI,
+                            // use the loaded fields to render with proper labels instead of raw keys.
+                            let use_labels = selected_template_id == Some(sub.template_id);
+                            let field_map: std::collections::HashMap<_, _> = if use_labels {
+                                fields
+                                    .iter()
+                                    .map(|f| (f.field_key.clone(), f.field_label.clone()))
+                                    .collect()
                             } else {
-                                k.clone()
+                                std::collections::HashMap::new()
                             };
-                            let v_str = if v.is_string() { v.as_str().unwrap_or("").to_string() } else { v.to_string() };
-                            format!("{}: {}", html_escape(&label), html_escape(&v_str.chars().take(80).collect::<String>()))
-                        }).collect::<Vec<_>>().join("<br>");
-                        // Wrap in scrollable container if many fields
-                        format!("<div style=\"max-height:200px;overflow-y:auto;\">{}</div>", pairs)
+
+                            let pairs = obj
+                                .iter()
+                                .map(|(k, v)| {
+                                    let label = if use_labels {
+                                        field_map.get(k).cloned().unwrap_or_else(|| k.clone())
+                                    } else {
+                                        k.clone()
+                                    };
+                                    let v_str = if v.is_string() {
+                                        v.as_str().unwrap_or("").to_string()
+                                    } else {
+                                        v.to_string()
+                                    };
+                                    format!(
+                                        "{}: {}",
+                                        html_escape(&label),
+                                        html_escape(&v_str.chars().take(80).collect::<String>())
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("<br>");
+                            // Wrap in scrollable container if many fields
+                            format!(
+                                "<div style=\"max-height:200px;overflow-y:auto;\">{}</div>",
+                                pairs
+                            )
+                        } else {
+                            sub.answers_json.chars().take(300).collect()
+                        }
                     } else {
                         sub.answers_json.chars().take(300).collect()
-                    }
-                } else {
-                    sub.answers_json.chars().take(300).collect()
-                };
+                    };
 
-                let visit_info = sub.patient_visit_id.and_then(|vid| {
-                    patient_visits.iter().find(|v| v.id == vid).map(|v| {
-                        let date = v.scheduled_for.map(|d| d.to_string()).unwrap_or_else(|| "unscheduled".to_string());
-                        let visit_name = visit_templates.iter().find(|vt| vt.id == v.visit_template_id).map(|vt| vt.visit_name.clone()).unwrap_or_else(|| "Unknown visit".to_string());
-                        format!(" ({}: {} - {})", visit_name, date, v.status)
+                let visit_info = sub
+                    .patient_visit_id
+                    .and_then(|vid| {
+                        patient_visits.iter().find(|v| v.id == vid).map(|v| {
+                            let date = v
+                                .scheduled_for
+                                .map(|d| d.to_string())
+                                .unwrap_or_else(|| "unscheduled".to_string());
+                            let visit_name = visit_templates
+                                .iter()
+                                .find(|vt| vt.id == v.visit_template_id)
+                                .map(|vt| vt.visit_name.clone())
+                                .unwrap_or_else(|| "Unknown visit".to_string());
+                            format!(" ({}: {} - {})", visit_name, date, v.status)
+                        })
                     })
-                }).unwrap_or_default();
+                    .unwrap_or_default();
 
-                let submitted_ts = sub.submitted_at
+                let submitted_ts = sub
+                    .submitted_at
                     .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_else(|| sub.created_at.format("%Y-%m-%d %H:%M").to_string());
                 let age_status_text = if age_days > 30 {
@@ -6833,7 +7236,10 @@ async fn render_study_workbench(
             parts.push(format!(r#"<span style="background:#fefcbf; color:#b7791f; padding:2px 8px; border-radius:4px; font-weight:600;">{}</span>"#, aging_queries_count));
         }
         if !parts.is_empty() {
-            format!(r#"<span style="font-size:0.8rem;">aging: {}</span>"#, parts.join(" "))
+            format!(
+                r#"<span style="font-size:0.8rem;">aging: {}</span>"#,
+                parts.join(" ")
+            )
         } else {
             "".to_string()
         }
@@ -6901,9 +7307,18 @@ async fn render_study_workbench(
     let stale_patients_url = format!("{}&patient_report_age=stale", submissions_tab_url);
     let aging_patients_url = format!("{}&patient_report_age=aging", submissions_tab_url);
     // Actionable filters for the patient reports list (wired from Recommended Next Steps cards)
-    let patient_age_filter = query.patient_report_age.as_deref().unwrap_or("all").to_string();
+    let patient_age_filter = query
+        .patient_report_age
+        .as_deref()
+        .unwrap_or("all")
+        .to_string();
     let query_age_filter = query.query_age.as_deref().unwrap_or("all").to_string();
-    let patient_related_queries_filter = query.patient_related_queries.as_deref().unwrap_or("").trim() == "1";
+    let patient_related_queries_filter = query
+        .patient_related_queries
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        == "1";
     let patient_id_filter = query.patient_id.as_deref().map(|s| s.to_string());
     let queries_tab_url = format!(
         "/ui/studies?admin_email={}{}{}&view=queries",
@@ -7532,12 +7947,17 @@ async fn render_study_workbench(
     };
 
     // Per-patient last structured patient report (for risk badges in the workbench patient list)
-    let last_structured_patient_report_by_patient: std::collections::HashMap<uuid::Uuid, chrono::DateTime<chrono::Utc>> = {
+    let last_structured_patient_report_by_patient: std::collections::HashMap<
+        uuid::Uuid,
+        chrono::DateTime<chrono::Utc>,
+    > = {
         let mut map = std::collections::HashMap::new();
         for s in &submissions {
             if s.entered_by_user_id.is_none() {
                 // keep only the most recent per patient
-                if !map.contains_key(&s.patient_id) || s.created_at > *map.get(&s.patient_id).unwrap() {
+                if !map.contains_key(&s.patient_id)
+                    || s.created_at > *map.get(&s.patient_id).unwrap()
+                {
                     map.insert(s.patient_id, s.created_at);
                 }
             }
@@ -7747,7 +8167,7 @@ async fn render_study_workbench(
             .join("")
     };
 
-    // Apply query_age filter (from Recommended Next Steps) for actionable triage, same pattern as patient reports.
+    // Apply query_age filter (from Recommended Next Steps) for actionable triage.
     let mut filtered_queries: Vec<_> = data_queries.iter().collect();
     if query_age_filter == "stale" {
         filtered_queries.retain(|q| (now - q.created_at).num_days() > 30);
@@ -7760,13 +8180,52 @@ async fn render_study_workbench(
 
     if patient_related_queries_filter {
         filtered_queries.retain(|q| {
-            submissions.iter().any(|s| s.id == q.submission_id && s.entered_by_user_id.is_none())
+            submissions
+                .iter()
+                .any(|s| s.id == q.submission_id && s.entered_by_user_id.is_none())
         });
     }
 
+    let query_open_count = data_queries
+        .iter()
+        .filter(|q| q.status.trim().eq_ignore_ascii_case("open"))
+        .count();
+    let query_responded_count = data_queries
+        .iter()
+        .filter(|q| q.status.trim().eq_ignore_ascii_case("responded"))
+        .count();
+    let query_closed_count = data_queries
+        .iter()
+        .filter(|q| q.status.trim().eq_ignore_ascii_case("closed"))
+        .count();
+    let query_header = if query_age_filter == "stale" {
+        format!(
+            r#"Queries <span style="font-size:0.7rem; color:#c53030; background:#fff1f2; padding:1px 5px; border-radius:3px;">showing STALE only</span> <a href="{}" style="font-size:0.65rem; color:#166534; margin-left:6px;">clear filter</a>"#,
+            queries_tab_url
+        )
+    } else if query_age_filter == "aging" {
+        format!(
+            r#"Queries <span style="font-size:0.7rem; color:#b7791f; background:#fefce8; padding:1px 5px; border-radius:3px;">showing AGING only</span> <a href="{}" style="font-size:0.65rem; color:#166534; margin-left:6px;">clear filter</a>"#,
+            queries_tab_url
+        )
+    } else if patient_related_queries_filter {
+        format!(
+            r#"Queries <span style="font-size:0.7rem; color:#1d4ed8; background:#eff6ff; padding:1px 5px; border-radius:3px;">showing PATIENT-related only</span> <a href="{}" style="font-size:0.65rem; color:#166534; margin-left:6px;">clear filter</a>"#,
+            queries_tab_url
+        )
+    } else {
+        format!(
+            "Queries <span style=\"font-size:0.7rem; color:#64748b;\">({} open · {} responded · {} closed)</span>",
+            query_open_count, query_responded_count, query_closed_count
+        )
+    };
+
     let data_queries_html = if filtered_queries.is_empty() {
         if query_age_filter == "stale" || query_age_filter == "aging" {
-            format!("<li style=\"color:#64748b;font-size:0.85rem;\">No {} queries match the current filter.</li>", query_age_filter)
+            format!(
+                "<li style=\"color:#64748b;font-size:0.85rem;\">No {} queries match the current filter.</li>",
+                query_age_filter
+            )
         } else if patient_related_queries_filter {
             "<li style=\"color:#64748b;font-size:0.85rem;\">No patient-related queries match the current filter.</li>".to_string()
         } else {
@@ -7777,7 +8236,6 @@ async fn render_study_workbench(
             .iter()
             .take(30)
             .map(|q| {
-                // Per-item aging for queries (full symmetry with patient portal reports)
                 let (age_days, _bucket) = patient_report_age(q.created_at, now);
                 let age_badge = if age_days > 30 {
                     format!(r#"<span style="background:#c53030;color:white;padding:1px 3px;border-radius:2px;font-size:0.58rem;font-weight:600;margin-left:3px;" title="Stale query">STALE {}d</span>"#, age_days)
@@ -7786,22 +8244,26 @@ async fn render_study_workbench(
                 } else {
                     format!(r#"<span style="background:#047857;color:white;padding:1px 3px;border-radius:2px;font-size:0.58rem;font-weight:600;margin-left:3px;" title="Recent query">{}d</span>"#, age_days)
                 };
-
-                let response_form = if q.status == "closed" {
+                let status = q.status.trim().to_ascii_lowercase();
+                let response_form = if status == "closed" {
                     "<small>closed</small>".to_string()
-                } else {
+                } else if status == "responded" {
                     format!(
-                        r#"<form method="post" action="/ui/studies/queries/{}/respond" style="margin:0.4rem 0;">
-  <input type="hidden" name="admin_email" value="{}" />
-  <input name="response_text" placeholder="Response / correction note" />
-  <button type="submit">Respond</button>
-</form>
-<form method="post" action="/ui/studies/queries/{}/close" style="margin:0;">
+                        r#"<form method="post" action="/ui/studies/queries/{}/close" style="margin:0.4rem 0;">
   <input type="hidden" name="admin_email" value="{}" />
   <button type="submit">Close query</button>
 </form>"#,
                         q.id,
-                        html_escape(admin_email.trim()),
+                        html_escape(admin_email.trim())
+                    )
+                } else {
+                    format!(
+                        r#"<form method="post" action="/ui/studies/queries/{}/respond" style="margin:0.4rem 0;">
+  <input type="hidden" name="admin_email" value="{}" />
+  <input name="response_text" placeholder="Response / correction note" required />
+  <button type="submit">Respond</button>
+</form>
+<small style="color:#64748b;">Respond before closure.</small>"#,
                         q.id,
                         html_escape(admin_email.trim())
                     )
@@ -8104,28 +8566,52 @@ async fn render_study_workbench(
         })
         .collect::<Vec<_>>()
         .join("");
-    let submission_options_html = submissions
-        .iter()
-        .map(|submission| {
-            format!(
-                r#"<option value="{}" data-id="{}">{}</option>"#,
-                submission.id.to_string().chars().take(8).collect::<String>(),
-                submission.id,
-                html_escape(&format!("{} ({})", submission.id, submission.status))
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
+    let submission_options_html = if queryable_submissions.is_empty() {
+        r#"<option value="" data-id="">No submitted/locked submissions available yet</option>"#
+            .to_string()
+    } else {
+        queryable_submissions
+            .iter()
+            .map(|submission| {
+                format!(
+                    r#"<option value="{}" data-id="{}">{}</option>"#,
+                    submission
+                        .id
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>(),
+                    submission.id,
+                    html_escape(&format!("{} ({})", submission.id, submission.status))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    };
 
     let selected_org_value = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
-    let selected_project_value = selected_project_id.map(|id| id.to_string()).unwrap_or_default();
-    let selected_template_value = selected_template_id.map(|id| id.to_string()).unwrap_or_default();
-    let selected_submission_value = selected_submission_id.map(|id| id.to_string()).unwrap_or_default();
+    let selected_project_value = selected_project_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let selected_template_value = selected_template_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let selected_submission_value = selected_submission_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
 
-    let _selected_org_hex = selected_org_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
-    let _selected_project_hex = selected_project_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
-    let selected_template_hex = selected_template_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
-    let selected_submission_hex = selected_submission_id.map(|id| id.to_string().chars().take(8).collect::<String>()).unwrap_or_default();
+    let _selected_org_hex = selected_org_id
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
+    let _selected_project_hex = selected_project_id
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
+    let selected_template_hex = selected_template_id
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
+    let selected_query_submission_hex = selected_query_submission_id
+        .map(|id| id.to_string().chars().take(8).collect::<String>())
+        .unwrap_or_default();
     let phase_action = "/ui/studies/phase".to_string();
     let crf_template_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/crf-template"))
@@ -8163,6 +8649,30 @@ async fn render_study_workbench(
     let create_query_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/query"))
         .unwrap_or_else(|| "#".to_string());
+    let create_query_disabled = selected_project_id.is_none() || queryable_submissions.is_empty();
+    let no_query_submission_hint = if selected_project_id.is_none() {
+        "<p class=\"muted\" style=\"margin-top:0.5rem;\">Select a study first, then create at least one non-draft submission.</p>"
+            .to_string()
+    } else if queryable_submissions.is_empty() {
+        format!(
+            "<p class=\"muted\" style=\"margin-top:0.5rem;\">No eligible submissions yet. Go to <a href=\"{}\" style=\"font-weight:700;color:#02182b;\">Submissions tab</a>, submit/lock a CRF, then return here.</p>",
+            submissions_tab_url
+        )
+    } else {
+        String::new()
+    };
+    let query_filter_controls_html = format!(
+        r#"<div style="margin:0.55rem 0 0.7rem; display:flex; gap:0.45rem; flex-wrap:wrap;">
+  <a href="{stale}" style="font-size:0.75rem; background:#fff1f2; color:#b91c1c; padding:3px 7px; border-radius:4px; text-decoration:none;">Stale queries</a>
+  <a href="{aging}" style="font-size:0.75rem; background:#fefce8; color:#a16207; padding:3px 7px; border-radius:4px; text-decoration:none;">Aging queries</a>
+  <a href="{patient}" style="font-size:0.75rem; background:#eff6ff; color:#1d4ed8; padding:3px 7px; border-radius:4px; text-decoration:none;">Patient-related</a>
+  <a href="{clear}" style="font-size:0.75rem; color:#166534; text-decoration:none; padding-top:3px;">Clear filters</a>
+</div>"#,
+        stale = stale_queries_url,
+        aging = aging_queries_url,
+        patient = patient_queries_url,
+        clear = queries_tab_url
+    );
     let startup_checklist_action = selected_project_id
         .map(|id| format!("/ui/studies/{id}/startup-checklist"))
         .unwrap_or_else(|| "#".to_string());
@@ -8180,7 +8690,12 @@ async fn render_study_workbench(
                 html_escape(admin_email.trim())
             )
         })
-        .unwrap_or_else(|| format!("/ui/foundation?admin_email={}", html_escape(admin_email.trim())));
+        .unwrap_or_else(|| {
+            format!(
+                "/ui/foundation?admin_email={}",
+                html_escape(admin_email.trim())
+            )
+        });
 
     let _global_nav = format!(
         r#"<nav class="global-nav" style="margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; display: flex; gap: 1rem; font-size: 0.9rem;">
@@ -8190,9 +8705,12 @@ async fn render_study_workbench(
   <a href="/ui/dua?admin_email={}&organization_id={}">DUA Console</a>
 </nav>"#,
         foundation_hub_url,
-        html_escape(admin_email.trim()), selected_org_value,
-        html_escape(admin_email.trim()), selected_org_value,
-        html_escape(admin_email.trim()), selected_org_value,
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        html_escape(admin_email.trim()),
+        selected_org_value,
     );
 
     let tab_bar = format!(
@@ -8228,17 +8746,50 @@ async fn render_study_workbench(
   </div>
 </aside>"#,
         app_dashboard_url,
-        is_active("workflow"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("overview"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("setup"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("lifecycle"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("crf-templates"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("crf-fields"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("visits"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("submissions"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("queries"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("startup"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
-        is_active("close"), html_escape(admin_email.trim()), selected_org_value, selected_project_value,
+        is_active("workflow"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("overview"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("setup"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("lifecycle"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("crf-templates"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("crf-fields"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("visits"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("submissions"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("queries"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("startup"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
+        is_active("close"),
+        html_escape(admin_email.trim()),
+        selected_org_value,
+        selected_project_value,
         app_dashboard_url
     );
 
@@ -8388,11 +8939,21 @@ async fn render_study_workbench(
   </div>
 </section>"#,
                 next_action_html,
-                admin_email_q, org_qs, project_qs,
-                admin_email_q, org_qs, project_qs,
-                admin_email_q, org_qs, project_qs,
-                admin_email_q, org_qs, project_qs,
-                admin_email_q, org_qs, project_qs,
+                admin_email_q,
+                org_qs,
+                project_qs,
+                admin_email_q,
+                org_qs,
+                project_qs,
+                admin_email_q,
+                org_qs,
+                project_qs,
+                admin_email_q,
+                org_qs,
+                project_qs,
+                admin_email_q,
+                org_qs,
+                project_qs,
                 phase_action,
                 selected_project_value,
                 html_escape(admin_email.trim()),
@@ -8741,14 +9302,24 @@ async fn render_study_workbench(
     <input name="field_key" placeholder="systolic_bp" required />
     <label>Query text</label>
     <input name="query_text" placeholder="Please verify value source document." required />
-    <button type="submit">Create Data Query</button>
+    <button type="submit" {}>Create Data Query</button>
   </form>
-  <h3 style="margin-top:1rem;">Queries</h3>
+  {}
+  <h3 style="margin-top:1rem;">{}</h3>
+  {}
   <ul>{}</ul>
 </section>"#,
             create_query_action,
             html_escape(admin_email.trim()),
-            selected_submission_hex.clone(),
+            selected_query_submission_hex.clone(),
+            if create_query_disabled {
+                "disabled"
+            } else {
+                ""
+            },
+            no_query_submission_hint,
+            query_header,
+            query_filter_controls_html,
             data_queries_html
         ),
         "startup" => format!(
@@ -8838,9 +9409,17 @@ async fn render_study_workbench(
     };
 
     let context_bar = render_context_bar(
-        if selected_org_value.is_empty() { None } else { Some(&selected_org_value) },
-        if selected_study_label.is_empty() { None } else { Some(&selected_study_label) },
-        admin_email.trim()
+        if selected_org_value.is_empty() {
+            None
+        } else {
+            Some(&selected_org_value)
+        },
+        if selected_study_label.is_empty() {
+            None
+        } else {
+            Some(&selected_study_label)
+        },
+        admin_email.trim(),
     );
 
     // Reconstruct patient_aging_html here (after the filter URLs are in scope) so the aging pills in the snapshot and Recommended Next Steps are actionable links.
@@ -8853,20 +9432,28 @@ async fn render_study_workbench(
             parts.push(format!(r#"<a href="{}" style="text-decoration:none;"><span style="background:#fefcbf; color:#b7791f; padding:2px 6px; border-radius:4px; font-weight:600; font-size:0.75rem;">{}</span></a>"#, aging_patients_url, patient_aging_count));
         }
         if !parts.is_empty() {
-            format!(r#"<span style="font-size:0.75rem;">patient aging: {}</span>"#, parts.join(" "))
+            format!(
+                r#"<span style="font-size:0.75rem;">patient aging: {}</span>"#,
+                parts.join(" ")
+            )
         } else {
             "".to_string()
         }
     };
 
     let patient_query_pill_html = if patient_related_open_queries > 0 {
-        format!(r#"<a href="{}" style="text-decoration:none;"><span style="background:#dbeafe; color:#1e40af; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_related_open_queries} patient queries</span></a>"#, patient_queries_url)
+        format!(
+            r#"<a href="{}" style="text-decoration:none;"><span style="background:#dbeafe; color:#1e40af; padding:2px 8px; border-radius:4px; font-weight:600;">{patient_related_open_queries} patient queries</span></a>"#,
+            patient_queries_url
+        )
     } else {
         String::new()
     };
 
     let silent_patients_pill_html = if patients_with_no_recent_structured > 0 {
-        format!(r#"<span style="background:#fee2e2; color:#991b1b; padding:2px 6px; border-radius:3px; font-weight:600;">{patients_with_no_recent_structured} silent</span>"#)
+        format!(
+            r#"<span style="background:#fee2e2; color:#991b1b; padding:2px 6px; border-radius:3px; font-weight:600;">{patients_with_no_recent_structured} silent</span>"#
+        )
     } else {
         String::new()
     };
@@ -9001,7 +9588,7 @@ async fn submit_create_study_from_ui(
             )));
         }
     };
-    
+
     require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
 
     if form.study_name.trim().is_empty() {
@@ -9695,7 +10282,12 @@ async fn submit_publish_study_crf_template(
     require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
 
     // Capture snapshot before publish (template becomes immutable after this)
-    let field_count = ctx.db.list_study_crf_fields(template_id).await.map(|f| f.len()).unwrap_or(0);
+    let field_count = ctx
+        .db
+        .list_study_crf_fields(template_id)
+        .await
+        .map(|f| f.len())
+        .unwrap_or(0);
 
     ctx.db
         .publish_study_crf_template(template_id)
@@ -9703,17 +10295,26 @@ async fn submit_publish_study_crf_template(
         .map_err(ApiError::internal)?;
 
     // Strong provenance for publish (CRF template is now locked for the study)
-    let old_data = Some(format!(r#"{{"status":"draft","field_count":{}}}"#, field_count));
+    let old_data = Some(format!(
+        r#"{{"status":"draft","field_count":{}}}"#,
+        field_count
+    ));
     let new_data = Some(r#"{"status":"published"}"#.to_string());
-    let _ = ctx.db.insert_audit_log(
-        "study_crf_templates",
-        template_id,
-        "published",
-        Some(user.user_id),
-        old_data.as_deref(),
-        new_data.as_deref(),
-        Some(&format!("CRF template published ({} fields) - template is now immutable", field_count)),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "study_crf_templates",
+            template_id,
+            "published",
+            Some(user.user_id),
+            old_data.as_deref(),
+            new_data.as_deref(),
+            Some(&format!(
+                "CRF template published ({} fields) - template is now immutable",
+                field_count
+            )),
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&template_id={}&notice={}",
@@ -9790,21 +10391,25 @@ async fn submit_schedule_patient_visit(
 
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
     let scheduled_for = parse_optional_date(&form.scheduled_for)?;
-    let visit = ctx.db
+    let visit = ctx
+        .db
         .schedule_patient_study_visit(project_id, patient_id, visit_template_id, scheduled_for)
         .await
         .map_err(ApiError::internal)?;
 
     // Audit
-    let _ = ctx.db.insert_audit_log(
-        "patient_study_visits",
-        visit.id,
-        "scheduled",
-        Some(user.user_id),
-        None,
-        None,
-        None,
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "patient_study_visits",
+            visit.id,
+            "scheduled",
+            Some(user.user_id),
+            None,
+            None,
+            None,
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&notice={}",
@@ -9885,17 +10490,21 @@ async fn submit_mark_study_crf_submission_submitted(
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
     if submission.status == "locked" {
-        let _ = ctx.db.insert_audit_log(
-            "study_crf_submissions",
-            submission_id,
-            "mutation_rejected",
-            Some(user.user_id),
-            None,
-            None,
-            Some("Attempt to mark locked submission as submitted via UI (answers frozen)"),
-        ).await;
+        let _ = ctx
+            .db
+            .insert_audit_log(
+                "study_crf_submissions",
+                submission_id,
+                "mutation_rejected",
+                Some(user.user_id),
+                None,
+                None,
+                Some("Attempt to mark locked submission as submitted via UI (answers frozen)"),
+            )
+            .await;
         return Err(ApiError::Validation(
-            "This CRF submission is locked. Answers are frozen and it cannot be re-submitted.".to_string(),
+            "This CRF submission is locked. Answers are frozen and it cannot be re-submitted."
+                .to_string(),
         ));
     }
     if submission.status != "draft" {
@@ -9905,7 +10514,12 @@ async fn submit_mark_study_crf_submission_submitted(
     }
 
     // Snapshot answers at submit for provenance
-    let current = ctx.db.get_study_crf_submission(submission_id).await.ok().flatten();
+    let current = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .ok()
+        .flatten();
     let snapshot = current.as_ref().map(|s| s.answers_json.clone());
 
     ctx.db
@@ -9914,15 +10528,18 @@ async fn submit_mark_study_crf_submission_submitted(
         .map_err(ApiError::internal)?;
 
     // Audit: submission moved to submitted state with snapshot
-    let _ = ctx.db.insert_audit_log(
-        "study_crf_submissions",
-        submission_id,
-        "submitted",
-        Some(user.user_id),
-        snapshot.as_deref(),
-        None,
-        Some("Submitted - answers recorded at transition"),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "study_crf_submissions",
+            submission_id,
+            "submitted",
+            Some(user.user_id),
+            snapshot.as_deref(),
+            None,
+            Some("Submitted - answers recorded at transition"),
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
@@ -9956,22 +10573,30 @@ async fn submit_lock_study_crf_submission(
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
     if submission.status == "locked" {
-        let _ = ctx.db.insert_audit_log(
-            "study_crf_submissions",
-            submission_id,
-            "mutation_rejected",
-            Some(user.user_id),
-            None,
-            None,
-            Some("Attempt to re-lock an already locked submission via UI"),
-        ).await;
+        let _ = ctx
+            .db
+            .insert_audit_log(
+                "study_crf_submissions",
+                submission_id,
+                "mutation_rejected",
+                Some(user.user_id),
+                None,
+                None,
+                Some("Attempt to re-lock an already locked submission via UI"),
+            )
+            .await;
         return Err(ApiError::Validation(
             "This CRF submission is already locked. Answers are frozen.".to_string(),
         ));
     }
 
     // Capture current answers for provenance before locking
-    let current_submission = ctx.db.get_study_crf_submission(submission_id).await.ok().flatten();
+    let current_submission = ctx
+        .db
+        .get_study_crf_submission(submission_id)
+        .await
+        .ok()
+        .flatten();
     let answers_snapshot = current_submission.as_ref().map(|s| s.answers_json.clone());
 
     ctx.db
@@ -9980,15 +10605,18 @@ async fn submit_lock_study_crf_submission(
         .map_err(ApiError::internal)?;
 
     // Audit with snapshot for basic provenance
-    let _ = ctx.db.insert_audit_log(
-        "study_crf_submissions",
-        submission_id,
-        "locked",
-        Some(user.user_id),
-        answers_snapshot.as_deref(),
-        None,
-        Some("Locked via UI - answers frozen"),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "study_crf_submissions",
+            submission_id,
+            "locked",
+            Some(user.user_id),
+            answers_snapshot.as_deref(),
+            None,
+            Some("Locked via UI - answers frozen"),
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
@@ -10044,15 +10672,21 @@ async fn submit_update_study_crf_submission_sdv(
     // Richer provenance for SDV (critical monitoring step)
     let old_data = Some(format!(r#"{{"sdv_status":"{}"}}"#, old_sdv_status));
     let new_data = Some(format!(r#"{{"sdv_status":"{}"}}"#, new_sdv_status));
-    let _ = ctx.db.insert_audit_log(
-        "study_crf_submissions",
-        submission_id,
-        "sdv_updated",
-        Some(user.user_id),
-        old_data.as_deref(),
-        new_data.as_deref(),
-        Some(&format!("SDV status changed: {} → {}", old_sdv_status, new_sdv_status)),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "study_crf_submissions",
+            submission_id,
+            "sdv_updated",
+            Some(user.user_id),
+            old_data.as_deref(),
+            new_data.as_deref(),
+            Some(&format!(
+                "SDV status changed: {} → {}",
+                old_sdv_status, new_sdv_status
+            )),
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&view=submissions&notice={}",
@@ -10086,9 +10720,14 @@ async fn submit_create_study_data_query(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
+    if submission.project_id != project_id {
+        return Err(ApiError::Validation(
+            "submission does not belong to project".to_string(),
+        ));
+    }
 
     if submission.status == "draft" {
-        return Err(ApiError::Validation(
+        return Err(ApiError::Conflict(
             "Cannot raise queries on a draft submission.".to_string(),
         ));
     }
@@ -10099,7 +10738,8 @@ async fn submit_create_study_data_query(
         .await
         .map_err(ApiError::internal)?
         .map(|u| u.id);
-    let query = ctx.db
+    let query = ctx
+        .db
         .create_study_data_query(
             project_id,
             submission_id,
@@ -10108,18 +10748,21 @@ async fn submit_create_study_data_query(
             raised_by_user_id,
         )
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(map_db_error)?;
 
     // Audit - data queries are key monitoring/compliance artifacts
-    let _ = ctx.db.insert_audit_log(
-        "study_data_queries",
-        query.id,
-        "created",
-        Some(user.user_id),
-        None,
-        None,
-        Some(&format!("Field: {}", form.field_key.trim())),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "study_data_queries",
+            query.id,
+            "created",
+            Some(user.user_id),
+            None,
+            None,
+            Some(&format!("Field: {}", form.field_key.trim())),
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
@@ -10153,23 +10796,34 @@ async fn submit_respond_study_data_query(
     require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
 
     let response_text = form.response_text.trim().to_string();
+    if response_text.is_empty() {
+        return Err(ApiError::Validation(
+            "Response text is required before marking a query responded.".to_string(),
+        ));
+    }
 
     ctx.db
         .respond_study_data_query(query_id, &response_text)
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(map_db_error)?;
 
     // Rich provenance for query response (key compliance artifact)
-    let new_data = Some(format!(r#"{{"response":"{}"}}"#, serde_json::to_string(&response_text).unwrap_or_else(|_| response_text.clone())));
-    let _ = ctx.db.insert_audit_log(
-        "study_data_queries",
-        query_id,
-        "responded",
-        Some(user.user_id),
-        None,
-        new_data.as_deref(),
-        Some(&format!("Query responded ({} chars)", response_text.len())),
-    ).await;
+    let new_data = Some(format!(
+        r#"{{"response":"{}"}}"#,
+        serde_json::to_string(&response_text).unwrap_or_else(|_| response_text.clone())
+    ));
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "study_data_queries",
+            query_id,
+            "responded",
+            Some(user.user_id),
+            None,
+            new_data.as_deref(),
+            Some(&format!("Query responded ({} chars)", response_text.len())),
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
@@ -10205,18 +10859,21 @@ async fn submit_close_study_data_query(
     ctx.db
         .close_study_data_query(query_id, Some(user.user_id))
         .await
-        .map_err(ApiError::internal)?;
+        .map_err(map_db_error)?;
 
     // Rich provenance for query closure
-    let _ = ctx.db.insert_audit_log(
-        "study_data_queries",
-        query_id,
-        "closed",
-        Some(user.user_id),
-        None,
-        None,
-        Some("Data query closed by coordinator"),
-    ).await;
+    let _ = ctx
+        .db
+        .insert_audit_log(
+            "study_data_queries",
+            query_id,
+            "closed",
+            Some(user.user_id),
+            None,
+            None,
+            Some("Data query closed by coordinator"),
+        )
+        .await;
 
     Ok(Redirect::to(&format!(
         "/ui/studies?admin_email={}&organization_id={}&project_id={}&submission_id={}&notice={}",
@@ -10294,7 +10951,9 @@ async fn submit_set_site_startup_checklist_item(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("site not found".to_string()))?;
-    let project_id = site.project_id.ok_or_else(|| ApiError::Validation("Site must be attached to a study for this action".to_string()))?;
+    let project_id = site.project_id.ok_or_else(|| {
+        ApiError::Validation("Site must be attached to a study for this action".to_string())
+    })?;
     let project = ctx
         .db
         .get_project(project_id)
@@ -10309,11 +10968,7 @@ async fn submit_set_site_startup_checklist_item(
             "A compliance verification comment is required when marking a startup checklist item as complete.".to_string()
         ));
     }
-    let completed_by_user_id = if completed {
-        Some(user.user_id)
-    } else {
-        None
-    };
+    let completed_by_user_id = if completed { Some(user.user_id) } else { None };
     ctx.db
         .set_site_startup_checklist_item(
             site_id,
@@ -10509,12 +11164,12 @@ async fn render_dua_admin_page(
             let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
             let b3 = name_bytes.get(2).copied().unwrap_or(3) as usize;
             let b4 = name_bytes.get(3).copied().unwrap_or(4) as usize;
-            
+
             let c1 = colors[b1 % 5];
             let c2 = colors[b2 % 5];
             let c3 = colors[b3 % 5];
             let c4 = colors[b4 % 5];
-            
+
             let logo_svg = format!(
                 r##"<svg width="24" height="24" viewBox="0 0 32 32" style="border-radius:4px; box-shadow:inset 0 0 2px rgba(0,0,0,0.15); display:block; flex-shrink:0;">
   <rect x="0" y="0" width="16" height="16" fill="{}" />
@@ -10826,9 +11481,13 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 "#;
     let context_bar = render_context_bar(
-        if selected_organization_hex.is_empty() { None } else { Some(&selected_organization_hex) },
+        if selected_organization_hex.is_empty() {
+            None
+        } else {
+            Some(&selected_organization_hex)
+        },
         None,
-        admin_email.trim()
+        admin_email.trim(),
     );
     let body = format!("{}{}{}", context_bar, body, script);
 
@@ -11684,9 +12343,23 @@ fn parse_optional_date(raw: &str) -> Result<Option<chrono::NaiveDate>, ApiError>
 
 fn parse_uuid_field(raw: &str, field_name: &str) -> Result<Uuid, ApiError> {
     let trimmed = raw.trim();
-    trimmed
-        .parse::<Uuid>()
-        .map_err(|_| ApiError::Validation(format!("{field_name} must be a valid UUID (got '{}')", trimmed)))
+    trimmed.parse::<Uuid>().map_err(|_| {
+        ApiError::Validation(format!(
+            "{field_name} must be a valid UUID (got '{}')",
+            trimmed
+        ))
+    })
+}
+
+fn map_db_error(error: anyhow::Error) -> ApiError {
+    let message = error.to_string();
+    if let Some(conflict) = message.strip_prefix("conflict:") {
+        return ApiError::Conflict(conflict.trim().to_string());
+    }
+    if let Some(validation) = message.strip_prefix("validation:") {
+        return ApiError::Validation(validation.trim().to_string());
+    }
+    ApiError::Internal(message)
 }
 
 fn optional_non_empty(input: &str) -> Option<&str> {
@@ -13024,8 +13697,12 @@ fn generate_sample_answers_json(fields: &[StudyCrfField]) -> String {
             "boolean" => serde_json::Value::Bool(false),
             "date" | "datetime" => serde_json::Value::String("2026-01-01".to_string()),
             "single_select" => {
-                if let Ok(opts) = serde_json::from_str::<Vec<serde_json::Value>>(&field.options_json) {
-                    opts.first().cloned().unwrap_or(serde_json::Value::String("option1".to_string()))
+                if let Ok(opts) =
+                    serde_json::from_str::<Vec<serde_json::Value>>(&field.options_json)
+                {
+                    opts.first()
+                        .cloned()
+                        .unwrap_or(serde_json::Value::String("option1".to_string()))
                 } else {
                     serde_json::Value::String("option1".to_string())
                 }
@@ -13046,22 +13723,42 @@ fn render_crf_field_for_data_entry(field: &StudyCrfField, current_value: &str) -
     match field.field_type.as_str() {
         "text" => format!(
             r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="text" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
-            label, if field.required { "*" } else { "" }, name, value_esc, required
+            label,
+            if field.required { "*" } else { "" },
+            name,
+            value_esc,
+            required
         ),
         "textarea" => format!(
             r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><textarea name="{}" rows="3" style="width:100%;padding:6px;"{}>{}</textarea>"#,
-            label, if field.required { "*" } else { "" }, name, required, value_esc
+            label,
+            if field.required { "*" } else { "" },
+            name,
+            required,
+            value_esc
         ),
         "number" => format!(
             r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="number" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
-            label, if field.required { "*" } else { "" }, name, value_esc, required
+            label,
+            if field.required { "*" } else { "" },
+            name,
+            value_esc,
+            required
         ),
         "date" => format!(
             r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="date" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
-            label, if field.required { "*" } else { "" }, name, value_esc, required
+            label,
+            if field.required { "*" } else { "" },
+            name,
+            value_esc,
+            required
         ),
         "boolean" => {
-            let checked = if current_value == "true" || current_value == "1" { " checked" } else { "" };
+            let checked = if current_value == "true" || current_value == "1" {
+                " checked"
+            } else {
+                ""
+            };
             format!(
                 r#"<label style="display:block;margin-top:0.5rem;"><input type="checkbox" name="{}" value="true"{} {} /> {}</label>"#,
                 name, checked, required, label
@@ -13071,13 +13768,26 @@ fn render_crf_field_for_data_entry(field: &StudyCrfField, current_value: &str) -
             let mut opts = String::new();
             if let Ok(items) = serde_json::from_str::<Vec<String>>(&field.options_json) {
                 for item in items {
-                    let sel = if item == current_value { " selected" } else { "" };
-                    opts.push_str(&format!(r#"<option value="{}"{}>{}</option>"#, html_escape(&item), sel, html_escape(&item)));
+                    let sel = if item == current_value {
+                        " selected"
+                    } else {
+                        ""
+                    };
+                    opts.push_str(&format!(
+                        r#"<option value="{}"{}>{}</option>"#,
+                        html_escape(&item),
+                        sel,
+                        html_escape(&item)
+                    ));
                 }
             }
             format!(
                 r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><select name="{}" style="width:100%;padding:6px;"{}>{}</select>"#,
-                label, if field.required { "*" } else { "" }, name, required, opts
+                label,
+                if field.required { "*" } else { "" },
+                name,
+                required,
+                opts
             )
         }
         "multi_select" => {
@@ -13085,15 +13795,28 @@ fn render_crf_field_for_data_entry(field: &StudyCrfField, current_value: &str) -
             let selected: Vec<&str> = current_value.split(',').collect();
             if let Ok(items) = serde_json::from_str::<Vec<String>>(&field.options_json) {
                 for item in items {
-                    let sel = if selected.contains(&item.as_str()) { " checked" } else { "" };
+                    let sel = if selected.contains(&item.as_str()) {
+                        " checked"
+                    } else {
+                        ""
+                    };
                     opts.push_str(&format!(r#"<label style="display:block;"><input type="checkbox" name="{}[]" value="{}"{} /> {}</label>"#, name, html_escape(&item), sel, html_escape(&item)));
                 }
             }
-            format!(r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><div style="padding-left:4px;">{}</div>"#, label, if field.required { "*" } else { "" }, opts)
+            format!(
+                r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><div style="padding-left:4px;">{}</div>"#,
+                label,
+                if field.required { "*" } else { "" },
+                opts
+            )
         }
         _ => format!(
             r#"<label style="display:block;margin-top:0.5rem;font-weight:600;">{} {}</label><input type="text" name="{}" value="{}" style="width:100%;padding:6px;"{} />"#,
-            label, if field.required { "*" } else { "" }, name, value_esc, required
+            label,
+            if field.required { "*" } else { "" },
+            name,
+            value_esc,
+            required
         ),
     }
 }
@@ -14623,7 +15346,6 @@ fn cingulum_global_js() -> &'static str {
     "#
 }
 
-
 fn wrap_text(input: &str, max_chars: usize) -> Vec<String> {
     let mut wrapped = Vec::new();
     for paragraph in input.lines() {
@@ -14744,6 +15466,7 @@ enum ApiError {
     Auth(AuthError),
     Validation(String),
     NotFound(String),
+    Conflict(String),
     Internal(String),
 }
 
@@ -14764,6 +15487,11 @@ impl IntoResponse for ApiError {
                 .into_response(),
             Self::NotFound(msg) => (
                 StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": msg })),
+            )
+                .into_response(),
+            Self::Conflict(msg) => (
+                StatusCode::CONFLICT,
                 Json(serde_json::json!({ "error": msg })),
             )
                 .into_response(),
