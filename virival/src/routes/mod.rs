@@ -3475,6 +3475,17 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
       background: #fffefb;
       padding: 0.85rem 0.9rem;
     }}
+    .card-link {{
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+      border-radius: 14px;
+    }}
+    .card-link:hover {{
+      transform: translateY(-1px);
+      box-shadow: 0 8px 20px rgba(2,24,43,0.12);
+    }}
     .card h3 {{ margin: 0 0 0.35rem; font-size: 1rem; }}
     .card p {{ margin: 0; font-size: 0.85rem; color: #314c66; line-height: 1.4; }}
     .api {{
@@ -3500,10 +3511,12 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
       <p style="margin:0.55rem 0 0;"><a href="/ui/workbench" style="display:inline-block;background:#02182b;color:#fff;text-decoration:none;border-radius:10px;padding:0.5rem 0.75rem;font-weight:700;">Open Research Workbench →</a></p>
     </section>
     <section class="grid">
-      <div class="card"><h3>1. Open the Workbench</h3><p>Use <code>/ui/workbench</code> for tabbed setup, design, execute, monitor, closeout, and analytics workflows.</p></div>
-      <div class="card"><h3>2. Assign membership</h3><p>Use <code>POST /api/v1/admin/memberships</code> or the membership admin UI to persist org roles.</p></div>
-      <div class="card"><h3>3. Compliance workflows</h3><p>Capture DUA signatures, download DUA PDF exports, and schedule reminder jobs from the workbench.</p></div>
-      <div class="card"><h3>4. Audit governance</h3><p>Track identity, resource actions, and outcomes in <code>/ui/admin/audit</code>.</p></div>
+      <a class="card-link" href="/ui/workbench?tab=setup"><div class="card"><h3>1. Setup & membership</h3><p>Create organizations, studies, sites, and assign org roles in the setup tab.</p></div></a>
+      <a class="card-link" href="/ui/workbench?tab=design"><div class="card"><h3>2. Study design</h3><p>Build CRFs, publish versions, and define visit schedule templates.</p></div></a>
+      <a class="card-link" href="/ui/workbench?tab=execute"><div class="card"><h3>3. Enroll & execute</h3><p>Enroll patients, create visits/submissions, and generate media upload tickets.</p></div></a>
+      <a class="card-link" href="/ui/workbench?tab=monitor"><div class="card"><h3>4. Monitor operations</h3><p>Run data query workflows, schedule reminders, and track operational posture.</p></div></a>
+      <a class="card-link" href="/ui/workbench?tab=close"><div class="card"><h3>5. Govern closeout</h3><p>Complete checklist items and transition studies with gated lifecycle controls.</p></div></a>
+      <a class="card-link" href="/ui/admin/audit"><div class="card"><h3>6. Audit governance</h3><p>Review identity/resource events and accountability trails in the audit console.</p></div></a>
     </section>
     <section class="api">
       <strong>Auth options</strong>
