@@ -1,8 +1,10 @@
 mod auth;
+mod authz;
 mod config;
 mod db;
 mod error;
 mod models;
+mod query_handlers;
 mod routes;
 mod study_queries_ui;
 mod workflow;

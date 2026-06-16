@@ -18,29 +18,21 @@ use uuid::Uuid;
 
 use crate::{
     auth::{extract_bearer_token, verify_google_workspace_user, AuthError, AuthenticatedUser},
+    authz::{
+        require_org_role, require_platform_role, ROLE_ANALYTICS, ROLE_COORDINATOR_OR_BETTER,
+        ROLE_ORG_MANAGERS, ROLE_PLATFORM_ADMIN,
+    },
     config::Config,
     db::Db,
     error::{map_db_error, ApiError},
     models::{DataUseAgreement, DataUseAgreementSignature, OutboundEmail, StudyCrfField},
+    query_handlers::{
+        close_study_data_query, create_study_data_query, list_study_data_queries,
+        respond_study_data_query,
+    },
     study_queries_ui::{build_query_monitor_panel, QueryMonitorPanelInput},
     workflow::query_is_closed,
 };
-
-const ROLE_PLATFORM_ADMIN: &[&str] = &["platform_admin"];
-const ROLE_ORG_MANAGERS: &[&str] = &["platform_admin", "org_admin"];
-const ROLE_COORDINATOR_OR_BETTER: &[&str] = &[
-    "platform_admin",
-    "org_admin",
-    "site_coordinator",
-    "investigator",
-];
-const ROLE_ANALYTICS: &[&str] = &[
-    "platform_admin",
-    "org_admin",
-    "investigator",
-    "site_coordinator",
-    "analyst",
-];
 
 /// Simple persistent context bar for guided workflow feel.
 /// Shows current scope and quick navigation.
@@ -1940,144 +1932,6 @@ async fn lock_study_crf_submission(
         .lock_study_crf_submission(submission_id)
         .await
         .map_err(ApiError::internal)?;
-    Ok(Json(updated))
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateStudyDataQueryRequest {
-    submission_id: Uuid,
-    field_key: String,
-    query_text: String,
-}
-
-async fn create_study_data_query(
-    State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
-    Path(project_id): Path<Uuid>,
-    Json(payload): Json<CreateStudyDataQueryRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let project = ctx
-        .db
-        .get_project(project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
-    if payload.field_key.trim().is_empty() || payload.query_text.trim().is_empty() {
-        return Err(ApiError::Validation(
-            "field_key and query_text are required".to_string(),
-        ));
-    }
-    let submission = ctx
-        .db
-        .get_study_crf_submission(payload.submission_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("submission not found".to_string()))?;
-    if submission.project_id != project_id {
-        return Err(ApiError::Validation(
-            "submission does not belong to project".to_string(),
-        ));
-    }
-    if submission.status.trim().eq_ignore_ascii_case("draft") {
-        return Err(ApiError::Conflict(
-            "cannot raise data query on a draft submission".to_string(),
-        ));
-    }
-    let query = ctx
-        .db
-        .create_study_data_query(
-            project_id,
-            payload.submission_id,
-            payload.field_key.trim(),
-            payload.query_text.trim(),
-            Some(user.user_id),
-        )
-        .await
-        .map_err(map_db_error)?;
-    Ok((StatusCode::CREATED, Json(query)))
-}
-
-async fn list_study_data_queries(
-    State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
-    Path(project_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
-    let project = ctx
-        .db
-        .get_project(project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    require_org_role(&user, project.organization_id, ROLE_ANALYTICS)?;
-    let queries = ctx
-        .db
-        .list_study_data_queries(project_id)
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(Json(queries))
-}
-
-#[derive(Debug, Deserialize)]
-struct RespondStudyDataQueryRequest {
-    response_text: String,
-}
-
-async fn respond_study_data_query(
-    State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
-    Path(query_id): Path<Uuid>,
-    Json(payload): Json<RespondStudyDataQueryRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    let query = ctx
-        .db
-        .get_study_data_query(query_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("data query not found".to_string()))?;
-    let project = ctx
-        .db
-        .get_project(query.project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    require_org_role(&user, project.organization_id, ROLE_COORDINATOR_OR_BETTER)?;
-    if payload.response_text.trim().is_empty() {
-        return Err(ApiError::Validation(
-            "response_text is required".to_string(),
-        ));
-    }
-    let updated = ctx
-        .db
-        .respond_study_data_query(query_id, payload.response_text.trim())
-        .await
-        .map_err(map_db_error)?;
-    Ok(Json(updated))
-}
-
-async fn close_study_data_query(
-    State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
-    Path(query_id): Path<Uuid>,
-) -> Result<impl IntoResponse, ApiError> {
-    let query = ctx
-        .db
-        .get_study_data_query(query_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("data query not found".to_string()))?;
-    let project = ctx
-        .db
-        .get_project(query.project_id)
-        .await
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::NotFound("project not found".to_string()))?;
-    require_org_role(&user, project.organization_id, ROLE_ORG_MANAGERS)?;
-    let updated = ctx
-        .db
-        .close_study_data_query(query_id, Some(user.user_id))
-        .await
-        .map_err(map_db_error)?;
     Ok(Json(updated))
 }
 
@@ -15284,28 +15138,4 @@ async fn generate_doctor_patient_note(
             reminder: "This is a non-diagnostic draft and requires clinician review.",
         }),
     ))
-}
-
-fn require_platform_role(user: &AuthenticatedUser, roles: &[&str]) -> Result<(), ApiError> {
-    if user.has_platform_role(roles) {
-        Ok(())
-    } else {
-        Err(ApiError::Auth(AuthError::Forbidden(
-            "user lacks required platform role".to_string(),
-        )))
-    }
-}
-
-fn require_org_role(
-    user: &AuthenticatedUser,
-    organization_id: Uuid,
-    roles: &[&str],
-) -> Result<(), ApiError> {
-    if user.has_org_role(organization_id, roles) {
-        Ok(())
-    } else {
-        Err(ApiError::Auth(AuthError::Forbidden(
-            "user lacks required organization role".to_string(),
-        )))
-    }
 }
