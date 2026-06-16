@@ -18,7 +18,7 @@ This rebuild prioritizes:
 4. **Rust-first backend**
    - Axum + Tokio API foundation.
 
-## Current scope (Phase 7 baseline)
+## Current scope (Phase 8 baseline)
 
 Virival now includes:
 
@@ -39,6 +39,11 @@ Virival now includes:
 - Direct UI form actions that orchestrate core operations (org/study/site/DUA/CRF/versioning/patient/visit/submission/query/closeout/phase)
 - DUA signature capture + PDF document export
 - Reminder jobs queue with processing endpoint for due reminders
+- Signed media upload ticket flow for consent/media assets
+- Secure media upload/download endpoints using HMAC-signed URLs
+- Worker runtime mode for reminder queue polling
+- CI workflow for formatting/check/test
+- Deployment scaffolding: Dockerfile, docker-compose, and Kubernetes manifests
 - PostgreSQL-backed persistence with boot-time SQL migrations
 - Repository interface + PostgreSQL implementation (domain logic decoupled from handlers)
 - Auth/RBAC middleware with Google OIDC RS256 signature verification via cached JWKS + dev fallback
@@ -63,6 +68,12 @@ Defaults:
 - `GOOGLE_CLIENT_ID=` (set for strict audience validation)
 - `GOOGLE_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs`
 - `OIDC_JWKS_CACHE_SECONDS=3600`
+- `RUN_MODE=api` (`api` or `reminder_worker`)
+- `WORKER_POLL_SECONDS=30`
+- `WORKER_BATCH_SIZE=50`
+- `MEDIA_STORAGE_ROOT=./data/media`
+- `MEDIA_SIGNING_SECRET=change-me-in-production`
+- `MEDIA_SIGNED_URL_TTL_SECONDS=900`
 
 Health:
 
@@ -74,6 +85,13 @@ Wizard shell:
 
 ```bash
 curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_admin" http://localhost:8090/ui
+```
+
+Reminder worker mode:
+
+```bash
+cd virival
+RUN_MODE=reminder_worker WORKER_POLL_SECONDS=10 WORKER_BATCH_SIZE=50 cargo run
 ```
 
 ## High-value endpoints
@@ -105,6 +123,11 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 - `POST /api/v1/duas/{dua_id}/signatures`
 - `GET /api/v1/duas/{dua_id}/signatures`
 - `GET /api/v1/duas/{dua_id}/pdf`
+- `POST /api/v1/media-assets/upload-ticket`
+- `PUT /api/v1/media-assets/upload/{asset_id}?expires=...&sig=...`
+- `GET /api/v1/media-assets/download/{asset_id}?expires=...&sig=...`
+- `GET /api/v1/media-assets?organization_id=...`
+- `GET /api/v1/media-assets/{asset_id}`
 - `GET /api/v1/studies/{study_id}/readiness`
 - `POST /api/v1/studies/{study_id}/phase`
 - `POST /api/v1/admin/memberships`
@@ -131,6 +154,7 @@ curl -H "x-virival-user: architect@cingulum.org" -H "x-virival-role: platform_ad
 - `POST /ui/workbench/queries`
 - `POST /ui/workbench/reminders`
 - `POST /ui/workbench/reminders/process`
+- `POST /ui/workbench/media`
 - `POST /ui/workbench/closeout-items`
 - `POST /ui/workbench/studies/{study_id}/phase`
 - `GET /ui/admin/memberships`

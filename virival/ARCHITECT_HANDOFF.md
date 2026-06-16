@@ -54,10 +54,18 @@ Your mission is to evolve this into production-ready architecture while preservi
 - Added reminder jobs queue (`reminder_jobs`) with scheduling + due-job processing APIs.
 - Added workbench reminder scheduling and in-UI "process due reminders now" flow.
 
-### Phase 8 - Compliance and delivery slice 2
-- Implement S3/GCS signed uploads for media and consent assets.
-- Add CI checks, integration tests, and deployment manifests.
-- Introduce background worker runtime for reminder/escalation dispatch transport adapters.
+### Phase 8 completed (compliance and delivery slice 2)
+- Added signed media upload ticket flow + secure upload/download endpoints.
+- Added media asset persistence (`media_assets`) and local storage adapter pathing.
+- Added reminder worker runtime mode (`RUN_MODE=reminder_worker`) with polling loop.
+- Added CI checks workflow (`.github/workflows/virival-ci.yml`) and unit tests for URL signing.
+- Added deployment scaffolding (Dockerfile, docker-compose, Kubernetes stack manifest).
+
+### Phase 9 - Platform hardening and production controls
+- Replace local media storage with pluggable S3/GCS adapter implementations.
+- Add end-to-end integration tests with isolated PostgreSQL fixtures.
+- Add rate limiting, upload size limits, and content scanning hooks for media assets.
+- Add observability stack (metrics/health depth, structured spans, worker dashboards).
 
 ## Coding style
 - Keep modules small and explicit.

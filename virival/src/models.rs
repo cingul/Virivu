@@ -149,6 +149,34 @@ pub enum ReminderJobStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaAssetStatus {
+    PendingUpload,
+    Uploaded,
+}
+
+impl MediaAssetStatus {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            MediaAssetStatus::PendingUpload => "pending_upload",
+            MediaAssetStatus::Uploaded => "uploaded",
+        }
+    }
+}
+
+impl FromStr for MediaAssetStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending_upload" => Ok(MediaAssetStatus::PendingUpload),
+            "uploaded" => Ok(MediaAssetStatus::Uploaded),
+            other => Err(format!("invalid media asset status value: {other}")),
+        }
+    }
+}
+
 impl ReminderJobStatus {
     pub fn as_db(&self) -> &'static str {
         match self {
@@ -404,6 +432,24 @@ pub struct ReminderJob {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaAsset {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub study_id: Option<Uuid>,
+    pub patient_id: Option<Uuid>,
+    pub category: String,
+    pub filename: String,
+    pub object_key: String,
+    pub content_type: String,
+    pub byte_size: i64,
+    pub status: MediaAssetStatus,
+    pub upload_expires_at: DateTime<Utc>,
+    pub uploaded_at: Option<DateTime<Utc>>,
+    pub created_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StudyReadiness {
     pub study_id: Uuid,
@@ -609,6 +655,25 @@ pub struct ProcessReminderJobsRequest {
 pub struct ProcessReminderJobsResponse {
     pub processed_count: usize,
     pub jobs: Vec<ReminderJob>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMediaUploadTicketRequest {
+    pub organization_id: Uuid,
+    pub study_id: Option<Uuid>,
+    pub patient_id: Option<Uuid>,
+    pub category: String,
+    pub filename: String,
+    pub content_type: String,
+    pub expires_in_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MediaUploadTicketResponse {
+    pub asset: MediaAsset,
+    pub upload_url: String,
+    pub download_url: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]

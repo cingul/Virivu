@@ -10,9 +10,9 @@ use crate::{
     models::{
         AgreementStatus, AppRole, AuditLogRecord, CloseoutChecklistItem, CrfSubmission,
         CrfTemplate, CrfTemplateVersion, DataQuery, DataQueryComment, DuaAgreement, DuaSignature,
-        NewAuditLogEntry, Organization, OrganizationMembership, Patient, QueryStatus, ReminderJob,
-        ReminderJobStatus, Site, Study, StudyPhase, StudyReadiness, SubmissionStatus, User, Visit,
-        VisitScheduleTemplate, VisitStatus,
+        MediaAsset, MediaAssetStatus, NewAuditLogEntry, Organization, OrganizationMembership,
+        Patient, QueryStatus, ReminderJob, ReminderJobStatus, Site, Study, StudyPhase,
+        StudyReadiness, SubmissionStatus, User, Visit, VisitScheduleTemplate, VisitStatus,
     },
 };
 
@@ -190,6 +190,29 @@ pub trait Repository: Send + Sync {
     ) -> Result<ReminderJob, ApiError>;
     async fn list_reminder_jobs(&self, limit: i64) -> Result<Vec<ReminderJob>, ApiError>;
     async fn process_due_reminder_jobs(&self, limit: i64) -> Result<Vec<ReminderJob>, ApiError>;
+    async fn create_media_asset(
+        &self,
+        organization_id: Uuid,
+        study_id: Option<Uuid>,
+        patient_id: Option<Uuid>,
+        category: &str,
+        filename: &str,
+        object_key: &str,
+        content_type: &str,
+        upload_expires_at: chrono::DateTime<chrono::Utc>,
+        created_by_user_id: Option<Uuid>,
+    ) -> Result<MediaAsset, ApiError>;
+    async fn get_media_asset(&self, asset_id: Uuid) -> Result<MediaAsset, ApiError>;
+    async fn list_media_assets_for_organization(
+        &self,
+        organization_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<MediaAsset>, ApiError>;
+    async fn mark_media_asset_uploaded(
+        &self,
+        asset_id: Uuid,
+        byte_size: i64,
+    ) -> Result<MediaAsset, ApiError>;
 
     async fn compute_readiness(&self, study_id: Uuid) -> Result<StudyReadiness, ApiError>;
 
@@ -1225,6 +1248,172 @@ impl Repository for PgRepository {
         rows.iter().map(map_reminder_job).collect()
     }
 
+    async fn create_media_asset(
+        &self,
+        organization_id: Uuid,
+        study_id: Option<Uuid>,
+        patient_id: Option<Uuid>,
+        category: &str,
+        filename: &str,
+        object_key: &str,
+        content_type: &str,
+        upload_expires_at: chrono::DateTime<chrono::Utc>,
+        created_by_user_id: Option<Uuid>,
+    ) -> Result<MediaAsset, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_one(
+                "INSERT INTO media_assets(
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    category,
+                    filename,
+                    object_key,
+                    content_type,
+                    byte_size,
+                    status,
+                    upload_expires_at,
+                    uploaded_at,
+                    created_by_user_id,
+                    created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, NULL, $11, NOW())
+                RETURNING
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    category,
+                    filename,
+                    object_key,
+                    content_type,
+                    byte_size,
+                    status,
+                    upload_expires_at,
+                    uploaded_at,
+                    created_by_user_id,
+                    created_at",
+                &[
+                    &Uuid::new_v4(),
+                    &organization_id,
+                    &study_id,
+                    &patient_id,
+                    &category,
+                    &filename,
+                    &object_key,
+                    &content_type,
+                    &MediaAssetStatus::PendingUpload.as_db(),
+                    &upload_expires_at,
+                    &created_by_user_id,
+                ],
+            )
+            .await
+            .map_err(map_write_err)?;
+        map_media_asset(&row)
+    }
+
+    async fn get_media_asset(&self, asset_id: Uuid) -> Result<MediaAsset, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "SELECT
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    category,
+                    filename,
+                    object_key,
+                    content_type,
+                    byte_size,
+                    status,
+                    upload_expires_at,
+                    uploaded_at,
+                    created_by_user_id,
+                    created_at
+                 FROM media_assets
+                 WHERE id = $1",
+                &[&asset_id],
+            )
+            .await
+            .map_err(map_query_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("media asset {asset_id}")))?;
+        map_media_asset(&row)
+    }
+
+    async fn list_media_assets_for_organization(
+        &self,
+        organization_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<MediaAsset>, ApiError> {
+        let client = self.client().await?;
+        let safe_limit = if limit <= 0 { 20 } else { limit.min(500) };
+        let rows = client
+            .query(
+                "SELECT
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    category,
+                    filename,
+                    object_key,
+                    content_type,
+                    byte_size,
+                    status,
+                    upload_expires_at,
+                    uploaded_at,
+                    created_by_user_id,
+                    created_at
+                 FROM media_assets
+                 WHERE organization_id = $1
+                 ORDER BY created_at DESC
+                 LIMIT $2",
+                &[&organization_id, &safe_limit],
+            )
+            .await
+            .map_err(map_query_err)?;
+        rows.iter().map(map_media_asset).collect()
+    }
+
+    async fn mark_media_asset_uploaded(
+        &self,
+        asset_id: Uuid,
+        byte_size: i64,
+    ) -> Result<MediaAsset, ApiError> {
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                "UPDATE media_assets
+                 SET
+                    status = $2,
+                    byte_size = $3,
+                    uploaded_at = NOW()
+                 WHERE id = $1
+                 RETURNING
+                    id,
+                    organization_id,
+                    study_id,
+                    patient_id,
+                    category,
+                    filename,
+                    object_key,
+                    content_type,
+                    byte_size,
+                    status,
+                    upload_expires_at,
+                    uploaded_at,
+                    created_by_user_id,
+                    created_at",
+                &[&asset_id, &MediaAssetStatus::Uploaded.as_db(), &byte_size],
+            )
+            .await
+            .map_err(map_write_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("media asset {asset_id}")))?;
+        map_media_asset(&row)
+    }
+
     async fn compute_readiness(&self, study_id: Uuid) -> Result<StudyReadiness, ApiError> {
         let client = self.client().await?;
         let study_row = client
@@ -1713,6 +1902,27 @@ fn map_reminder_job(row: &Row) -> Result<ReminderJob, ApiError> {
         scheduled_for: row.get("scheduled_for"),
         processed_at: row.get("processed_at"),
         last_error: row.get("last_error"),
+        created_at: row.get("created_at"),
+    })
+}
+
+fn map_media_asset(row: &Row) -> Result<MediaAsset, ApiError> {
+    let status = MediaAssetStatus::from_str(row.get("status"))
+        .map_err(|err| ApiError::Internal(format!("invalid media asset status: {err}")))?;
+    Ok(MediaAsset {
+        id: row.get("id"),
+        organization_id: row.get("organization_id"),
+        study_id: row.get("study_id"),
+        patient_id: row.get("patient_id"),
+        category: row.get("category"),
+        filename: row.get("filename"),
+        object_key: row.get("object_key"),
+        content_type: row.get("content_type"),
+        byte_size: row.get("byte_size"),
+        status,
+        upload_expires_at: row.get("upload_expires_at"),
+        uploaded_at: row.get("uploaded_at"),
+        created_by_user_id: row.get("created_by_user_id"),
         created_at: row.get("created_at"),
     })
 }

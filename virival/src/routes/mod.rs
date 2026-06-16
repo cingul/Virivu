@@ -7,7 +7,7 @@ use axum::{
     },
     middleware::from_fn_with_state,
     response::{Html, Redirect, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Extension, Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -21,10 +21,11 @@ use crate::{
         AppRole, AuthenticatedUser, CompleteCloseoutChecklistItemRequest,
         CreateCloseoutChecklistItemRequest, CreateCrfSubmissionRequest, CreateCrfTemplateRequest,
         CreateCrfTemplateVersionRequest, CreateDataQueryCommentRequest, CreateDataQueryRequest,
-        CreateDuaRequest, CreateDuaSignatureRequest, CreateMembershipRequest,
-        CreateOrganizationRequest, CreateReminderJobRequest, CreateSiteRequest, CreateStudyRequest,
-        CreateVisitRequest, CreateVisitScheduleTemplateRequest, HealthResponse,
-        MarkSiteStartupRequest, ProcessReminderJobsRequest, ProcessReminderJobsResponse,
+        CreateDuaRequest, CreateDuaSignatureRequest, CreateMediaUploadTicketRequest,
+        CreateMembershipRequest, CreateOrganizationRequest, CreateReminderJobRequest,
+        CreateSiteRequest, CreateStudyRequest, CreateVisitRequest,
+        CreateVisitScheduleTemplateRequest, HealthResponse, MarkSiteStartupRequest,
+        MediaUploadTicketResponse, ProcessReminderJobsRequest, ProcessReminderJobsResponse,
         RespondDataQueryRequest, StudyPhase, StudyReadiness, TransitionStudyPhaseRequest,
     },
     state::AppState,
@@ -73,6 +74,7 @@ pub fn router(state: AppState, app_name: String) -> Router {
             "/ui/workbench/reminders/process",
             post(submit_workbench_process_reminders),
         )
+        .route("/ui/workbench/media", post(submit_workbench_media_ticket))
         .route(
             "/ui/workbench/studies/{study_id}/phase",
             post(submit_workbench_phase_transition),
@@ -153,6 +155,20 @@ pub fn router(state: AppState, app_name: String) -> Router {
             get(list_dua_signatures).post(create_dua_signature),
         )
         .route("/api/v1/duas/{dua_id}/pdf", get(download_dua_pdf))
+        .route(
+            "/api/v1/media-assets/upload-ticket",
+            post(create_media_upload_ticket),
+        )
+        .route("/api/v1/media-assets", get(list_media_assets))
+        .route("/api/v1/media-assets/{asset_id}", get(get_media_asset))
+        .route(
+            "/api/v1/media-assets/upload/{asset_id}",
+            put(upload_media_asset),
+        )
+        .route(
+            "/api/v1/media-assets/download/{asset_id}",
+            get(download_media_asset),
+        )
         .route("/api/v1/admin/memberships", post(create_membership))
         .route(
             "/api/v1/admin/organizations/{organization_id}/memberships",
@@ -243,6 +259,18 @@ struct AuditApiQuery {
 #[derive(Debug, Deserialize)]
 struct ReminderJobsQuery {
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaAssetsQuery {
+    organization_id: Uuid,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SignedMediaQuery {
+    expires: i64,
+    sig: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -369,6 +397,16 @@ struct WorkbenchReminderProcessForm {
     organization_id: Uuid,
     study_id: Option<Uuid>,
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkbenchMediaTicketForm {
+    organization_id: Uuid,
+    study_id: Option<Uuid>,
+    patient_id: Option<Uuid>,
+    category: String,
+    filename: String,
+    content_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1422,6 +1460,209 @@ async fn process_reminder_jobs(
     }))
 }
 
+async fn create_media_upload_ticket(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Json(input): Json<CreateMediaUploadTicketRequest>,
+) -> Result<Json<MediaUploadTicketResponse>, ApiError> {
+    can_write(&user)?;
+    if input.category.trim().is_empty()
+        || input.filename.trim().is_empty()
+        || input.content_type.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "category, filename, and content_type are required".to_string(),
+        ));
+    }
+    state
+        .repository
+        .get_organization(input.organization_id)
+        .await?;
+    if let Some(study_id) = input.study_id {
+        state.repository.get_study(study_id).await?;
+    }
+    if let Some(patient_id) = input.patient_id {
+        state.repository.get_patient(patient_id).await?;
+    }
+
+    let max_ttl = state.media_signed_url_ttl_seconds.max(60);
+    let requested_ttl = input.expires_in_seconds.unwrap_or(max_ttl.min(900));
+    let ttl_seconds = requested_ttl.min(max_ttl);
+    let expires_at = Utc::now() + chrono::Duration::seconds(ttl_seconds as i64);
+    let object_key = format!(
+        "{}/{}/{}",
+        input.organization_id,
+        Uuid::new_v4(),
+        sanitize_filename(input.filename.trim())
+    );
+    let asset = state
+        .repository
+        .create_media_asset(
+            input.organization_id,
+            input.study_id,
+            input.patient_id,
+            input.category.trim(),
+            input.filename.trim(),
+            &object_key,
+            input.content_type.trim(),
+            expires_at,
+            Some(user.user_id),
+        )
+        .await?;
+    let expires_epoch = expires_at.timestamp();
+    let upload_sig = state.media_signer.sign_upload(asset.id, expires_epoch);
+    let download_sig = state.media_signer.sign_download(asset.id, expires_epoch);
+    let upload_url = format!(
+        "/api/v1/media-assets/upload/{asset_id}?expires={expires_epoch}&sig={sig}",
+        asset_id = asset.id,
+        expires_epoch = expires_epoch,
+        sig = upload_sig
+    );
+    let download_url = format!(
+        "/api/v1/media-assets/download/{asset_id}?expires={expires_epoch}&sig={sig}",
+        asset_id = asset.id,
+        expires_epoch = expires_epoch,
+        sig = download_sig
+    );
+    Ok(Json(MediaUploadTicketResponse {
+        asset,
+        upload_url,
+        download_url,
+        expires_at,
+    }))
+}
+
+async fn list_media_assets(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Query(query): Query<MediaAssetsQuery>,
+) -> Result<Json<Vec<crate::models::MediaAsset>>, ApiError> {
+    can_read(&user)?;
+    state
+        .repository
+        .get_organization(query.organization_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .list_media_assets_for_organization(query.organization_id, query.limit.unwrap_or(50))
+            .await?,
+    ))
+}
+
+async fn get_media_asset(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Path(asset_id): Path<Uuid>,
+) -> Result<Json<crate::models::MediaAsset>, ApiError> {
+    can_read(&user)?;
+    Ok(Json(state.repository.get_media_asset(asset_id).await?))
+}
+
+async fn upload_media_asset(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Path(asset_id): Path<Uuid>,
+    Query(query): Query<SignedMediaQuery>,
+    body: axum::body::Bytes,
+) -> Result<Json<crate::models::MediaAsset>, ApiError> {
+    if query.expires < Utc::now().timestamp() {
+        return Err(ApiError::Unauthorized(
+            "signed upload URL has expired".to_string(),
+        ));
+    }
+    if !state
+        .media_signer
+        .verify_upload(asset_id, query.expires, &query.sig)
+    {
+        return Err(ApiError::Unauthorized(
+            "invalid upload URL signature".to_string(),
+        ));
+    }
+    let asset = state.repository.get_media_asset(asset_id).await?;
+    let path = media_asset_path(state.media_storage_root.as_ref(), &asset.object_key);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|err| ApiError::Internal(format!("failed creating media directory: {err}")))?;
+    }
+    tokio::fs::write(&path, body.as_ref())
+        .await
+        .map_err(|err| ApiError::Internal(format!("failed writing media file: {err}")))?;
+    let updated = state
+        .repository
+        .mark_media_asset_uploaded(asset_id, body.len() as i64)
+        .await?;
+    Ok(Json(updated))
+}
+
+async fn download_media_asset(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Path(asset_id): Path<Uuid>,
+    Query(query): Query<SignedMediaQuery>,
+) -> Result<Response, ApiError> {
+    if query.expires < Utc::now().timestamp() {
+        return Err(ApiError::Unauthorized(
+            "signed download URL has expired".to_string(),
+        ));
+    }
+    if !state
+        .media_signer
+        .verify_download(asset_id, query.expires, &query.sig)
+    {
+        return Err(ApiError::Unauthorized(
+            "invalid download URL signature".to_string(),
+        ));
+    }
+    let asset = state.repository.get_media_asset(asset_id).await?;
+    let path = media_asset_path(state.media_storage_root.as_ref(), &asset.object_key);
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|err| ApiError::NotFound(format!("media payload unavailable: {err}")))?;
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&asset.content_type).map_err(|err| {
+            ApiError::Internal(format!("invalid content type for response header: {err}"))
+        })?,
+    );
+    let content_disposition = format!(
+        "attachment; filename=\"{}\"",
+        sanitize_filename(&asset.filename)
+    );
+    response.headers_mut().insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_str(&content_disposition).map_err(|err| {
+            ApiError::Internal(format!("invalid content disposition header: {err}"))
+        })?,
+    );
+    Ok(response)
+}
+
+fn sanitize_filename(raw: &str) -> String {
+    let mut sanitized = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        sanitized = "asset.bin".to_string();
+    }
+    sanitized
+}
+
+fn media_asset_path(root: &std::path::Path, object_key: &str) -> std::path::PathBuf {
+    object_key
+        .split('/')
+        .fold(root.to_path_buf(), |acc, part| acc.join(part))
+}
+
 fn escape_pdf_text(raw: &str) -> String {
     raw.replace('\\', "\\\\")
         .replace('(', "\\(")
@@ -1988,6 +2229,56 @@ async fn submit_workbench_process_reminders(
     )))
 }
 
+async fn submit_workbench_media_ticket(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Form(form): Form<WorkbenchMediaTicketForm>,
+) -> Result<Redirect, ApiError> {
+    can_write(&user)?;
+    if form.category.trim().is_empty()
+        || form.filename.trim().is_empty()
+        || form.content_type.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "category, filename, and content_type are required".to_string(),
+        ));
+    }
+    let expires_at =
+        Utc::now() + chrono::Duration::seconds(state.media_signed_url_ttl_seconds.max(60) as i64);
+    let object_key = format!(
+        "{}/{}/{}",
+        form.organization_id,
+        Uuid::new_v4(),
+        sanitize_filename(form.filename.trim())
+    );
+    let asset = state
+        .repository
+        .create_media_asset(
+            form.organization_id,
+            form.study_id,
+            form.patient_id,
+            form.category.trim(),
+            form.filename.trim(),
+            &object_key,
+            form.content_type.trim(),
+            expires_at,
+            Some(user.user_id),
+        )
+        .await?;
+    let expires_epoch = expires_at.timestamp();
+    let upload_sig = state.media_signer.sign_upload(asset.id, expires_epoch);
+    let notice = format!(
+        "Media ticket created: PUT /api/v1/media-assets/upload/{}?expires={}&sig={}",
+        asset.id, expires_epoch, upload_sig
+    );
+    Ok(Redirect::to(&workbench_href(
+        Some(form.organization_id),
+        form.study_id,
+        "execute",
+        Some(&notice),
+    )))
+}
+
 async fn submit_workbench_phase_transition(
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
@@ -2083,6 +2374,17 @@ async fn render_workbench(
         .filter(|job| selected_study.is_none() || job.study_id == selected_study)
         .cloned()
         .collect::<Vec<_>>();
+    let scoped_media_assets = if let Some(organization_id) = selected_org {
+        state
+            .repository
+            .list_media_assets_for_organization(organization_id, 120)
+            .await?
+            .into_iter()
+            .filter(|asset| selected_study.is_none() || asset.study_id == selected_study)
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
     let visit_schedule_templates = if let Some(study_id) = selected_study {
         state
             .repository
@@ -2323,6 +2625,32 @@ async fn render_workbench(
                         .processed_at
                         .map(|value| value.to_rfc3339())
                         .unwrap_or_else(|| "-".to_string())
+                )
+            })
+            .collect::<String>()
+    };
+    let media_rows = if scoped_media_assets.is_empty() {
+        r#"<tr><td colspan="5">No media assets in current scope.</td></tr>"#.to_string()
+    } else {
+        scoped_media_assets
+            .iter()
+            .take(15)
+            .map(|asset| {
+                let expires_epoch =
+                    (Utc::now() + chrono::Duration::seconds(state.media_signed_url_ttl_seconds as i64))
+                        .timestamp();
+                let download_sig = state.media_signer.sign_download(asset.id, expires_epoch);
+                let download_href = format!(
+                    "/api/v1/media-assets/download/{}?expires={}&sig={}",
+                    asset.id, expires_epoch, download_sig
+                );
+                format!(
+                    r#"<tr><td>{filename}</td><td>{category}</td><td>{status}</td><td>{size}</td><td><a href="{download_href}">download</a></td></tr>"#,
+                    filename = escape_html(&asset.filename),
+                    category = escape_html(&asset.category),
+                    status = asset.status.as_db(),
+                    size = asset.byte_size,
+                    download_href = download_href
                 )
             })
             .collect::<String>()
@@ -2608,6 +2936,24 @@ async fn render_workbench(
       <button type="submit">Save submission</button>
     </form>
   </article>
+  <article class="panel">
+    <h3>Create media upload ticket</h3>
+    <form method="post" action="/ui/workbench/media">
+      <label>Organization</label><select name="organization_id" required>{org_options}</select>
+      <label>Study (optional)</label><select name="study_id"><option value="">None</option>{study_select_options}</select>
+      <label>Patient (optional)</label><select name="patient_id"><option value="">None</option>{patient_options}</select>
+      <label>Category</label><input name="category" placeholder="consent_pdf" value="consent_pdf" required />
+      <label>Filename</label><input name="filename" placeholder="consent-form.pdf" required />
+      <label>Content type</label><input name="content_type" placeholder="application/pdf" value="application/pdf" required />
+      <button type="submit">Generate signed upload ticket</button>
+    </form>
+  </article>
+  <article class="panel full">
+    <h3>Media assets</h3>
+    <div class="table-wrap">
+      <table><thead><tr><th>Filename</th><th>Category</th><th>Status</th><th>Bytes</th><th>Download</th></tr></thead><tbody>{media_rows}</tbody></table>
+    </div>
+  </article>
 </section>"#,
             org_options = org_options.as_str(),
             study_select_options = study_select_options.as_str(),
@@ -2615,6 +2961,7 @@ async fn render_workbench(
             patient_options = patient_options.as_str(),
             visit_options = visit_options.as_str(),
             template_options = template_options.as_str(),
+            media_rows = media_rows.as_str(),
         ),
         "monitor" => format!(
             r#"<section class="panel-grid">
@@ -2741,6 +3088,7 @@ async fn render_workbench(
   <article class="kpi"><h4>Patients</h4><strong>{patients}</strong></article>
   <article class="kpi"><h4>Visits</h4><strong>{visits}</strong></article>
   <article class="kpi"><h4>Submissions (locked)</h4><strong>{locked}/{total_submissions}</strong></article>
+  <article class="kpi"><h4>Media assets</h4><strong>{media_assets}</strong></article>
   <article class="kpi"><h4>Queries (open/responded/closed)</h4><strong>{open}/{responded}/{closed}</strong></article>
   <article class="kpi"><h4>DUA signatures</h4><strong>{dua_signatures}</strong></article>
   <article class="kpi"><h4>Reminders (pending/sent/failed)</h4><strong>{pending_reminders}/{sent_reminders}/{failed_reminders}</strong></article>
@@ -2755,6 +3103,7 @@ async fn render_workbench(
             visits = study_visits.len(),
             locked = locked_submissions,
             total_submissions = study_submissions.len(),
+            media_assets = scoped_media_assets.len(),
             open = open_queries,
             responded = responded_queries,
             closed = closed_queries,
@@ -2815,7 +3164,7 @@ async fn render_workbench(
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival Phase 7 · Research Workbench</h1>
+      <h1>Virival Phase 8 · Research Workbench</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> ({role}). Focus organization: <strong>{selected_org}</strong>. Focus study: <strong>{selected_study}</strong>.</p>
       <p class="muted"><strong>Workflow coach:</strong> {guidance}</p>
       {stage_cards}
@@ -2939,7 +3288,7 @@ async fn render_wizard_shell(Extension(user): Extension<AuthenticatedUser>) -> H
 <body>
   <div class="page">
     <section class="hero">
-      <h1>Virival · Phase 7 Product Shell</h1>
+      <h1>Virival · Phase 8 Product Shell</h1>
       <p class="muted">Authenticated as <strong>{subject}</strong> (<strong>{email}</strong>) with role <strong>{role}</strong>. Source: <strong>{auth_source}</strong>. Organization scope: <strong>{org_scope}</strong>.</p>
       <span class="chip">workflow-first architecture mode</span>
       <p style="margin:0.55rem 0 0;"><a href="/ui/workbench" style="display:inline-block;background:#02182b;color:#fff;text-decoration:none;border-radius:10px;padding:0.5rem 0.75rem;font-weight:700;">Open Research Workbench →</a></p>

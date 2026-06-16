@@ -68,6 +68,12 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), ApiError> {
         include_str!("../migrations/0005_phase7_compliance_delivery.sql"),
     )
     .await?;
+    apply_migration(
+        &client,
+        "0006_phase8_media_assets",
+        include_str!("../migrations/0006_phase8_media_assets.sql"),
+    )
+    .await?;
     Ok(())
 }
 
