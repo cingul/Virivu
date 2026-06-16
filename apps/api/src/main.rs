@@ -4,6 +4,7 @@ mod db;
 mod error;
 mod models;
 mod routes;
+mod study_queries_ui;
 mod workflow;
 
 use anyhow::Context;
