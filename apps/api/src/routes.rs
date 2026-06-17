@@ -11210,10 +11210,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async fn submit_create_organization_from_ui(
     State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
     Form(form): Form<DuaCreateOrganizationForm>,
 ) -> Result<Html<String>, ApiError> {
-    require_platform_role(&user, ROLE_PLATFORM_ADMIN)?;
+    let admin_email = form.admin_email.trim();
+    if admin_email.is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
+    require_platform_role_by_email(&ctx, admin_email, ROLE_PLATFORM_ADMIN).await?;
 
     if form.organization_name.trim().is_empty() {
         return Err(ApiError::Validation(
@@ -11241,7 +11244,7 @@ async fn submit_create_organization_from_ui(
         .await
         .map_err(ApiError::internal)?;
     ctx.db
-        .ensure_org_admin_membership(user.email.as_str(), organization.id)
+        .ensure_org_admin_membership(admin_email, organization.id)
         .await
         .map_err(ApiError::internal)?;
 
@@ -11256,7 +11259,7 @@ async fn submit_create_organization_from_ui(
 "#,
         html_escape(&organization.name),
         organization.id,
-        query_escape(&user.email),
+        query_escape(admin_email),
         organization.id
     );
     Ok(Html(render_cingulum_page("Organization Created", body)))
@@ -11284,19 +11287,22 @@ async fn open_dua_agreement_workspace(
 
 async fn render_create_dua_from_form(
     State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
     Form(form): Form<DuaDraftForm>,
 ) -> Result<Html<String>, ApiError> {
+    let admin_email = form.admin_email.trim();
+    if admin_email.is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
     let organization_id =
         form.organization_id.trim().parse::<Uuid>().map_err(|_| {
             ApiError::Validation("organization_id must be a valid UUID".to_string())
         })?;
 
-    require_org_role(&user, organization_id, ROLE_ORG_MANAGERS)?;
+    let created_by_user_id =
+        require_org_role_by_email(&ctx, admin_email, organization_id, ROLE_ORG_MANAGERS).await?;
 
     let effective_date = parse_optional_date(&form.effective_date)?;
     let expiration_date = parse_optional_date(&form.expiration_date)?;
-    let created_by_user_id = Some(user.user_id);
 
     let agreement = ctx
         .db
@@ -11341,8 +11347,8 @@ async fn render_create_dua_from_form(
         html_escape(&signing_url),
         html_escape(&signing_url),
         agreement.id,
-        query_escape(user.email.as_str()),
-        query_escape(user.email.as_str())
+        query_escape(admin_email),
+        query_escape(admin_email)
     );
     Ok(Html(render_cingulum_page("DUA Created", body)))
 }
@@ -11434,7 +11440,6 @@ async fn submit_dua_hospital_sign_form(
 
 async fn render_dua_agreement_page(
     State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
     Query(query): Query<DuaAgreementPageQuery>,
 ) -> Result<Html<String>, ApiError> {
@@ -11452,7 +11457,13 @@ async fn render_dua_agreement_page(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
 
-    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+    require_org_role_by_email(
+        &ctx,
+        &admin_email,
+        agreement.organization_id,
+        ROLE_ORG_MANAGERS,
+    )
+    .await?;
 
     let signatures = ctx
         .db
@@ -11573,10 +11584,13 @@ async fn render_dua_agreement_page(
 
 async fn submit_dua_send_hospital_link_form(
     State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
     Form(form): Form<DuaSendLinkForm>,
 ) -> Result<Html<String>, ApiError> {
+    let admin_email = form.admin_email.trim();
+    if admin_email.is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
     let agreement = ctx
         .db
         .get_data_use_agreement(agreement_id)
@@ -11584,9 +11598,14 @@ async fn submit_dua_send_hospital_link_form(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
 
-    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+    let requested_by = require_org_role_by_email(
+        &ctx,
+        admin_email,
+        agreement.organization_id,
+        ROLE_ORG_MANAGERS,
+    )
+    .await?;
 
-    let requested_by = Some(user.user_id);
     ctx.db
         .queue_hospital_signing_email(agreement_id, requested_by, &ctx.config.app_base_url)
         .await
@@ -11601,17 +11620,20 @@ async fn submit_dua_send_hospital_link_form(
 "#,
         agreement_id,
         agreement_id,
-        query_escape(user.email.as_str())
+        query_escape(admin_email)
     );
     Ok(Html(render_cingulum_page("Email queued", body)))
 }
 
 async fn submit_dua_cingulum_sign_form(
     State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
     Form(form): Form<DuaCingulumSignForm>,
 ) -> Result<Html<String>, ApiError> {
+    let admin_email = form.admin_email.trim();
+    if admin_email.is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
     let agreement = ctx
         .db
         .get_data_use_agreement(agreement_id)
@@ -11619,7 +11641,13 @@ async fn submit_dua_cingulum_sign_form(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
 
-    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+    let actor_user_id = require_org_role_by_email(
+        &ctx,
+        admin_email,
+        agreement.organization_id,
+        ROLE_ORG_MANAGERS,
+    )
+    .await?;
 
     ctx.db
         .sign_data_use_agreement_as_cingulum(
@@ -11630,7 +11658,7 @@ async fn submit_dua_cingulum_sign_form(
             "typed",
             form.signature_text.trim(),
             None,
-            Some(user.user_id),
+            actor_user_id,
         )
         .await
         .map_err(ApiError::internal)?;
@@ -11643,7 +11671,7 @@ async fn submit_dua_cingulum_sign_form(
 </section>
 "#,
         agreement_id,
-        query_escape(user.email.as_str())
+        query_escape(admin_email)
     );
     Ok(Html(render_cingulum_page(
         "Cingulum signature recorded",
@@ -11653,10 +11681,13 @@ async fn submit_dua_cingulum_sign_form(
 
 async fn download_data_use_agreement_pdf_ui(
     State(ctx): State<AppContext>,
-    user: AuthenticatedUser,
     Path(agreement_id): Path<Uuid>,
-    Query(_query): Query<DuaExportQuery>,
+    Query(query): Query<DuaExportQuery>,
 ) -> Result<Response, ApiError> {
+    let admin_email = query.admin_email.trim();
+    if admin_email.is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
     let agreement = ctx
         .db
         .get_data_use_agreement(agreement_id)
@@ -11664,7 +11695,13 @@ async fn download_data_use_agreement_pdf_ui(
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::NotFound("data use agreement not found".to_string()))?;
 
-    require_org_role(&user, agreement.organization_id, ROLE_ORG_MANAGERS)?;
+    require_org_role_by_email(
+        &ctx,
+        admin_email,
+        agreement.organization_id,
+        ROLE_ORG_MANAGERS,
+    )
+    .await?;
 
     let signatures = ctx
         .db
@@ -12063,6 +12100,90 @@ fn parse_uuid_field(raw: &str, field_name: &str) -> Result<Uuid, ApiError> {
             trimmed
         ))
     })
+}
+
+async fn resolve_actor_user_id_for_admin_email(
+    ctx: &AppContext,
+    admin_email: &str,
+) -> Result<Option<Uuid>, ApiError> {
+    let email = admin_email.trim();
+    if email.is_empty() {
+        return Ok(None);
+    }
+    if ctx.config.allow_dev_auth_bypass {
+        let dev_subject = format!("dev-{email}");
+        if let Ok(user) = ctx.db.upsert_user(email, &dev_subject, email).await {
+            let _ = ctx.db.ensure_dev_platform_admin(&user.id, email).await;
+            return Ok(Some(user.id));
+        }
+    }
+    Ok(ctx
+        .db
+        .get_user_by_email(email)
+        .await
+        .map_err(ApiError::internal)?
+        .map(|user| user.id))
+}
+
+async fn require_platform_role_by_email(
+    ctx: &AppContext,
+    admin_email: &str,
+    roles: &[&str],
+) -> Result<Option<Uuid>, ApiError> {
+    let email = admin_email.trim();
+    if email.is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
+    let actor_user_id = resolve_actor_user_id_for_admin_email(ctx, email).await?;
+    let memberships = ctx
+        .db
+        .load_memberships_for_email(email)
+        .await
+        .map_err(ApiError::internal)?;
+    let has_platform_role = memberships.iter().any(|membership| {
+        membership.organization_id.is_none()
+            && membership.project_id.is_none()
+            && roles.contains(&membership.role.as_str())
+    });
+    if !has_platform_role {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "user lacks required platform role".to_string(),
+        )));
+    }
+    Ok(actor_user_id)
+}
+
+async fn require_org_role_by_email(
+    ctx: &AppContext,
+    admin_email: &str,
+    organization_id: Uuid,
+    roles: &[&str],
+) -> Result<Option<Uuid>, ApiError> {
+    let email = admin_email.trim();
+    if email.is_empty() {
+        return Err(ApiError::Validation("admin_email is required".to_string()));
+    }
+    let actor_user_id = resolve_actor_user_id_for_admin_email(ctx, email).await?;
+    let memberships = ctx
+        .db
+        .load_memberships_for_email(email)
+        .await
+        .map_err(ApiError::internal)?;
+    let has_platform_role = memberships.iter().any(|membership| {
+        membership.organization_id.is_none()
+            && membership.project_id.is_none()
+            && roles.contains(&membership.role.as_str())
+    });
+    let has_org_role = memberships.iter().any(|membership| {
+        membership.organization_id == Some(organization_id)
+            && roles.contains(&membership.role.as_str())
+    });
+    if !has_platform_role && !has_org_role {
+        return Err(ApiError::Auth(AuthError::Forbidden(
+            "user lacks required organization role".to_string(),
+        )));
+    }
+    Ok(actor_user_id)
 }
 
 fn optional_non_empty(input: &str) -> Option<&str> {
