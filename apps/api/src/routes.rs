@@ -849,6 +849,7 @@ pub fn router(ctx: AppContext) -> Router {
             post(generate_patient_portal_link),
         )
         .route("/ui/foundation", get(render_foundation_command_center))
+        .route("/ui/platform", get(render_foundation_command_center))
         .route("/ui/app", get(render_app_dashboard))
         .route("/ui/studies", get(render_study_workbench))
         .route("/ui/studies/create", post(submit_create_study_from_ui))
@@ -1008,6 +1009,10 @@ pub fn router(ctx: AppContext) -> Router {
             post(submit_dua_cingulum_sign_form),
         )
         .route(
+            "/ui/dua/{agreement_id}/sign-virivu",
+            post(submit_dua_cingulum_sign_form),
+        )
+        .route(
             "/v1/legal/data-use-agreements/sign-hospital",
             post(sign_data_use_agreement_hospital),
         );
@@ -1110,6 +1115,10 @@ pub fn router(ctx: AppContext) -> Router {
         )
         .route(
             "/v1/legal/data-use-agreements/{agreement_id}/sign-cingulum",
+            post(sign_data_use_agreement_cingulum),
+        )
+        .route(
+            "/v1/legal/data-use-agreements/{agreement_id}/sign-virivu",
             post(sign_data_use_agreement_cingulum),
         )
         .route("/v1/forms/send-invite", post(send_form_invite))
@@ -2603,18 +2612,18 @@ async fn render_ui_home(Query(query): Query<UiHomeQuery>) -> Html<String> {
     <div class="cx-logo-wrap">
       <div class="cx-logo">CX</div>
     </div>
-    <h1>Cingulum Foundation Inc.</h1>
+    <h1>Virivu Research Cloud Services, Inc.</h1>
     <p class="muted">Virivu Research Cloud</p>
     <p class="home-copy">Accelerating research operations across hospitals, sponsors, and partner institutions through secure digital workflows.</p>
   </section>
 
   <section class="home-card login-card">
     <h2>Login to Command Center</h2>
-    <p class="muted">Use your workspace admin email to open the foundation command center.</p>
+    <p class="muted">Use your workspace admin email to open the platform command center.</p>
     {}
-    <form method="get" action="/ui/foundation">
+    <form method="get" action="/ui/platform">
       <label>Admin email</label>
-      <input type="email" name="admin_email" value="{}" placeholder="name@cingulum.org" required />
+      <input type="email" name="admin_email" value="{}" placeholder="name@your-org.org" required />
       <button type="submit">Enter Command Center</button>
     </form>
   </section>
@@ -2652,7 +2661,6 @@ async fn render_foundation_command_center(
                 .iter()
                 .find(|org| {
                     org.organization_kind == "platform_root"
-                        || org.name.eq_ignore_ascii_case("Cingulum Foundation Inc.")
                 })
                 .map(|org| org.id)
         })
@@ -2769,7 +2777,7 @@ async fn render_foundation_command_center(
         .join("");
 
     let managed_organizations_html = if child_organizations.is_empty() {
-        r#"<div class="action-card is-informative" style="grid-column: 1 / -1;"><div class="action-title">No partner organizations yet</div><div class="action-desc">Use Operations Workspace to create hospitals, tenants, and sponsors under Cingulum Foundation.</div></div>"#.to_string()
+        r#"<div class="action-card is-informative" style="grid-column: 1 / -1;"><div class="action-title">No partner organizations yet</div><div class="action-desc">Use Operations Workspace to create hospitals, tenants, and sponsors under the Virivu platform root.</div></div>"#.to_string()
     } else {
         child_organizations
             .iter()
@@ -2828,7 +2836,7 @@ async fn render_foundation_command_center(
     let mut next_actions = Vec::new();
     if selected_org_id.is_none() {
         next_actions.push(
-            r##"<a href="#" class="action-card is-informative"><div class="action-title">Select workspace</div><div class="action-desc">Select the Cingulum Foundation workspace to activate network-level controls.</div></a>"##.to_string()
+            r##"<a href="#" class="action-card is-informative"><div class="action-title">Select workspace</div><div class="action-desc">Select the Virivu platform workspace to activate network-level controls.</div></a>"##.to_string()
         );
     }
     if child_organizations.is_empty() {
@@ -2869,7 +2877,7 @@ async fn render_foundation_command_center(
   <span style="font-size: 1.2rem;">👋</span> Welcome to the Virivu Research Cloud! This is your starting dashboard.
 </div>
 
-<h1>Cingulum Foundation Command Center</h1>
+<h1>Virivu Platform Command Center</h1>
 <p class="muted">Manage sites at the organization level or attach them to specific studies. Sites can exist independently of any project.</p>
 {}
 
@@ -2929,9 +2937,9 @@ async fn render_foundation_command_center(
 </section>
 
 <section class="card">
-  <h2>Foundation workspace context</h2>
-  <form method="get" action="/ui/foundation">
-    <label>Foundation admin email</label>
+  <h2>Platform workspace context</h2>
+  <form method="get" action="/ui/platform">
+    <label>Platform admin email</label>
     <input name="admin_email" value="{}" required />
     <label>Workspace to administer</label>
     <select name="organization_id" onchange="this.form.submit()">
@@ -2974,7 +2982,7 @@ async fn render_foundation_command_center(
     );
 
     Ok(Html(render_cingulum_page(
-        "Cingulum Foundation Command Center",
+        "Virivu Platform Command Center",
         body,
     )))
 }
@@ -4497,18 +4505,18 @@ async fn render_app_dashboard(
     let foundation_hub_url = selected_org_id
         .map(|org_id| {
             format!(
-                "/ui/foundation?admin_email={}&organization_id={org_id}",
+                "/ui/platform?admin_email={}&organization_id={org_id}",
                 admin_email_q
             )
         })
-        .unwrap_or_else(|| format!("/ui/foundation?admin_email={}", admin_email_q));
+        .unwrap_or_else(|| format!("/ui/platform?admin_email={}", admin_email_q));
 
     let view = query.view.as_deref().unwrap_or("workflow");
     let is_active = |v: &str| if v == view { "is-active" } else { "" };
 
     let _global_nav = format!(
         r#"<nav class="global-nav" style="margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; display: flex; gap: 1rem; font-size: 0.9rem;">
-  <a href="{}">Foundation</a>
+  <a href="{}">Platform</a>
   <a href="/ui/app?admin_email={}&organization_id={}">Org Command Center</a>
   <a href="/ui/studies?admin_email={}&organization_id={}">Study Dashboard</a>
   <a href="/ui/dua?admin_email={}&organization_id={}">DUA Console</a>
@@ -4773,7 +4781,7 @@ async fn render_app_dashboard(
       <input name="admin_email" value="{}" required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Organization legal name</label>
-      <input name="organization_name" placeholder="Cingulum Foundation Inc." required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+      <input name="organization_name" placeholder="Virivu Research Cloud Services, Inc." required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
       
       <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Parent organization ID (optional)</label>
       <input name="parent_organization_id" list="app-organization-options" value="{}" placeholder="root-managed child org" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
@@ -5399,7 +5407,7 @@ async fn render_app_dashboard(
   <!-- Quick Command Actions -->
   <div style="background:white; border-radius:12px; border:1px solid #e2e8f0; padding:1.25rem; display:flex; flex-wrap:wrap; gap:1rem; align-items:center;">
     <span style="font-weight:700; color:#02182b; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.05em;">Quick Actions:</span>
-    <a href="{}" style="background:#02182b; color:white; padding:0.5rem 1rem; border-radius:6px; text-decoration:none; font-size:0.85rem; font-weight:600; box-shadow:0 2px 4px rgba(2,24,43,0.15); transition:background 0.2s;">Cingulum Foundation Command Center</a>
+    <a href="{}" style="background:#02182b; color:white; padding:0.5rem 1rem; border-radius:6px; text-decoration:none; font-size:0.85rem; font-weight:600; box-shadow:0 2px 4px rgba(2,24,43,0.15); transition:background 0.2s;">Virivu Platform Command Center</a>
     <a href="/ui/studies?admin_email={}" style="background:#283e28; color:white; padding:0.5rem 1rem; border-radius:6px; text-decoration:none; font-size:0.85rem; font-weight:600; box-shadow:0 2px 4px rgba(40,62,40,0.15); transition:background 0.2s;">Study Lifecycle & CRF Workbench</a>
     <a href="/ui/dua?admin_email={}" style="background:#c5b7ab; color:#02182b; padding:0.5rem 1rem; border-radius:6px; text-decoration:none; font-size:0.85rem; font-weight:600; transition:background 0.2s;">DUA Console</a>
   </div>
@@ -5772,8 +5780,8 @@ document.addEventListener('DOMContentLoaded', () => {{
     <a class="sidebar-item {active_legal}" href="?view=legal&admin_email={admin}&organization_id={org}{project_qs}">
       <span class="sidebar-icon">📜</span> Legal / DUA
     </a>
-    <a class="sidebar-item" href="/ui/foundation?admin_email={admin}&organization_id={org}">
-      <span class="sidebar-icon">⚙️</span> Foundation Hub
+    <a class="sidebar-item" href="/ui/platform?admin_email={admin}&organization_id={org}">
+      <span class="sidebar-icon">⚙️</span> Platform Hub
     </a>
 
     <div class="sidebar-section-label">System</div>
@@ -8400,20 +8408,20 @@ async fn render_study_workbench(
     let foundation_hub_url = selected_org_id
         .map(|org_id| {
             format!(
-                "/ui/foundation?admin_email={}&organization_id={org_id}",
+                "/ui/platform?admin_email={}&organization_id={org_id}",
                 html_escape(admin_email.trim())
             )
         })
         .unwrap_or_else(|| {
             format!(
-                "/ui/foundation?admin_email={}",
+                "/ui/platform?admin_email={}",
                 html_escape(admin_email.trim())
             )
         });
 
     let _global_nav = format!(
         r#"<nav class="global-nav" style="margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; display: flex; gap: 1rem; font-size: 0.9rem;">
-  <a href="{}">Foundation</a>
+  <a href="{}">Platform</a>
   <a href="/ui/app?admin_email={}&organization_id={}">Org Command Center</a>
   <a href="/ui/studies?admin_email={}&organization_id={}">Study Dashboard</a>
   <a href="/ui/dua?admin_email={}&organization_id={}">DUA Console</a>
@@ -10994,7 +11002,7 @@ async fn render_dua_admin_page(
         r##"<div style="background:linear-gradient(135deg, #02182b 0%, #283e28 100%); padding:2rem; border-radius:16px; color:white; margin-bottom:2rem; box-shadow:0 10px 25px rgba(2,24,43,0.15); border:1px solid rgba(255,255,255,0.08);">
   <h1 style="color:white; margin:0 0 0.5rem; font-size:2rem; font-weight:800;">Electronic Data Use Agreements</h1>
   <p style="color:rgba(255,255,255,0.8); margin:0; font-size:0.95rem;">
-    Create, sign, and manage secure clinical Data Use Agreements (DUA) between healthcare providers and Cingulum Foundation Inc.
+    Create, sign, and manage secure clinical Data Use Agreements (DUA) between healthcare providers and Virivu Research Cloud Services, Inc.
   </p>
 </div>
 
@@ -11136,10 +11144,10 @@ async fn render_dua_admin_page(
     <input name="admin_email" value="{}" required style="background:#f7fafc; border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" readonly />
 
     <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">New organization legal name</label>
-    <input name="organization_name" placeholder="Cingulum Foundation Inc." required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+    <input name="organization_name" placeholder="Virivu Research Cloud Services, Inc." required style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
     
-    <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Parent organization ID (optional; blank = Cingulum Foundation root)</label>
-    <input name="parent_organization_id" list="organization-options" value="{}" placeholder="child under foundation" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
+    <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Parent organization ID (optional; blank = Virivu platform root)</label>
+    <input name="parent_organization_id" list="organization-options" value="{}" placeholder="child under platform root" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px;" />
     
     <label style="font-weight:600; font-size:0.85rem; color:#4a5568;">Organization type</label>
     <select name="organization_kind" style="border:1px solid #cbd5e0; padding:0.5rem; border-radius:6px; background:white;">
@@ -11371,7 +11379,7 @@ async fn render_dua_hospital_sign_page(
   <p><strong>Hospital:</strong> {}</p>
   <p><strong>Counterparty:</strong> {}</p>
   <p><strong>Agreement Version:</strong> {}</p>
-  <p><a href="/ui/dua">Cingulum admin workspace</a></p>
+  <p><a href="/ui/dua">Virivu admin workspace</a></p>
   <form method="post" action="/ui/dua/sign/{}">
     <label>Signer name</label>
     <input name="signer_name" required />
@@ -11479,9 +11487,10 @@ async fn render_dua_agreement_page(
     let signatures_html = signatures
         .iter()
         .map(|s| {
+            let signer_role_label = dua_signer_role_label(&s.signer_role);
             format!(
                 "<li><strong>{}</strong> - {} ({}) at {}</li>",
-                html_escape(&s.signer_role),
+                html_escape(signer_role_label),
                 html_escape(&s.signer_name),
                 html_escape(&s.signer_email),
                 s.signed_at
@@ -11528,13 +11537,13 @@ async fn render_dua_agreement_page(
     <button type="submit">Queue Hospital Signing Email</button>
   </form>
 
-  <form method="post" action="/ui/dua/{}/sign-cingulum" style="margin-bottom:1rem;">
+  <form method="post" action="/ui/dua/{}/sign-virivu" style="margin-bottom:1rem;">
     <input type="hidden" name="admin_email" value="{}" />
-    <label>Cingulum signer name</label><input name="signer_name" required style="max-width:480px;" />
-    <label>Cingulum signer email</label><input name="signer_email" required style="max-width:480px;" />
-    <label>Cingulum signer title</label><input name="signer_title" required style="max-width:480px;" />
+    <label>Virivu signer name</label><input name="signer_name" required style="max-width:480px;" />
+    <label>Virivu signer email</label><input name="signer_email" required style="max-width:480px;" />
+    <label>Virivu signer title</label><input name="signer_title" required style="max-width:480px;" />
     <label>Signature text</label><input name="signature_text" placeholder="/s/ Name" required style="max-width:480px;" />
-    <button type="submit">Apply Cingulum Signature</button>
+    <button type="submit">Apply Virivu Signature</button>
   </form>
 
   <p><a href="/ui/dua/{}/export.pdf?admin_email={}">Download PDF</a></p>
@@ -11666,7 +11675,7 @@ async fn submit_dua_cingulum_sign_form(
     let body = format!(
         r#"
 <section class="card">
-  <h1>Cingulum signature recorded</h1>
+  <h1>Virivu signature recorded</h1>
   <p><a href="/ui/dua/{}?admin_email={}">Back to agreement</a></p>
 </section>
 "#,
@@ -11674,7 +11683,7 @@ async fn submit_dua_cingulum_sign_form(
         query_escape(admin_email)
     );
     Ok(Html(render_cingulum_page(
-        "Cingulum signature recorded",
+        "Virivu signature recorded",
         body,
     )))
 }
@@ -13703,7 +13712,7 @@ fn default_dua_text() -> &'static str {
 
 **Effective Date:** [Date]
 
-This Data Transfer and Use Agreement (hereinafter “Agreement”), effective as of the date of the last signature below (hereinafter “Effective Date”), is by and between **Cingulum Foundation Inc.**, a New York not-for-profit corporation located at [Provider Address] (hereinafter “Provider”) and **[Recipient Name]** located at [Recipient Address] (hereinafter “Recipient”). Provider and Recipient shall be referred to hereinafter individually as a “Party” and collectively as the “Parties.”
+This Data Transfer and Use Agreement (hereinafter “Agreement”), effective as of the date of the last signature below (hereinafter “Effective Date”), is by and between **Virivu Research Cloud Services, Inc.**, a software services corporation located at [Provider Address] (hereinafter “Provider”) and **[Recipient Name]** located at [Recipient Address] (hereinafter “Recipient”). Provider and Recipient shall be referred to hereinafter individually as a “Party” and collectively as the “Parties.”
 
 ---
 
@@ -13783,7 +13792,7 @@ If the Data transferred includes Digital Personal Data (as defined by the Digita
 
 **IN WITNESS WHEREOF**, the Parties have caused this Agreement to be executed by their duly authorized representatives.
 
-**Provider: Cingulum Foundation Inc.**
+**Provider: Virivu Research Cloud Services, Inc.**
 By: ___________________________
 Name: 
 Title: 
@@ -13804,6 +13813,14 @@ fn html_escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn dua_signer_role_label(signer_role: &str) -> &str {
+    match signer_role {
+        "cingulum" => "virivu",
+        "hospital" => "hospital",
+        other => other,
+    }
 }
 
 fn build_data_use_agreement_pdf(
@@ -13838,9 +13855,10 @@ fn build_data_use_agreement_pdf(
         lines.push("- none recorded".to_string());
     } else {
         for signature in signatures {
+            let signer_role_label = dua_signer_role_label(&signature.signer_role);
             lines.push(format!(
                 "- {} | {} | {} | {}",
-                signature.signer_role,
+                signer_role_label,
                 signature.signer_name,
                 signature.signer_email,
                 signature.signed_at
@@ -14926,7 +14944,7 @@ fn render_cingulum_page(title: &str, body_content: String) -> String {
   <main class="page">
     <div class="brand-wrap">
       <a href="/ui" id="brand-link" style="text-decoration:none; color:inherit; font-weight:inherit; display:flex; flex-direction:column; align-items:flex-start;">
-        <div class="brand">Cingulum Foundation Inc.</div>
+        <div class="brand">Virivu Research Cloud Services, Inc.</div>
       </a>
       <div class="brand-sub">Virivu Research Cloud</div>
     </div>

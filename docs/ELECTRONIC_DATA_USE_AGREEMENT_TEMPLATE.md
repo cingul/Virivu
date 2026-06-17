@@ -1,7 +1,7 @@
 # Electronic Data Use Agreement (DUA) Template
 
 > **Important:** This is a technical and operational template, not legal advice.  
-> Cingulum Foundation Inc. and each hospital should have counsel review and approve before execution.
+> Virivu Research Cloud Services, Inc. and each hospital should have counsel review and approve before execution.
 
 ## 1. Parties
 
@@ -9,19 +9,19 @@ This Data Use Agreement ("Agreement") is entered into by and between:
 
 - **Hospital / Covered Entity:** `[HOSPITAL LEGAL NAME]`  
   Address: `[HOSPITAL ADDRESS]`
-- **Recipient / Research Organization:** **Cingulum Foundation Inc.**  
-  Address: `[CINGULUM ADDRESS]`
+- **Recipient / Research Organization:** **Virivu Research Cloud Services, Inc.**  
+  Address: `[VIRIVU ADDRESS]`
 
 Effective Date: `[YYYY-MM-DD]`  
 Expiration Date: `[YYYY-MM-DD or Until Terminated]`
 
 ## 2. Purpose
 
-The purpose of this Agreement is to permit limited data sharing and use for clinical research, public-benefit analytics, and quality-improvement initiatives supported by Cingulum Foundation Inc.'s research data platform.
+The purpose of this Agreement is to permit limited data sharing and use for clinical research, public-benefit analytics, and quality-improvement initiatives supported by Virivu Research Cloud Services, Inc.'s research data platform.
 
 ## 3. Data Scope
 
-The Hospital may disclose the following data classes to Cingulum Foundation Inc.:
+The Hospital may disclose the following data classes to Virivu Research Cloud Services, Inc.:
 
 - Demographic and enrollment data
 - Intake and questionnaire responses
@@ -33,14 +33,14 @@ Data elements are limited to those required for approved research protocol(s) an
 
 ## 4. Permitted Uses and Disclosures
 
-Cingulum Foundation Inc. may use disclosed data solely to:
+Virivu Research Cloud Services, Inc. may use disclosed data solely to:
 
 1. Operate and support approved research projects;
 2. Perform protocol-defined analytics and reporting;
 3. Generate aggregate or de-identified findings for program oversight;
 4. Support multi-site project coordination and monitoring.
 
-Cingulum Foundation Inc. shall not use data for unrelated commercial advertising, unauthorized profiling, or resale.
+Virivu Research Cloud Services, Inc. shall not use data for unrelated commercial advertising, unauthorized profiling, or resale.
 
 ## 5. Privacy, Security, and HIPAA Alignment
 
@@ -56,7 +56,7 @@ Where Protected Health Information (PHI) is involved, use/disclosure must comply
 
 ## 6. De-identification and Limited Data Set Handling
 
-If data is shared as a Limited Data Set or de-identified dataset, Cingulum Foundation Inc. agrees:
+If data is shared as a Limited Data Set or de-identified dataset, Virivu Research Cloud Services, Inc. agrees:
 
 - not to attempt re-identification except where explicitly authorized by law and protocol;
 - not to contact individuals except through approved, consented workflows;
@@ -72,11 +72,11 @@ Hospital remains responsible for:
 
 ## 8. Subcontractors and Service Providers
 
-Cingulum Foundation Inc. may engage subprocessors only under written agreements imposing equivalent data protection and confidentiality obligations.
+Virivu Research Cloud Services, Inc. may engage subprocessors only under written agreements imposing equivalent data protection and confidentiality obligations.
 
 ## 9. Data Retention and Destruction
 
-Upon expiration or termination, Cingulum Foundation Inc. will return or securely destroy shared data as required by law, protocol, contractual terms, and record-retention obligations.
+Upon expiration or termination, Virivu Research Cloud Services, Inc. will return or securely destroy shared data as required by law, protocol, contractual terms, and record-retention obligations.
 
 ## 10. Audits and Compliance Cooperation
 
@@ -115,11 +115,11 @@ Email: `[EMAIL]`
 Date: `[YYYY-MM-DD]`  
 Signature: `[ELECTRONIC SIGNATURE]`
 
-## Signature Block - Cingulum Foundation Inc.
+## Signature Block - Virivu Research Cloud Services, Inc.
 
 Name: `[SIGNER NAME]`  
 Title: `[TITLE]`  
-Organization: `Cingulum Foundation Inc.`  
+Organization: `Virivu Research Cloud Services, Inc.`  
 Email: `[EMAIL]`  
 Date: `[YYYY-MM-DD]`  
 Signature: `[ELECTRONIC SIGNATURE]`

@@ -13,7 +13,9 @@ use crate::models::{
     StudyCrfTemplate, StudyDataQuery, StudyOperationalSummary, StudyPhaseEvent, StudyReadiness,
     StudyStartupChecklistItem, StudyVisitTemplate, User, UserMembership,
 };
-use crate::workflow::{query_can_close, query_can_respond, query_is_closed, QUERY_STATUS_RESPONDED};
+use crate::workflow::{
+    query_can_close, query_can_respond, query_is_closed, QUERY_STATUS_RESPONDED,
+};
 
 #[derive(Clone)]
 pub struct Db {
@@ -2252,7 +2254,7 @@ impl Db {
         // ── 2. Organizations (11) ─────────────────────────────────────────────
         tx.execute(r#"
             INSERT INTO organizations (id, name, organization_kind, workspace_slug, hex_code) VALUES
-            ('00000000-0000-0000-0000-000000000001', 'Cingulum Foundation Inc.',  'platform_root',    'cingulum-foundation',   'A1B'),
+            ('00000000-0000-0000-0000-000000000001', 'Virivu Research Cloud Services, Inc.',  'platform_root',    'virivu-platform',   'A1B'),
             ('00000000-0000-0000-0000-000000000002', 'Alpha Health Research',     'research_network', 'alpha-health',          'A01'),
             ('00000000-0000-0000-0000-000000000003', 'Beta Medical Center',       'hospital',         'beta-medical',          'A02'),
             ('00000000-0000-0000-0000-000000000004', 'Gamma Clinical Inc.',       'tenant',           'gamma-clinical',        'A03'),
@@ -4099,7 +4101,7 @@ impl Db {
             agreement.counterparty_name
         );
         let body = format!(
-            "Hello {},\n\nA Data Use Agreement is ready for your electronic signature.\n\nHospital: {}\nCounterparty: {}\nAgreement ID: {}\n\nReview and sign here:\n{}\n\nThank you,\nCingulum Foundation Inc.",
+            "Hello {},\n\nA Data Use Agreement is ready for your electronic signature.\n\nHospital: {}\nCounterparty: {}\nAgreement ID: {}\n\nReview and sign here:\n{}\n\nThank you,\nVirivu Research Cloud Services, Inc.",
             agreement.hospital_contact_name,
             agreement.hospital_name,
             agreement.counterparty_name,
@@ -4398,7 +4400,7 @@ impl Db {
                     ip_address,
                     signed_by_user_id
                 )
-                VALUES ($1, 'cingulum', $2, $3, $4, 'Cingulum Foundation Inc.', $5, $6, $7, $8)
+                VALUES ($1, 'cingulum', $2, $3, $4, 'Virivu Research Cloud Services, Inc.', $5, $6, $7, $8)
                 ON CONFLICT (agreement_id, signer_role)
                 DO UPDATE SET
                     signer_name = EXCLUDED.signer_name,
