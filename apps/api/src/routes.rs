@@ -111,39 +111,6 @@ fn organizations_in_workspace_subtree(
         .collect()
 }
 
-/// Subtree plus ancestor chain (used for platform-level navigation controls).
-fn scoped_organizations_for_selected(
-    organizations: &[Organization],
-    selected_org_id: Option<Uuid>,
-) -> Vec<Organization> {
-    let Some(selected_org_id) = selected_org_id else {
-        return organizations.to_vec();
-    };
-
-    let mut scope_ids = organizations_in_workspace_subtree(organizations, Some(selected_org_id))
-        .iter()
-        .map(|org| org.id)
-        .collect::<HashSet<_>>();
-
-    let parent_by_id = organizations
-        .iter()
-        .map(|org| (org.id, org.parent_organization_id))
-        .collect::<HashMap<_, _>>();
-    let mut cursor = selected_org_id;
-    while let Some(parent_id) = parent_by_id.get(&cursor).copied().flatten() {
-        if !scope_ids.insert(parent_id) {
-            break;
-        }
-        cursor = parent_id;
-    }
-
-    organizations
-        .iter()
-        .filter(|org| scope_ids.contains(&org.id))
-        .cloned()
-        .collect()
-}
-
 fn default_selected_organization_id(
     organizations: &[Organization],
     requested_org_id: Option<&str>,
@@ -2756,7 +2723,6 @@ async fn render_foundation_command_center(
 
     let selected_org = selected_org_id
         .and_then(|org_id| organizations.iter().find(|org| org.id == org_id).cloned());
-    let scoped_organizations = scoped_organizations_for_selected(&organizations, selected_org_id);
 
     let child_organizations = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -2846,7 +2812,7 @@ async fn render_foundation_command_center(
         })
         .unwrap_or_else(|| "none selected".to_string());
 
-    let organization_options_html = scoped_organizations
+    let organization_options_html = organizations
         .iter()
         .map(|org| {
             let selected = if Some(org.id) == selected_org_id {
@@ -3139,7 +3105,6 @@ async fn render_app_dashboard(
     };
     let workspace_organizations =
         organizations_in_workspace_subtree(&organizations, selected_org_id);
-    let scoped_organizations = scoped_organizations_for_selected(&organizations, selected_org_id);
 
     let projects = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -4482,7 +4447,7 @@ async fn render_app_dashboard(
         )
     };
 
-    let organization_options_html = workspace_organizations
+    let organization_options_html = organizations
         .iter()
         .map(|org| {
             format!(
@@ -5514,7 +5479,7 @@ async fn render_app_dashboard(
         .map(|org| html_escape(&org.name))
         .unwrap_or_else(|| "— Select Org —".to_string());
 
-    let sidebar_org_options = workspace_organizations
+    let sidebar_org_options = organizations
         .iter()
         .map(|org| {
             let is_selected = selected_org_id.map(|id| id == org.id).unwrap_or(false);
@@ -5714,17 +5679,34 @@ Workflow baseline is complete. Continue in Study Workbench for CRFs, visits, sub
         )
     };
 
-    let sidebar_proj_options = projects
+    let is_platform_admin = ctx
+        .db
+        .email_has_platform_admin_role(admin_email.trim())
+        .await
+        .unwrap_or(false);
+    let sidebar_switchable_projects = if is_platform_admin {
+        let mut all_projects = Vec::new();
+        for org in &organizations {
+            if let Ok(mut org_projects) = ctx.db.list_projects_by_organization(org.id).await {
+                all_projects.append(&mut org_projects);
+            }
+        }
+        all_projects.sort_by(|a, b| a.name.cmp(&b.name));
+        all_projects
+    } else {
+        projects.clone()
+    };
+
+    let sidebar_proj_options = sidebar_switchable_projects
         .iter()
         .map(|proj| {
             let is_selected = selected_project_id.map(|id| id == proj.id).unwrap_or(false);
             let selected_class = if is_selected { "selected" } else { "" };
-            let org_param = selected_org_id.map(|id| format!("&organization_id={}", id)).unwrap_or_default();
             format!(
-                r#"<a href="/ui/app?admin_email={}&view={}{}&project_id={}" class="custom-dropdown-item {}">{}</a>"#,
+                r#"<a href="/ui/app?admin_email={}&view={}&organization_id={}&project_id={}" class="custom-dropdown-item {}">{}</a>"#,
                 query_escape(admin_email.trim()),
                 query_escape(view),
-                org_param,
+                proj.organization_id,
                 proj.id,
                 selected_class,
                 html_escape(&proj.name)
@@ -5775,7 +5757,6 @@ document.addEventListener('DOMContentLoaded', () => {{
 
   <div class="sidebar-org-select">
     <label class="sidebar-label">Active Organization</label>
-    <p style="margin:0 0 0.45rem 0; font-size:0.68rem; color:#94a3b8;">Scoped to selected workspace subtree</p>
     <div class="custom-dropdown">
       <button type="button" class="custom-dropdown-btn" onclick="document.querySelectorAll('.custom-dropdown-menu').forEach(m => {{ if (m !== this.nextElementSibling) m.classList.remove('show'); }}); this.nextElementSibling.classList.toggle('show'); event.stopPropagation();">
         {selected_org_name}
@@ -10907,13 +10888,11 @@ async fn render_dua_admin_page(
     let selected_organization_uuid = selected_organization_id.parse::<Uuid>().ok();
     let workspace_organizations =
         organizations_in_workspace_subtree(&organizations, selected_organization_uuid);
-    let scoped_organizations =
-        scoped_organizations_for_selected(&organizations, selected_organization_uuid);
     let selected_organization_hex = selected_organization_uuid
         .map(|id| id.to_string().chars().take(8).collect::<String>())
         .unwrap_or_default();
 
-    let organization_options = workspace_organizations
+    let organization_options = organizations
         .iter()
         .map(|org| {
             format!(
