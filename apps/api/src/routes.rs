@@ -25,7 +25,9 @@ use crate::{
     config::Config,
     db::Db,
     error::{map_db_error, ApiError},
-    models::{DataUseAgreement, DataUseAgreementSignature, OutboundEmail, StudyCrfField},
+    models::{
+        DataUseAgreement, DataUseAgreementSignature, Organization, OutboundEmail, StudyCrfField,
+    },
     query_handlers::{
         close_study_data_query, create_study_data_query, list_study_data_queries,
         respond_study_data_query,
@@ -59,6 +61,49 @@ fn render_context_bar(
         html_escape(org_display),
         html_escape(proj_display)
     )
+}
+
+/// Scope organization selectors/cards to the currently selected workspace context.
+/// Includes the selected org, its descendants, and ancestor chain (for easy "move up").
+fn scoped_organizations_for_selected(
+    organizations: &[Organization],
+    selected_org_id: Option<Uuid>,
+) -> Vec<Organization> {
+    let Some(selected_org_id) = selected_org_id else {
+        return organizations.to_vec();
+    };
+
+    let mut scope_ids = HashSet::new();
+    scope_ids.insert(selected_org_id);
+
+    // Descendants (selected org subtree).
+    let mut stack = vec![selected_org_id];
+    while let Some(current_id) = stack.pop() {
+        for org in organizations {
+            if org.parent_organization_id == Some(current_id) && scope_ids.insert(org.id) {
+                stack.push(org.id);
+            }
+        }
+    }
+
+    // Ancestors (lets users move back up without exposing unrelated siblings).
+    let parent_by_id = organizations
+        .iter()
+        .map(|org| (org.id, org.parent_organization_id))
+        .collect::<HashMap<_, _>>();
+    let mut cursor = selected_org_id;
+    while let Some(parent_id) = parent_by_id.get(&cursor).copied().flatten() {
+        if !scope_ids.insert(parent_id) {
+            break;
+        }
+        cursor = parent_id;
+    }
+
+    organizations
+        .iter()
+        .filter(|org| scope_ids.contains(&org.id))
+        .cloned()
+        .collect()
 }
 
 #[derive(Clone)]
@@ -2668,6 +2713,7 @@ async fn render_foundation_command_center(
 
     let selected_org = selected_org_id
         .and_then(|org_id| organizations.iter().find(|org| org.id == org_id).cloned());
+    let scoped_organizations = scoped_organizations_for_selected(&organizations, selected_org_id);
 
     let child_organizations = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -2757,7 +2803,7 @@ async fn render_foundation_command_center(
         })
         .unwrap_or_else(|| "none selected".to_string());
 
-    let organization_options_html = organizations
+    let organization_options_html = scoped_organizations
         .iter()
         .map(|org| {
             let selected = if Some(org.id) == selected_org_id {
@@ -3075,6 +3121,7 @@ async fn render_app_dashboard(
                     .or_else(|| organizations.first().map(|org| org.id))
             })
     };
+    let scoped_organizations = scoped_organizations_for_selected(&organizations, selected_org_id);
 
     let projects = if let Some(org_id) = selected_org_id {
         ctx.db
@@ -4417,7 +4464,7 @@ async fn render_app_dashboard(
         )
     };
 
-    let organization_options_html = organizations
+    let organization_options_html = scoped_organizations
         .iter()
         .map(|org| {
             format!(
@@ -5443,13 +5490,13 @@ async fn render_app_dashboard(
         html_escape(admin_email.trim())
     );
 
-    let selected_org_name = organizations
+    let selected_org_name = scoped_organizations
         .iter()
         .find(|org| Some(org.id) == selected_org_id)
         .map(|org| html_escape(&org.name))
         .unwrap_or_else(|| "— Select Org —".to_string());
 
-    let sidebar_org_options = organizations
+    let sidebar_org_options = scoped_organizations
         .iter()
         .map(|org| {
             let is_selected = selected_org_id.map(|id| id == org.id).unwrap_or(false);
@@ -10856,11 +10903,13 @@ async fn render_dua_admin_page(
         })
         .unwrap_or_default();
     let selected_organization_uuid = selected_organization_id.parse::<Uuid>().ok();
+    let scoped_organizations =
+        scoped_organizations_for_selected(&organizations, selected_organization_uuid);
     let selected_organization_hex = selected_organization_uuid
         .map(|id| id.to_string().chars().take(8).collect::<String>())
         .unwrap_or_default();
 
-    let organization_options = organizations
+    let organization_options = scoped_organizations
         .iter()
         .map(|org| {
             format!(
@@ -10874,13 +10923,13 @@ async fn render_dua_admin_page(
         .join("");
 
     let colors = ["#02182b", "#283e28", "#f05708", "#e7e5da", "#4a5568"];
-    let managed_orgs_html = if organizations.is_empty() {
+    let managed_orgs_html = if scoped_organizations.is_empty() {
         r#"<div class="dashboard-card" style="padding:1.5rem; min-height:unset; border:1px solid #cbd5e0; text-align:center;">
           <p style="color:#718096; font-style:italic; margin:0;">No organizations found for this admin email yet.</p>
         </div>"#.to_string()
     } else {
         let mut cards = vec![];
-        for org in &organizations {
+        for org in &scoped_organizations {
             let name_bytes = org.name.as_bytes();
             let b1 = name_bytes.get(0).copied().unwrap_or(1) as usize;
             let b2 = name_bytes.get(1).copied().unwrap_or(2) as usize;
