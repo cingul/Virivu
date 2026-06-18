@@ -5479,13 +5479,14 @@ async fn render_app_dashboard(
         .map(|org| html_escape(&org.name))
         .unwrap_or_else(|| "— Select Org —".to_string());
 
+    // Switching org clears the study selection (project_id omitted → clears it).
     let sidebar_org_options = organizations
         .iter()
         .map(|org| {
             let is_selected = selected_org_id.map(|id| id == org.id).unwrap_or(false);
             let selected_class = if is_selected { "selected" } else { "" };
             format!(
-                r#"<a href="/ui/app?admin_email={}&view={}&organization_id={}" class="custom-dropdown-item {}">{}</a>"#,
+                r#"<a href="/ui/app?admin_email={}&view={}&organization_id={}&project_id=" class="custom-dropdown-item {}">{}</a>"#,
                 query_escape(admin_email.trim()),
                 query_escape(view),
                 org.id,
@@ -5679,25 +5680,10 @@ Workflow baseline is complete. Continue in Study Workbench for CRFs, visits, sub
         )
     };
 
-    let is_platform_admin = ctx
-        .db
-        .email_has_platform_admin_role(admin_email.trim())
-        .await
-        .unwrap_or(false);
-    let sidebar_switchable_projects = if is_platform_admin {
-        let mut all_projects = Vec::new();
-        for org in &organizations {
-            if let Ok(mut org_projects) = ctx.db.list_projects_by_organization(org.id).await {
-                all_projects.append(&mut org_projects);
-            }
-        }
-        all_projects.sort_by(|a, b| a.name.cmp(&b.name));
-        all_projects
-    } else {
-        projects.clone()
-    };
-
-    let sidebar_proj_options = sidebar_switchable_projects
+    // Study dropdown is scoped to the selected org only.
+    // Switching study keeps the same org; org is never changed by a study click.
+    let selected_org_str = selected_org_id.map(|id| id.to_string()).unwrap_or_default();
+    let sidebar_proj_options = projects
         .iter()
         .map(|proj| {
             let is_selected = selected_project_id.map(|id| id == proj.id).unwrap_or(false);
@@ -5706,7 +5692,7 @@ Workflow baseline is complete. Continue in Study Workbench for CRFs, visits, sub
                 r#"<a href="/ui/app?admin_email={}&view={}&organization_id={}&project_id={}" class="custom-dropdown-item {}">{}</a>"#,
                 query_escape(admin_email.trim()),
                 query_escape(view),
-                proj.organization_id,
+                selected_org_str,
                 proj.id,
                 selected_class,
                 html_escape(&proj.name)
@@ -5762,7 +5748,7 @@ document.addEventListener('DOMContentLoaded', () => {{
         {selected_org_name}
       </button>
       <div class="custom-dropdown-menu">
-        <a href="/ui/app?admin_email={admin}&view={current_view}&organization_id=" class="custom-dropdown-item">— Select Org —</a>
+        <a href="/ui/app?admin_email={admin}&view={current_view}&organization_id=&project_id=" class="custom-dropdown-item">— Select Org —</a>
         {org_options}
       </div>
     </div>
