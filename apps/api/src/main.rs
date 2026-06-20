@@ -6,6 +6,7 @@ mod error;
 mod models;
 mod query_handlers;
 mod routes;
+mod study_handlers;
 mod study_queries_ui;
 mod workflow;
 
