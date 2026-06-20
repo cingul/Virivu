@@ -1,3 +1,4 @@
+mod app_handlers;
 mod auth;
 mod authz;
 mod config;
