@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS pro_submissions CASCADE;
+DROP TABLE IF EXISTS patient_sessions CASCADE;

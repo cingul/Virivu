@@ -1,0 +1,127 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: virival
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: virival-secrets
+  namespace: virival
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://postgres:postgres@postgres.virival.svc.cluster.local:5432/virival
+  MEDIA_SIGNING_SECRET: replace-in-production
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: virival-api
+  namespace: virival
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: virival-api
+  template:
+    metadata:
+      labels:
+        app: virival-api
+    spec:
+      containers:
+        - name: virival-api
+          image: ghcr.io/cingul/virival-api:latest
+          ports:
+            - containerPort: 8090
+          env:
+            - name: APP_NAME
+              value: virival-api
+            - name: BIND_ADDRESS
+              value: 0.0.0.0:8090
+            - name: RUN_MODE
+              value: api
+            - name: GOOGLE_WORKSPACE_DOMAIN
+              value: cingulum.org
+            - name: MEDIA_STORAGE_ROOT
+              value: /app/data/media
+            - name: MEDIA_SIGNED_URL_TTL_SECONDS
+              value: "900"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: virival-secrets
+                  key: DATABASE_URL
+            - name: MEDIA_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: virival-secrets
+                  key: MEDIA_SIGNING_SECRET
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8090
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: virival-api
+  namespace: virival
+spec:
+  selector:
+    app: virival-api
+  ports:
+    - port: 80
+      targetPort: 8090
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: virival-reminder-worker
+  namespace: virival
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: virival-reminder-worker
+  template:
+    metadata:
+      labels:
+        app: virival-reminder-worker
+    spec:
+      containers:
+        - name: virival-reminder-worker
+          image: ghcr.io/cingul/virival-api:latest
+          env:
+            - name: APP_NAME
+              value: virival-reminder-worker
+            - name: RUN_MODE
+              value: reminder_worker
+            - name: WORKER_POLL_SECONDS
+              value: "30"
+            - name: WORKER_BATCH_SIZE
+              value: "50"
+            - name: GOOGLE_WORKSPACE_DOMAIN
+              value: cingulum.org
+            - name: MEDIA_STORAGE_ROOT
+              value: /app/data/media
+            - name: MEDIA_SIGNED_URL_TTL_SECONDS
+              value: "900"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: virival-secrets
+                  key: DATABASE_URL
+            - name: MEDIA_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: virival-secrets
+                  key: MEDIA_SIGNING_SECRET

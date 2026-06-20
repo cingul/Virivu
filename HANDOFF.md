@@ -1,0 +1,102 @@
+# Virivu Handoff
+
+This file is the continuity bridge for new chat sessions and new machines.
+
+## Repository
+
+- GitHub: `cingul/Virivu`
+- Active branch: `cursor/research-data-platform-d3b4`
+
+## Key commits on this branch
+
+1. `a359a18` - Scaffold Virivu research platform foundation
+2. `6751537` - Add Postgres persistence and RBAC auth scaffolding
+3. `d264794` - Set default Google Workspace domain to `cingulum.org`
+4. `146e442` - Seed `arcot@cingulum.org` as `platform_admin`
+5. `1b41b4d` - Add `HANDOFF.md` for cross-session continuity
+6. `80faa01` - Add electronic DUA workflow (schema, API, legal template)
+
+## Current implementation status
+
+### Implemented
+
+- Product and architecture docs:
+  - `docs/PRODUCT_BLUEPRINT.md`
+  - `docs/ARCHITECTURE.md`
+  - `docs/COMPETITIVE_FEATURES.md`
+- Rust API scaffold (`apps/api`) with:
+  - Multi-tenant entities (org/project/site)
+  - Form invite endpoint
+  - Media upload-ticket endpoint
+  - Analytics summary endpoints
+  - AI transcript-to-note placeholder endpoint
+  - Electronic Data Use Agreement (DUA) endpoints and e-signature flow
+  - DUA admin web UI (`/ui/dua`) and hospital token-signing page
+  - Org-scoped DUA workspace access (requires admin_email + org-manager authorization)
+  - In-browser organization creation/selection flow in DUA UI
+  - Organization hierarchy model with `platform_root` + child org workspaces
+  - Unified web app dashboard (`/ui/app`) linking org/project/site, patient workflows, analytics, and legal operations
+  - Card-based UI refresh with subtle tab/card animations for a more modern workspace feel
+  - DUA PDF export endpoint
+  - Outbound email queue for hospital signing-link delivery
+- Postgres persistence integrated (via `deadpool-postgres` + `tokio-postgres`)
+- RBAC scaffold with authenticated user context and role checks
+- Domain policy set to `cingulum.org`
+- Local migration helper script:
+  - `apps/api/scripts/apply_migrations.sh`
+- DUA legal template:
+  - `docs/ELECTRONIC_DATA_USE_AGREEMENT_TEMPLATE.md`
+
+### Important security note
+
+Google ID token handling currently validates JWT claims (issuer/audience/domain/exp) but **does not yet cryptographically verify JWT signatures via Google JWKS**.  
+This is the highest-priority production hardening task.
+
+## Database migrations
+
+- `apps/api/migrations/2026-05-17-000001_init` - core schema
+- `apps/api/migrations/2026-05-17-000002_dev_seed` - local dev seed users/roles
+- `apps/api/migrations/2026-05-17-000003_data_use_agreements` - DUA + signature + outbound email tables
+- `apps/api/migrations/2026-05-17-000008_organization_hierarchy` - parent org tree, organization kind, workspace slug, root seed + child backfill
+  - Includes:
+    - `admin@cingulum.org` (`platform_admin`)
+    - `arcot@cingulum.org` (`platform_admin`)
+
+## Local run (quick)
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d postgres
+cd apps/api
+cp .env.example .env
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/virivu
+./scripts/apply_migrations.sh
+cargo run
+```
+
+Migrations are now managed with Diesel (`src/bin/migrate.rs` + migration directories under `apps/api/migrations/`).
+
+Health check:
+
+```bash
+curl http://localhost:8080/health
+```
+
+## What is needed from owner (Arcot)
+
+- Google OAuth Web Client ID (for production auth validation)
+- (Optional next) redirect URIs and JS origins for frontend auth flows
+
+## Highest-priority next task
+
+Implement full Google OIDC signature verification:
+
+1. Fetch and cache Google JWKS keys.
+2. Verify JWT signature (kid + alg + key).
+3. Enforce `iss`, `aud`, `exp`, `hd`.
+4. Keep domain restricted to `cingulum.org`.
+5. Remove/disable non-production token parsing path in production mode.
+
+## Suggested prompt for new Cursor session
+
+> Continue work on `cingul/Virivu` branch `cursor/research-data-platform-d3b4`.  
+> Read `HANDOFF.md` first, then implement production-grade Google JWKS verification in `apps/api/src/auth.rs`, keeping RBAC behavior unchanged and preserving `cargo check` passing.

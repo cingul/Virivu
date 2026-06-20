@@ -1,0 +1,393 @@
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+use serde_json;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Organization {
+    pub id: Uuid,
+    pub name: String,
+    pub parent_organization_id: Option<Uuid>,
+    pub organization_kind: String,
+    pub workspace_slug: Option<String>,
+    pub hex_code: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub name: String,
+    pub therapeutic_area: String,
+    pub protocol_code: Option<String>,
+    pub lifecycle_phase: String,
+    pub planned_enrollment: i32,
+    pub clinicaltrials_gov_id: Option<String>,
+    pub study_summary: String,
+    pub phase_changed_at: DateTime<Utc>,
+    pub hex_code: Option<String>,
+    pub status: String,
+    pub last_activity_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Site {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Option<Uuid>,
+    pub name: String,
+    pub principal_investigator: String,
+    pub co_principal_investigator: Option<String>,
+    pub sub_investigator: Option<String>,
+    pub hex_code: Option<String>,
+    pub status: String,
+    pub last_activity_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Patient {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub site_id: Option<Uuid>,
+    pub external_subject_id: Option<String>,
+    pub email: Option<String>,
+    pub date_of_birth: Option<NaiveDate>,
+    pub hex_code: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Provider {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub name: String,
+    pub title: String,
+    pub referral_source: String,
+    pub hex_code: String,
+    pub email: Option<String>,
+    pub phone_number: Option<String>,
+    pub npi_number: Option<String>,
+    pub address: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Encounter {
+    pub id: Uuid,
+    pub patient_id: Uuid,
+    pub provider_id: Option<Uuid>,
+    pub encounter_type: String,
+    pub notes: String,
+    pub hex_code: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyReadiness {
+    pub lifecycle_phase: String,
+    pub total_sites: i64,
+    pub total_patients: i64,
+    pub total_encounters: i64,
+    pub published_crf_templates: i64,
+    pub draft_crf_templates: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyPhaseEvent {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub previous_phase: String,
+    pub new_phase: String,
+    pub changed_by_user_id: Option<Uuid>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCrfTemplate {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub version: i32,
+    pub status: String,
+    pub applicable_phase: String,
+    pub created_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCrfField {
+    pub id: Uuid,
+    pub template_id: Uuid,
+    pub field_key: String,
+    pub field_label: String,
+    pub field_type: String,
+    pub required: bool,
+    pub options_json: String,
+    pub branching_logic_json: Option<String>,
+    pub edit_checks_json: Option<String>,
+    pub display_order: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyVisitTemplate {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub visit_code: String,
+    pub visit_name: String,
+    pub target_day: i32,
+    pub window_before_days: i32,
+    pub window_after_days: i32,
+    pub required: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientStudyVisit {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub patient_id: Uuid,
+    pub visit_template_id: Uuid,
+    pub scheduled_for: Option<NaiveDate>,
+    pub status: String,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub locked: bool,
+    pub locked_at: Option<DateTime<Utc>>,
+    pub locked_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCrfSubmission {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub template_id: Uuid,
+    pub patient_id: Uuid,
+    pub patient_visit_id: Option<Uuid>,
+    pub answers_json: String,
+    pub status: String,
+    pub entered_by_user_id: Option<Uuid>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub locked_at: Option<DateTime<Utc>>,
+    pub sdv_status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyDataQuery {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub submission_id: Uuid,
+    pub field_key: String,
+    pub query_text: String,
+    pub status: String,
+    pub response_text: String,
+    pub raised_by_user_id: Option<Uuid>,
+    pub resolved_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct AuditLog {
+    pub id: Uuid,
+    pub entity_table: String,
+    pub entity_id: Uuid,
+    pub action: String,
+    pub changed_by_user_id: Option<Uuid>,
+    pub old_data: Option<String>,
+    pub new_data: Option<String>,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyCloseChecklistItem {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub item_code: String,
+    pub item_label: String,
+    pub completed: bool,
+    pub completed_by_user_id: Option<Uuid>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyStartupChecklistItem {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub item_code: String,
+    pub item_label: String,
+    pub completed: bool,
+    pub completed_by_user_id: Option<Uuid>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiteStartupChecklistItem {
+    pub id: Uuid,
+    pub site_id: Uuid,
+    pub item_code: String,
+    pub item_label: String,
+    pub completed: bool,
+    pub completed_by_user_id: Option<Uuid>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub notes: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StudyOperationalSummary {
+    pub lifecycle_phase: String,
+    pub planned_enrollment: i32,
+    pub enrolled_patients: i64,
+    pub enrollment_gap: i64,
+    pub total_visits_scheduled: i64,
+    pub completed_visits: i64,
+    pub total_submissions: i64,
+    pub locked_submissions: i64,
+    pub open_data_queries: i64,
+    pub startup_items_pending: i64,
+    pub close_items_pending: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormInvite {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub patient_email: String,
+    pub form_type: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaUploadTicket {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub project_id: Uuid,
+    pub patient_id: String,
+    pub mime_type: String,
+    pub upload_url: String,
+    pub expires_at: DateTime<Utc>,
+    pub entity_type: Option<String>,
+    pub entity_id: Option<Uuid>,
+    pub file_name: Option<String>,
+    pub description: Option<String>,
+    pub upload_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: Uuid,
+    pub email: String,
+    pub google_subject: String,
+    pub display_name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserMembership {
+    pub organization_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrganizationSummaryRow {
+    pub projects: i64,
+    pub sites: i64,
+    pub sent_form_invites: i64,
+    pub generated_media_upload_links: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectProgressRow {
+    pub total_sites: i64,
+    pub total_form_invites: i64,
+    pub total_media_captures_requested: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataUseAgreement {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub hospital_name: String,
+    pub hospital_contact_name: String,
+    pub hospital_contact_email: String,
+    pub counterparty_name: String,
+    pub agreement_version: String,
+    pub status: String,
+    pub effective_date: Option<NaiveDate>,
+    pub expiration_date: Option<NaiveDate>,
+    pub agreement_text: String,
+    pub hospital_signing_token: Uuid,
+    pub created_by_user_id: Option<Uuid>,
+    pub signed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataUseAgreementSignature {
+    pub id: Uuid,
+    pub agreement_id: Uuid,
+    pub signer_role: String,
+    pub signer_name: String,
+    pub signer_email: String,
+    pub signer_title: String,
+    pub signer_organization: String,
+    pub signature_method: String,
+    pub signature_text: String,
+    pub ip_address: Option<String>,
+    pub signed_by_user_id: Option<Uuid>,
+    pub signed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboundEmail {
+    pub id: Uuid,
+    pub agreement_id: Option<Uuid>,
+    pub recipient_email: String,
+    pub subject: String,
+    pub body: String,
+    pub status: String,
+    pub requested_by_user_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientSession {
+    pub id: Uuid,
+    pub patient_id: Uuid,
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProSubmission {
+    pub id: Uuid,
+    pub patient_id: Uuid,
+    pub form_type: String,
+    pub answers: serde_json::Value,
+    pub total_score: Option<i32>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}

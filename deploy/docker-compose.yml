@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: virivu-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: virivu
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d virivu"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    container_name: virivu-api
+    environment:
+      APP_NAME: virivu-api
+      BIND_ADDRESS: 0.0.0.0:8080
+      APP_BASE_URL: http://localhost:8080
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/virivu
+      GOOGLE_WORKSPACE_DOMAIN: cingulum.org
+      GOOGLE_CLIENT_ID: ""
+      ALLOW_DEV_AUTH_BYPASS: "true"
+      # Only set ALLOW_UNSAFE_DEV_BYPASS=true if you truly need dev bypass from non-localhost.
+      # This is dangerous and should be false in almost all cases.
+      ALLOW_UNSAFE_DEV_BYPASS: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+# -----------------------------------------------------------------------------
+# Build Notes:
+# - The API uses a modern cargo-chef based Dockerfile for fast, cache-friendly builds.
+# - Rust version is controlled via apps/api/rust-toolchain.toml (currently 1.95).
+# - To force a clean rebuild: docker compose build --no-cache api
+# - The rust-toolchain.toml ensures both local development and Docker use the same Rust version.
+# -----------------------------------------------------------------------------

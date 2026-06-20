@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: virival
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - virival-postgres:/var/lib/postgresql/data
+
+  virival-api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+    environment:
+      APP_NAME: virival-api
+      BIND_ADDRESS: 0.0.0.0:8090
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/virival
+      ALLOW_DEV_AUTH_BYPASS: "true"
+      RUN_MODE: api
+      GOOGLE_WORKSPACE_DOMAIN: cingulum.org
+      MEDIA_STORAGE_ROOT: /app/data/media
+      MEDIA_SIGNING_SECRET: dev-media-signing-secret
+      MEDIA_SIGNED_URL_TTL_SECONDS: "900"
+    ports:
+      - "8090:8090"
+    volumes:
+      - virival-media:/app/data/media
+
+  virival-reminder-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+    environment:
+      APP_NAME: virival-reminder-worker
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/virival
+      ALLOW_DEV_AUTH_BYPASS: "true"
+      RUN_MODE: reminder_worker
+      WORKER_POLL_SECONDS: "30"
+      WORKER_BATCH_SIZE: "50"
+      GOOGLE_WORKSPACE_DOMAIN: cingulum.org
+      MEDIA_STORAGE_ROOT: /app/data/media
+      MEDIA_SIGNING_SECRET: dev-media-signing-secret
+      MEDIA_SIGNED_URL_TTL_SECONDS: "900"
+    volumes:
+      - virival-media:/app/data/media
+
+volumes:
+  virival-postgres:
+  virival-media:
